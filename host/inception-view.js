@@ -1,12 +1,15 @@
 import { attachInput } from './input.js';
 import { MediaHost, probeMediaCapabilities } from './media.js';
 import { EngineRuntime } from './runtime.js';
+import { WasmTranslator } from './wasm-translator.js';
 import { ProtocolClient, ProtocolServer, createInPagePair } from './protocol.js';
 
-const config = { engineUrl: null, wispUrl: null, storage: null, policy: null };
+const config = { engineUrl: null, wispUrl: null, binaryenUrl: null, storage: null, policy: null };
+let translator = null;
 
 export const Inception = {
-  // engineUrl: URL of inception-engine.js; wispUrl: the Wisp relay (ws:// or wss://).
+  // engineUrl: URL of inception-engine.js; wispUrl: the Wisp relay (ws:// or
+  // wss://); binaryenUrl: binaryen.js, loaded when a page first uses WebAssembly.
   configure(options) {
     Object.assign(config, options);
   },
@@ -102,6 +105,9 @@ export class InceptionView extends HTMLElement {
       if (name.startsWith('media.')) this.#media.handleEvent(name, data);
     };
     this.#runtime.onMediaAppend = ({ id, sb, seq, bytes }) => this.#media.append(id, sb, seq, bytes);
+    translator ??= new WasmTranslator(config.binaryenUrl ?? new URL('../node_modules/binaryen/index.js', import.meta.url).href);
+    this.#runtime.wasmTranslator = translator;
+    const wasmPolyfill = await fetch(new URL('./guest-wasm.js', import.meta.url)).then((r) => r.text());
     // Activation is sticky for the host page's lifetime: the first gesture
     // anywhere in it lets every later video play with sound.
     const gesture = () => this.#media.userGesture();
@@ -113,7 +119,7 @@ export class InceptionView extends HTMLElement {
 
     const { width, height } = this.#cssSize();
     const gpu = this.getAttribute('gpu') ?? 'auto';
-    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: probeMediaCapabilities(), url: this.getAttribute('src') ?? '' });
+    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: probeMediaCapabilities(), wasmPolyfill, url: this.getAttribute('src') ?? '' });
     const ready = await engineReady;
     if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');
     this.dataset.renderer = ready.renderer;

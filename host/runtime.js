@@ -59,6 +59,7 @@ export class EngineRuntime extends EventTarget {
     if (data.inceptionWantsFrame) return requestAnimationFrame(() => worker.postMessage({ inceptionFrameTick: 1 }));
     if (data.inceptionFrame) return this.#presentBitmap(data.inceptionFrame);
     if (data.inceptionMediaAppend) return this.onMediaAppend?.(data.inceptionMediaAppend);
+    if (data.inceptionWasm) return this.#translateWasm(data.inceptionWasm);
     if (data.inceptionPixels) return this.#presentPixels(data.inceptionPixels);
     if (typeof data.inception !== 'string') return;
     const { event, data: payload } = JSON.parse(data.inception);
@@ -71,6 +72,27 @@ export class EngineRuntime extends EventTarget {
     }
     this.onEngineEvent?.(event, payload);
     this.dispatchEvent(new CustomEvent(event, { detail: payload }));
+  }
+
+  // The engine thread is blocked on `slot` until the reply is written.
+  async #translateWasm({ bytes, length, slot }) {
+    const memory = () => this.#module.wasmMemory.buffer;
+    const input = new Uint8Array(memory(), bytes, length).slice();
+    let reply;
+    try {
+      reply = this.wasmTranslator ? await this.wasmTranslator.translate(input) : 'error:WebAssembly is not available in this view';
+    } catch (error) {
+      reply = `error:${error?.message ?? error}`;
+    }
+    const encoded = new TextEncoder().encode(reply);
+    const pointer = this.#module._malloc(encoded.length + 1);
+    const heap = new Uint8Array(memory());
+    heap.set(encoded, pointer);
+    heap[pointer + encoded.length] = 0;
+    const words = new Int32Array(memory());
+    Atomics.store(words, (slot >> 2) + 1, pointer);
+    Atomics.store(words, slot >> 2, 1);
+    Atomics.notify(words, slot >> 2);
   }
 
   #presentBitmap(bitmap) {
