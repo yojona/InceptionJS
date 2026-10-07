@@ -19,6 +19,15 @@ const fromBase64 = (text) => {
   return Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
 };
 
+// One line per configuration: its label, then each capability's codecs and
+// robustness, e.g. "video-sw-crypto [video/mp4;codecs=avc1 SW_SECURE_CRYPTO]".
+function describeConfiguration(configuration = {}) {
+  const capabilities = [...(configuration.videoCapabilities ?? []), ...(configuration.audioCapabilities ?? [])]
+    .map(({ contentType = '', robustness = '' }) => `${contentType.replace(/\s+/g, '').replace(/"/g, '')}${robustness ? ` ${robustness}` : ''}`);
+  const extra = [configuration.persistentState === 'required' && 'persistent', configuration.distinctiveIdentifier === 'required' && 'distinctive-id', ...(configuration.sessionTypes ?? []).filter((t) => t !== 'temporary')].filter(Boolean);
+  return `${configuration.label ?? ''} [${capabilities.join(', ')}]${extra.length ? ` ${extra.join(' ')}` : ''}`.trim();
+}
+
 export class EncryptedMedia {
   #send;
   #accesses = new Map(); // keySystem -> [{configuration, access}]
@@ -54,7 +63,7 @@ export class EncryptedMedia {
       reply.then((result) => this.#send('eme.reply', { req: data.req, ok: true, ...result }), (error) => {
         // A refused key system is ordinary (pages probe several, FairPlay first
         // when the UA says Safari): say which, and what was asked.
-        if (name === 'eme.access') console.info(`[eme] the host browser does not offer ${data.keySystem} with`, data.configuration, `(${error?.name ?? error})`);
+        if (name === 'eme.access') console.debug(`[eme] host refused ${data.keySystem} ${describeConfiguration(data.configuration)} (${error?.name ?? error})`);
         else console.warn(`[eme] ${name}:`, error);
         this.#send('eme.reply', { req: data.req, ok: false, error: String(error?.message ?? error) });
       });
@@ -65,6 +74,7 @@ export class EncryptedMedia {
   async #access({ keySystem, configuration }) {
     const access = await navigator.requestMediaKeySystemAccess(keySystem, [configuration]);
     const granted = access.getConfiguration();
+    console.debug(`[eme] host granted ${keySystem} ${describeConfiguration(granted)}`);
     const list = this.#accesses.get(keySystem) ?? [];
     list.push({ configuration: granted, access });
     this.#accesses.set(keySystem, list);
