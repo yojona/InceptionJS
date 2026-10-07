@@ -4,10 +4,13 @@
 #include "JSDOMGlobalObject.h"
 #include "LocalFrame.h"
 #include "ScriptController.h"
+#include "CommonVM.h"
 #include "bridge/Bridge.h"
 #include "net/NetworkLoad.h"
 #include "view/View.h"
 #include <JavaScriptCore/JSCJSValueInlines.h>
+#include <JavaScriptCore/JSLock.h>
+#include <emscripten/heap.h>
 
 namespace Inception {
 using namespace WebCore;
@@ -34,6 +37,18 @@ void registerDebugCommands()
             result->setString("value"_s, value ? value.toWTFString(globalObject) : "undefined"_s);
         }
         emitEvent("debug.result"_s, WTF::move(result));
+    });
+
+    // {}: answers with a "debug.heap" event: JS heap and wasm memory sizes,
+    // in bytes.
+    registerCommand("debug.heap"_s, [](JSON::Object&) {
+        auto& vm = commonVM();
+        JSC::JSLockHolder lock(vm);
+        auto result = JSON::Object::create();
+        result->setDouble("heapSize"_s, vm.heap.size());
+        result->setDouble("heapCapacity"_s, vm.heap.capacity());
+        result->setDouble("memory"_s, emscripten_get_heap_size());
+        emitEvent("debug.heap"_s, WTF::move(result));
     });
 }
 

@@ -84,6 +84,14 @@ export class InceptionView extends HTMLElement {
   }
 
   // Development aid: sends a raw engine command.
+  // JS heap and wasm memory sizes, in bytes.
+  async debugHeap() {
+    await this.ready;
+    const reply = new Promise((resolve) => this.#runtime.addEventListener('debug.heap', (e) => resolve(e.detail), { once: true }));
+    this.#runtime.send('debug.heap');
+    return reply;
+  }
+
   async debugCommand(command, args = {}) {
     await this.ready;
     this.#runtime.send(command, args);
