@@ -57,7 +57,7 @@ export class InceptionView extends HTMLElement {
       .media { overflow: hidden; pointer-events: none; }
       textarea { position: absolute; left: 0; top: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; resize: none; pointer-events: none; }
       ${PROVENANCE_STYLE}
-    </style><div class="media" part="media"></div><canvas part="screen"></canvas><textarea aria-hidden="true" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>`;
+    </style><div class="media" part="media"></div><canvas part="screen"></canvas><textarea aria-label="Contenido web" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>`;
     this.#canvas = shadow.querySelector('canvas');
     this.#mediaLayer = shadow.querySelector('.media');
     this.#textInput = shadow.querySelector('textarea');
