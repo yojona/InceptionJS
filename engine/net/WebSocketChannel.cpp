@@ -15,6 +15,7 @@
 #include "WebSocketChannelClient.h"
 #include "WebSocketFrame.h"
 #include "WebSocketHandshake.h"
+#include "WebTransportSession.h"
 #include <JavaScriptCore/ArrayBuffer.h>
 #include <wtf/UniqueArray.h>
 #include <wtf/text/CString.h>
