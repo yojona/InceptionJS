@@ -1,0 +1,18 @@
+Pasteboard strategy for the Emscripten port.
+
+The port reuses the PasteboardStrategy-based pasteboard, so it needs the same
+strategy entry points that pasteboard calls.
+
+diff --git a/Source/WebCore/platform/PasteboardStrategy.h b/Source/WebCore/platform/PasteboardStrategy.h
+index fd90660..a85e38b 100644
+--- a/Source/WebCore/platform/PasteboardStrategy.h
++++ b/Source/WebCore/platform/PasteboardStrategy.h
+@@ -97,7 +97,7 @@ public:
+     virtual void writeToClipboard(const String& pasteboardName, SelectionData&&) = 0;
+     virtual void clearClipboard(const String& pasteboardName) = 0;
+     virtual int64_t changeCount(const String& pasteboardName) = 0;
+-#elif USE(LIBWPE)
++#elif USE(LIBWPE) || PLATFORM(EMSCRIPTEN)
+     virtual void getTypes(Vector<String>& types) = 0;
+     virtual void writeToPasteboard(const PasteboardWebContent&) = 0;
+     virtual void writeToPasteboard(const String& pasteboardType, const String&) = 0;
