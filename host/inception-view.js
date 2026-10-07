@@ -43,7 +43,9 @@ export class InceptionView extends HTMLElement {
   get ready() { return this.#ready ??= this.#start(); }
 
   connectedCallback() {
-    this.ready.catch((error) => this.dispatchEvent(new CustomEvent('crash', { detail: { reason: String(error?.message ?? error) } })));
+    // Deferred so a page can define the element and configure it in the same
+    // script, in either order.
+    queueMicrotask(() => this.ready.catch((error) => this.dispatchEvent(new CustomEvent('crash', { detail: { reason: String(error?.message ?? error) } }))));
   }
 
   attributeChangedCallback(name, previous, value) {
