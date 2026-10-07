@@ -8,7 +8,7 @@ them when no native frame holds cells.
 
 --- a/Source/JavaScriptCore/heap/Heap.cpp
 +++ b/Source/JavaScriptCore/heap/Heap.cpp
-@@ -2340,10 +2340,44 @@
+@@ -2340,10 +2340,46 @@
          MonotonicTime after = MonotonicTime::now();
          dataLog((after - before).milliseconds(), "ms]\n");
      }
@@ -49,6 +49,8 @@ them when no native frame holds cells.
 +        // collection happens at the next top-level turn.
 +        return m_lastServedTicket;
 +    }
++    if (m_defersCollectionsToTopLevel && !m_isAtTopLevel)
++        WTFLogAlways("[engine] emergency GC mid-task: %zu MB allocated since the last collection", totalBytesAllocatedThisCycle() / MB);
 +#endif
      stopIfNecessary();
      
