@@ -5,7 +5,10 @@ addToLibrary({
 
   inception_gfx_create_context__deps: ['$GL', '$inceptionGfx'],
   inception_gfx_create_context: (width, height) => {
-    if (typeof OffscreenCanvas === 'undefined') return 0;
+    if (typeof OffscreenCanvas === 'undefined') {
+      err('gfx: no OffscreenCanvas in this worker; painting on the CPU');
+      return 0;
+    }
     const canvas = new OffscreenCanvas(width, height);
     const handle = GL.createContext(canvas, {
       majorVersion: 2,
@@ -18,7 +21,10 @@ addToLibrary({
       preserveDrawingBuffer: false,
       powerPreference: 'high-performance',
     });
-    if (!handle) return 0;
+    if (!handle) {
+      err('gfx: WebGL2 is unavailable in this worker; painting on the CPU');
+      return 0;
+    }
     inceptionGfx.canvas = canvas;
     return handle;
   },
