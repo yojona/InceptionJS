@@ -3,7 +3,9 @@
 
 #include "Color.h"
 #include "Cursor.h"
+#include "Document.h"
 #include "DocumentFullscreen.h"
+#include "DocumentPage.h"
 #include "Element.h"
 #include "NodeDocument.h"
 #include "Exception.h"
@@ -11,6 +13,8 @@
 #include "PopupMenuClient.h"
 #include "DocumentLoader.h"
 #include "FrameLoader.h"
+#include "FrameTreeSyncData.h"
+#include "HTMLFrameOwnerElement.h"
 #include "LocalFrameInlines.h"
 #include "LocalFrameView.h"
 #include "MIMETypeRegistry.h"
@@ -367,9 +371,36 @@ void FrameLoaderClientImpl::committedLoad(DocumentLoader* loader, const SharedBu
     loader->commitData(data);
 }
 
+// <iframe> and <frame>: a local subframe with its own loader client, so it
+// loads, paints inside its owner's box and takes input like the main frame.
+RefPtr<LocalFrame> FrameLoaderClientImpl::createFrame(const AtomString& name, HTMLFrameOwnerElement& ownerElement)
+{
+    RefPtr page = m_frame->page();
+    if (!page)
+        return nullptr;
+    auto sandboxFlags = ownerElement.sandboxFlags();
+    sandboxFlags.add(m_frame->effectiveSandboxFlags());
+    auto referrerPolicy = ownerElement.referrerPolicy();
+    if (referrerPolicy == ReferrerPolicy::EmptyString) {
+        if (RefPtr document = m_frame->document())
+            referrerPolicy = document->referrerPolicy();
+    }
+    Ref subframe = LocalFrame::createSubframe(*page, [view = &m_view](auto& frame, auto& frameLoader) {
+        return makeUniqueRefWithoutRefCountedCheck<FrameLoaderClientImpl>(frameLoader, frame, *view);
+    }, generateFrameIdentifier(), sandboxFlags, referrerPolicy, ownerElement, FrameTreeSyncData::create());
+    subframe->tree().setSpecifiedName(name);
+    subframe->init();
+    // Creating the frame can run script that removes it again.
+    if (!subframe->page())
+        return nullptr;
+    return subframe;
+}
+
 void FrameLoaderClientImpl::transitionToCommittedForNewPage(InitializingIframe)
 {
-    m_frame->createView(m_view.cssSize(), Color::white, { });
+    // Subframes are transparent until their page paints a background, so the
+    // owner's content shows through as in any browser.
+    m_frame->createView(m_view.cssSize(), isMainFrame() ? Color::white : Color(), { });
 }
 
 void FrameLoaderClientImpl::dispatchDidStartProvisionalLoad()
