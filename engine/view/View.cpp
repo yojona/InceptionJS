@@ -98,6 +98,9 @@ View::View(IntSize cssSize, float deviceScaleFactor)
     settings.setAsyncClipboardAPIEnabled(true);
     settings.setPermissionsAPIEnabled(true);
     settings.setFullScreenEnabled(true);
+#if ENABLE(WEBGL)
+    settings.setWebGLEnabled(true);
+#endif
     settings.setMinimumLogicalFontSize(9);
     settings.setStandardFontFamily("serif"_s);
     settings.setSerifFontFamily("serif"_s);

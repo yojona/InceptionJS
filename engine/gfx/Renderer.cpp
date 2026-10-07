@@ -125,6 +125,10 @@ void Renderer::paintGPU(const Function<void(GraphicsContext&)>& paint)
         GraphicsContextSkia context(*canvas, RenderingMode::Accelerated, RenderingPurpose::Unspecified);
         paint(context);
     }
+    // Painting a WebGL canvas reads its pixels in that page context's own
+    // host context; Skia's must be current again for the flush.
+    if (!display.skiaGLContext()->makeContextCurrent())
+        return;
     grContext->flushAndSubmit(surface, GrSyncCpu::kNo);
 
     GrBackendRenderTarget target = SkSurfaces::GetBackendRenderTarget(surface, SkSurfaces::BackendHandleAccess::kFlushRead);

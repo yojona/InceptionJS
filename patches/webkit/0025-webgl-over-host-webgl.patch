@@ -1,0 +1,1138 @@
+WebGL for pages through the host browser's WebGL.
+
+Each page context draws through a WebGL context of the host, on an
+OffscreenCanvas in the engine thread. WebCore's shared WebGL code is kept; its
+ANGLE entry points resolve to a shim over Emscripten's GL functions, so no
+ANGLE library is built. WebGL is allowed without accelerated compositing (the
+canvas paints from its drawing buffer), and WEBGL_debug_renderer_info reports
+the host's GPU.
+
+--- a/Source/cmake/OptionsEmscripten.cmake
++++ b/Source/cmake/OptionsEmscripten.cmake
+@@ -50,7 +50,8 @@
+ # The embedder's ChromeClient takes the host view fullscreen.
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_FULLSCREEN_API PRIVATE ON)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEB_AUDIO PRIVATE OFF)
+-WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEBGL PRIVATE OFF)
++# Pages get WebGL through the host browser's own WebGL (GraphicsContextGLEmscripten).
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEBGL PRIVATE ON)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MEDIA_STREAM PRIVATE OFF)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEB_RTC PRIVATE OFF)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_ENCRYPTED_MEDIA PRIVATE OFF)
+--- a/Source/CMakeLists.txt
++++ b/Source/CMakeLists.txt
+@@ -19,7 +19,8 @@
+ 
+ add_subdirectory(JavaScriptCore)
+ 
+-if (ENABLE_WEBGL OR USE_ANGLE_EGL)
++# The Emscripten port draws WebGL through the host browser and builds no ANGLE.
++if ((ENABLE_WEBGL AND NOT PORT STREQUAL "Emscripten") OR USE_ANGLE_EGL)
+     add_subdirectory(ThirdParty/ANGLE)
+ endif ()
+ 
+--- a/Source/WebCore/PlatformEmscripten.cmake
++++ b/Source/WebCore/PlatformEmscripten.cmake
+@@ -75,6 +75,15 @@
+     platform/unix/SharedMemoryUnix.cpp
+ )
+ 
++if (ENABLE_WEBGL)
++    # WebGL draws through the host browser's WebGL. WebCore's shared WebGL code
++    # includes ANGLE's entry point headers; they resolve to a shim over
++    # Emscripten's GL functions, and no ANGLE library is built.
++    add_library(ANGLE::GLES INTERFACE IMPORTED)
++    set_target_properties(ANGLE::GLES PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${WEBCORE_DIR}/platform/graphics/emscripten/angle")
++    list(APPEND WebCore_SOURCES platform/graphics/emscripten/GraphicsContextGLEmscripten.cpp)
++endif ()
++
+ list(APPEND WebCore_PRIVATE_FRAMEWORK_HEADERS
+     platform/emscripten/PlatformScreenEmscripten.h
+ 
+--- a/Source/WebCore/html/HTMLCanvasElement.cpp
++++ b/Source/WebCore/html/HTMLCanvasElement.cpp
+@@ -395,7 +395,7 @@
+ 
+ static bool requiresAcceleratedCompositingForWebGL()
+ {
+-#if PLATFORM(GTK) || PLATFORM(WIN)
++#if PLATFORM(GTK) || PLATFORM(WIN) || PLATFORM(EMSCRIPTEN)
+     return false;
+ #else
+     return true;
+--- a/Source/WebCore/html/canvas/WebGLRenderingContextBase.cpp
++++ b/Source/WebCore/html/canvas/WebGLRenderingContextBase.cpp
+@@ -2077,13 +2077,24 @@
+         synthesizeGLError(GraphicsContextGL::INVALID_ENUM, "getParameter"_s, "invalid parameter name, OES_standard_derivatives not enabled"_s);
+         return nullptr;
+     case WebGLDebugRendererInfo::UNMASKED_RENDERER_WEBGL:
+-        if (m_webglDebugRendererInfo)
++        if (m_webglDebugRendererInfo) {
++#if PLATFORM(EMSCRIPTEN)
++            // The GPU is the host browser's, reported as the host reports it.
++            return String::fromUTF8(m_context->getString(GraphicsContextGL::RENDERER).span());
++#else
+             return "Apple GPU"_str;
++#endif
++        }
+         synthesizeGLError(GraphicsContextGL::INVALID_ENUM, "getParameter"_s, "invalid parameter name, WEBGL_debug_renderer_info not enabled"_s);
+         return nullptr;
+     case WebGLDebugRendererInfo::UNMASKED_VENDOR_WEBGL:
+-        if (m_webglDebugRendererInfo)
++        if (m_webglDebugRendererInfo) {
++#if PLATFORM(EMSCRIPTEN)
++            return String::fromUTF8(m_context->getString(GraphicsContextGL::VENDOR).span());
++#else
+             return "Apple Inc."_str;
++#endif
++        }
+         synthesizeGLError(GraphicsContextGL::INVALID_ENUM, "getParameter"_s, "invalid parameter name, WEBGL_debug_renderer_info not enabled"_s);
+         return nullptr;
+     case GraphicsContextGL::VERTEX_ARRAY_BINDING_OES: // OES_vertex_array_object
+--- a/Source/WebCore/platform/graphics/egl/GLContextWrapper.cpp
++++ b/Source/WebCore/platform/graphics/egl/GLContextWrapper.cpp
+@@ -22,7 +22,7 @@
+ 
+ #include "GLContext.h"
+ 
+-#if ENABLE(WEBGL)
++#if ENABLE(WEBGL) && !PLATFORM(EMSCRIPTEN)
+ #include "GraphicsContextGLTextureMapperANGLE.h"
+ #endif
+ 
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.h
+@@ -0,0 +1,91 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if ENABLE(WEBGL)
++
++#include "GLContextWrapper.h"
++#include "GraphicsContextGLANGLE.h"
++#include <wtf/HashMap.h>
++#include <wtf/text/CString.h>
++
++namespace WebCore {
++
++// WebGL for pages, drawn by a WebGL context of the host browser. Each page
++// context gets its own host context on an OffscreenCanvas in the engine
++// thread; WebCore's shared WebGL code drives it through the GL entry points in
++// ANGLE/WebGLOverHostWebGL.h. The page's canvas is painted from the drawing
++// buffer's pixels, as for a non-composited canvas.
++class GraphicsContextGLEmscripten final : public GLContextWrapper, public GraphicsContextGLANGLE {
++    WTF_MAKE_TZONE_ALLOCATED(GraphicsContextGLEmscripten);
++public:
++    static RefPtr<GraphicsContextGLEmscripten> create(GraphicsContextGLAttributes&&);
++    virtual ~GraphicsContextGLEmscripten();
++
++    // The context whose GL calls are being made, for the entry points that
++    // depend on its version or extensions.
++    static GraphicsContextGLEmscripten* current();
++
++    RefPtr<GraphicsLayerContentsDisplayDelegate> layerContentsDisplayDelegate() final { return nullptr; }
++#if ENABLE(VIDEO)
++    bool copyTextureFromVideoFrame(VideoFrame&, PlatformGLObject, GCGLenum, GCGLint, GCGLenum, GCGLenum, GCGLenum, bool, bool) final { return false; }
++#endif
++#if ENABLE(MEDIA_STREAM) || ENABLE(WEB_CODECS)
++    RefPtr<VideoFrame> surfaceBufferToVideoFrame(SurfaceBuffer) final { return nullptr; }
++#endif
++    RefPtr<PixelBuffer> readCompositedResults() final;
++    RefPtr<NativeImage> copyNativeImageYFlipped(SurfaceBuffer) final;
++    bool reshapeDrawingBuffer() final;
++    void prepareForDisplay() final;
++
++    bool isWebGL2() const { return m_isForWebGL2; }
++    const char* glString(GCGLenum) const;
++    void requestExtension(const char* glName);
++
++private:
++    friend class GraphicsContextGLANGLE;
++
++    explicit GraphicsContextGLEmscripten(GraphicsContextGLAttributes&&);
++
++    bool platformInitializeContext() final;
++
++    // GLContextWrapper
++    GLContextWrapper::Type type() const final { return GLContextWrapper::Type::Angle; }
++    bool makeCurrentImpl() final;
++    bool unmakeCurrentImpl() final { return true; }
++    unsigned glVersion() const final { return m_isForWebGL2 ? 300 : 200; }
++
++    int m_handle { 0 };
++    CString m_extensions;
++    CString m_requestableExtensions;
++    CString m_renderer;
++    CString m_vendor;
++    // GL extension name, as WebCore asks for it, to the host's WebGL names.
++    HashMap<CString, Vector<CString>> m_webGLNames;
++};
++
++} // namespace WebCore
++
++#endif // ENABLE(WEBGL)
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.cpp
+@@ -0,0 +1,496 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "GraphicsContextGLEmscripten.h"
++
++#if ENABLE(WEBGL)
++
++#include "ANGLEHeaders.h"
++#include "GLContext.h"
++#include "NativeImage.h"
++#include "PixelBuffer.h"
++#include "PlatformDisplay.h"
++#include <emscripten/em_js.h>
++#include <emscripten/html5_webgl.h>
++#include <wtf/HashSet.h>
++#include <wtf/NeverDestroyed.h>
++#include <wtf/TZoneMallocInlines.h>
++#include <wtf/text/StringBuilder.h>
++#include <wtf/text/StringHash.h>
++#include <wtf/text/WTFString.h>
++
++extern "C" void glGetBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, void* data);
++
++// A host WebGL context on an OffscreenCanvas of its own. Extensions stay off
++// until the page asks for them, as WebGL requires.
++EM_JS(int, inception_webgl_create_guest_context, (int majorVersion), {
++    if (typeof OffscreenCanvas === 'undefined')
++        return 0;
++    try {
++        return GL.createContext(new OffscreenCanvas(1, 1), {
++            majorVersion, minorVersion: 0, alpha: true, depth: false, stencil: false, antialias: false,
++            premultipliedAlpha: true, preserveDrawingBuffer: false, enableExtensionsByDefault: false,
++        }) | 0;
++    } catch (e) {
++        return 0;
++    }
++});
++
++// The real GPU names: pages read them through WEBGL_debug_renderer_info.
++EM_JS(char*, inception_webgl_unmasked_string, (int renderer), {
++    const info = GLctx.getExtension('WEBGL_debug_renderer_info');
++    const value = info ? GLctx.getParameter(renderer ? info.UNMASKED_RENDERER_WEBGL : info.UNMASKED_VENDOR_WEBGL) : '';
++    return stringToNewUTF8(String(value || ''));
++});
++
++// Entry points Emscripten does not provide: framebuffer blits under their
++// extension names, and OES_draw_buffers_indexed, which WebGL exposes as an
++// extension object.
++extern "C" void glBlitFramebufferANGLE(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter)
++{
++    glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
++}
++
++extern "C" void glBlitFramebufferNV(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter)
++{
++    glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
++}
++
++EM_JS(void, glEnableiOES, (GLenum target, GLuint index), { GLctx.getExtension('OES_draw_buffers_indexed')?.enableiOES(target, index); });
++EM_JS(void, glDisableiOES, (GLenum target, GLuint index), { GLctx.getExtension('OES_draw_buffers_indexed')?.disableiOES(target, index); });
++EM_JS(void, glBlendEquationiOES, (GLuint buf, GLenum mode), { GLctx.getExtension('OES_draw_buffers_indexed')?.blendEquationiOES(buf, mode); });
++EM_JS(void, glBlendEquationSeparateiOES, (GLuint buf, GLenum modeRGB, GLenum modeAlpha), { GLctx.getExtension('OES_draw_buffers_indexed')?.blendEquationSeparateiOES(buf, modeRGB, modeAlpha); });
++EM_JS(void, glBlendFunciOES, (GLuint buf, GLenum src, GLenum dst), { GLctx.getExtension('OES_draw_buffers_indexed')?.blendFunciOES(buf, src, dst); });
++EM_JS(void, glBlendFuncSeparateiOES, (GLuint buf, GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha), { GLctx.getExtension('OES_draw_buffers_indexed')?.blendFuncSeparateiOES(buf, srcRGB, dstRGB, srcAlpha, dstAlpha); });
++EM_JS(void, glColorMaskiOES, (GLuint index, GLboolean r, GLboolean g, GLboolean b, GLboolean a), { GLctx.getExtension('OES_draw_buffers_indexed')?.colorMaskiOES(index, !!r, !!g, !!b, !!a); });
++
++namespace WebCore {
++
++WTF_MAKE_TZONE_ALLOCATED_IMPL(GraphicsContextGLEmscripten);
++
++static GraphicsContextGLEmscripten* s_current;
++
++enum WebGLVersions : uint8_t { WebGL1 = 1, WebGL2 = 2, BothVersions = 3 };
++
++struct ExtensionName {
++    ASCIILiteral gl;
++    ASCIILiteral webGL;
++    WebGLVersions versions;
++};
++
++// The GL names WebCore requests, and the host WebGL extension behind each.
++static constexpr std::array extensionNames {
++    ExtensionName { "GL_ANGLE_instanced_arrays"_s, "ANGLE_instanced_arrays"_s, WebGL1 },
++    ExtensionName { "GL_EXT_blend_minmax"_s, "EXT_blend_minmax"_s, WebGL1 },
++    ExtensionName { "GL_EXT_frag_depth"_s, "EXT_frag_depth"_s, WebGL1 },
++    ExtensionName { "GL_EXT_shader_texture_lod"_s, "EXT_shader_texture_lod"_s, WebGL1 },
++    ExtensionName { "GL_EXT_sRGB"_s, "EXT_sRGB"_s, WebGL1 },
++    ExtensionName { "GL_EXT_draw_buffers"_s, "WEBGL_draw_buffers"_s, WebGL1 },
++    ExtensionName { "GL_OES_element_index_uint"_s, "OES_element_index_uint"_s, WebGL1 },
++    ExtensionName { "GL_OES_standard_derivatives"_s, "OES_standard_derivatives"_s, WebGL1 },
++    ExtensionName { "GL_OES_texture_float"_s, "OES_texture_float"_s, WebGL1 },
++    ExtensionName { "GL_OES_texture_half_float"_s, "OES_texture_half_float"_s, WebGL1 },
++    ExtensionName { "GL_OES_texture_half_float_linear"_s, "OES_texture_half_float_linear"_s, WebGL1 },
++    ExtensionName { "GL_OES_vertex_array_object"_s, "OES_vertex_array_object"_s, WebGL1 },
++    ExtensionName { "GL_OES_depth_texture"_s, "WEBGL_depth_texture"_s, WebGL1 },
++    ExtensionName { "GL_ANGLE_depth_texture"_s, "WEBGL_depth_texture"_s, WebGL1 },
++    ExtensionName { "GL_OES_fbo_render_mipmap"_s, "OES_fbo_render_mipmap"_s, WebGL1 },
++    ExtensionName { "GL_CHROMIUM_color_buffer_float_rgba"_s, "WEBGL_color_buffer_float"_s, WebGL1 },
++    ExtensionName { "GL_EXT_color_buffer_float"_s, "EXT_color_buffer_float"_s, WebGL2 },
++    ExtensionName { "GL_EXT_color_buffer_half_float"_s, "EXT_color_buffer_half_float"_s, BothVersions },
++    ExtensionName { "GL_OES_texture_float_linear"_s, "OES_texture_float_linear"_s, BothVersions },
++    ExtensionName { "GL_EXT_float_blend"_s, "EXT_float_blend"_s, BothVersions },
++    ExtensionName { "GL_EXT_texture_filter_anisotropic"_s, "EXT_texture_filter_anisotropic"_s, BothVersions },
++    ExtensionName { "GL_EXT_texture_compression_dxt1"_s, "WEBGL_compressed_texture_s3tc"_s, BothVersions },
++    ExtensionName { "GL_ANGLE_texture_compression_dxt3"_s, "WEBGL_compressed_texture_s3tc"_s, BothVersions },
++    ExtensionName { "GL_ANGLE_texture_compression_dxt5"_s, "WEBGL_compressed_texture_s3tc"_s, BothVersions },
++    ExtensionName { "GL_EXT_texture_compression_s3tc_srgb"_s, "WEBGL_compressed_texture_s3tc_srgb"_s, BothVersions },
++    ExtensionName { "GL_EXT_texture_compression_rgtc"_s, "EXT_texture_compression_rgtc"_s, BothVersions },
++    ExtensionName { "GL_EXT_texture_compression_bptc"_s, "EXT_texture_compression_bptc"_s, BothVersions },
++    ExtensionName { "GL_KHR_texture_compression_astc_ldr"_s, "WEBGL_compressed_texture_astc"_s, BothVersions },
++    ExtensionName { "GL_ANGLE_compressed_texture_etc"_s, "WEBGL_compressed_texture_etc"_s, BothVersions },
++    ExtensionName { "GL_OES_compressed_ETC1_RGB8_texture"_s, "WEBGL_compressed_texture_etc1"_s, BothVersions },
++    ExtensionName { "GL_IMG_texture_compression_pvrtc"_s, "WEBGL_compressed_texture_pvrtc"_s, BothVersions },
++    ExtensionName { "GL_KHR_parallel_shader_compile"_s, "KHR_parallel_shader_compile"_s, BothVersions },
++    ExtensionName { "GL_EXT_polygon_offset_clamp"_s, "EXT_polygon_offset_clamp"_s, BothVersions },
++    ExtensionName { "GL_EXT_clip_control"_s, "EXT_clip_control"_s, BothVersions },
++    ExtensionName { "GL_EXT_depth_clamp"_s, "EXT_depth_clamp"_s, BothVersions },
++    ExtensionName { "GL_EXT_texture_mirror_clamp_to_edge"_s, "EXT_texture_mirror_clamp_to_edge"_s, BothVersions },
++    ExtensionName { "GL_EXT_blend_func_extended"_s, "WEBGL_blend_func_extended"_s, BothVersions },
++    ExtensionName { "GL_OES_draw_buffers_indexed"_s, "OES_draw_buffers_indexed"_s, WebGL2 },
++    ExtensionName { "GL_EXT_texture_norm16"_s, "EXT_texture_norm16"_s, WebGL2 },
++    ExtensionName { "GL_EXT_render_snorm"_s, "EXT_render_snorm"_s, WebGL2 },
++    ExtensionName { "GL_EXT_conservative_depth"_s, "EXT_conservative_depth"_s, WebGL2 },
++    ExtensionName { "GL_NV_shader_noperspective_interpolation"_s, "NV_shader_noperspective_interpolation"_s, WebGL2 },
++    ExtensionName { "GL_OES_sample_variables"_s, "OES_sample_variables"_s, WebGL2 },
++    ExtensionName { "GL_OES_shader_multisample_interpolation"_s, "OES_shader_multisample_interpolation"_s, WebGL2 },
++    ExtensionName { "GL_ANGLE_stencil_texturing"_s, "WEBGL_stencil_texturing"_s, WebGL2 },
++    ExtensionName { "GL_ANGLE_clip_cull_distance"_s, "WEBGL_clip_cull_distance"_s, WebGL2 },
++};
++
++// What WebGL itself guarantees, which the shared code checks as extensions:
++// combined depth and stencil, and on WebGL2 multisampled renderbuffers,
++// framebuffer blits, sized color formats and occlusion queries.
++static constexpr std::array alwaysOnWebGL1 { "GL_OES_packed_depth_stencil"_s };
++static constexpr std::array alwaysOnWebGL2 {
++    "GL_OES_packed_depth_stencil"_s, "GL_OES_depth24"_s, "GL_OES_rgb8_rgba8"_s,
++    "GL_ANGLE_framebuffer_blit"_s, "GL_ANGLE_framebuffer_multisample"_s, "GL_EXT_occlusion_query_boolean"_s,
++};
++
++RefPtr<GraphicsContextGL> createWebProcessGraphicsContextGL(const GraphicsContextGLAttributes& attributes)
++{
++    return GraphicsContextGLEmscripten::create(GraphicsContextGLAttributes { attributes });
++}
++
++RefPtr<GraphicsContextGLEmscripten> GraphicsContextGLEmscripten::create(GraphicsContextGLAttributes&& attributes)
++{
++    auto context = adoptRef(*new GraphicsContextGLEmscripten(WTF::move(attributes)));
++    if (!context->initialize())
++        return nullptr;
++    return context;
++}
++
++GraphicsContextGLEmscripten::GraphicsContextGLEmscripten(GraphicsContextGLAttributes&& attributes)
++    : GraphicsContextGLANGLE(WTF::move(attributes))
++{
++}
++
++GraphicsContextGLEmscripten* GraphicsContextGLEmscripten::current()
++{
++    return s_current;
++}
++
++GraphicsContextGLEmscripten::~GraphicsContextGLEmscripten()
++{
++    if (!m_handle)
++        return;
++    // The objects die with the host context; only the context itself needs
++    // releasing. The base destructor then finds no context to make current.
++    if (s_current == this)
++        s_current = nullptr;
++    if (isCurrent())
++        didUnmakeContextCurrent();
++    emscripten_webgl_destroy_context(m_handle);
++    m_handle = 0;
++}
++
++bool GraphicsContextGLEmscripten::platformInitializeContext()
++{
++    m_isForWebGL2 = contextAttributes().isWebGL2;
++    m_handle = inception_webgl_create_guest_context(m_isForWebGL2 ? 2 : 1);
++    if (!m_handle || !makeContextCurrent())
++        return false;
++    // The shared code keeps a set of the displays it used; there is no EGL
++    // display here, so all contexts share one stand-in.
++    static int display;
++    m_displayObj = &display;
++
++    HashSet<String> supported;
++    if (char* list = emscripten_webgl_get_supported_extensions()) {
++        for (auto name : StringView::fromLatin1(list).split(' '))
++            supported.add(name.toString());
++        free(list);
++    }
++
++    StringBuilder always;
++    for (auto name : m_isForWebGL2 ? std::span<const ASCIILiteral>(alwaysOnWebGL2) : std::span<const ASCIILiteral>(alwaysOnWebGL1)) {
++        if (!always.isEmpty())
++            always.append(' ');
++        always.append(name);
++    }
++    m_extensions = always.toString().utf8();
++
++    StringBuilder requestable;
++    WebGLVersions version = m_isForWebGL2 ? WebGL2 : WebGL1;
++    for (auto& name : extensionNames) {
++        if (!(name.versions & version) || !supported.contains(String { name.webGL }))
++            continue;
++        auto glName = CString { name.gl.span() };
++        auto& webGLNames = m_webGLNames.ensure(glName, [] { return Vector<CString> { }; }).iterator->value;
++        if (webGLNames.isEmpty()) {
++            if (!requestable.isEmpty())
++                requestable.append(' ');
++            requestable.append(name.gl);
++        }
++        webGLNames.append(CString { name.webGL.span() });
++    }
++    m_requestableExtensions = requestable.toString().utf8();
++
++    auto unmasked = [](bool renderer) {
++        char* value = inception_webgl_unmasked_string(renderer);
++        CString result { value };
++        free(value);
++        return result;
++    };
++    m_renderer = unmasked(true);
++    m_vendor = unmasked(false);
++    return true;
++}
++
++bool GraphicsContextGLEmscripten::makeCurrentImpl()
++{
++    if (!m_handle || emscripten_webgl_make_context_current(m_handle) != EMSCRIPTEN_RESULT_SUCCESS)
++        return false;
++    s_current = this;
++    return true;
++}
++
++const char* GraphicsContextGLEmscripten::glString(GCGLenum name) const
++{
++    switch (name) {
++    case GL_EXTENSIONS:
++        return m_extensions.data();
++    case GL_REQUESTABLE_EXTENSIONS_ANGLE:
++        return m_requestableExtensions.data();
++    case GL_RENDERER:
++        return m_renderer.data();
++    case GL_VENDOR:
++        return m_vendor.data();
++    default:
++        return reinterpret_cast<const char*>(glGetString(name));
++    }
++}
++
++void GraphicsContextGLEmscripten::requestExtension(const char* glName)
++{
++    auto it = m_webGLNames.find(CString { glName });
++    if (it == m_webGLNames.end())
++        return;
++    for (auto& webGLName : it->value)
++        emscripten_webgl_enable_extension(m_handle, webGLName.data());
++}
++
++// The drawing buffer's color texture; WebCore attaches it and its depth and
++// stencil buffers itself.
++bool GraphicsContextGLEmscripten::reshapeDrawingBuffer()
++{
++    auto size = getInternalFramebufferSize();
++    GLenum format = contextAttributes().alpha ? GL_RGBA : GL_RGB;
++    ScopedRestoreTextureBinding restoreBinding(GL_TEXTURE_BINDING_2D, GL_TEXTURE_2D);
++    GL_BindTexture(GL_TEXTURE_2D, m_texture);
++    GL_TexImage2D(GL_TEXTURE_2D, 0, format, size.width(), size.height(), 0, format, GL_UNSIGNED_BYTE, nullptr);
++    return true;
++}
++
++// The canvas is painted from the drawing buffer as it stands, read back right
++// after the page's frame; nothing is handed to a compositor.
++void GraphicsContextGLEmscripten::prepareForDisplay()
++{
++}
++
++RefPtr<PixelBuffer> GraphicsContextGLEmscripten::readCompositedResults()
++{
++    return readRenderingResultsForPainting();
++}
++
++// The pixels read here are drawn next by Skia, into the page or an image
++// buffer, through its own host context: hand the GL thread back to it.
++static void resumeSkiaContext()
++{
++    if (auto* display = PlatformDisplay::sharedDisplayIfExists()) {
++        if (auto* context = display->skiaGLContext())
++            context->makeContextCurrent();
++    }
++}
++
++RefPtr<NativeImage> GraphicsContextGLEmscripten::copyNativeImageYFlipped(SurfaceBuffer buffer)
++{
++    auto image = GraphicsContextGLANGLE::copyNativeImageYFlipped(buffer);
++    resumeSkiaContext();
++    return image;
++}
++
++GraphicsContextGLANGLE::~GraphicsContextGLANGLE()
++{
++    if (!makeContextCurrent())
++        return;
++    if (m_texture)
++        GL_DeleteTextures(1, &m_texture);
++    if (m_multisampleColorBuffer)
++        GL_DeleteRenderbuffers(1, &m_multisampleColorBuffer);
++    if (m_multisampleDepthStencilBuffer)
++        GL_DeleteRenderbuffers(1, &m_multisampleDepthStencilBuffer);
++    if (m_multisampleFBO)
++        GL_DeleteFramebuffers(1, &m_multisampleFBO);
++    if (m_depthStencilBuffer)
++        GL_DeleteRenderbuffers(1, &m_depthStencilBuffer);
++    if (m_preserveDrawingBufferTexture)
++        GL_DeleteTextures(1, &m_preserveDrawingBufferTexture);
++    if (m_preserveDrawingBufferFBO)
++        GL_DeleteFramebuffers(1, &m_preserveDrawingBufferFBO);
++    if (m_fbo)
++        GL_DeleteFramebuffers(1, &m_fbo);
++}
++
++bool GraphicsContextGLANGLE::makeContextCurrent()
++{
++    auto* context = static_cast<GraphicsContextGLEmscripten*>(this);
++    if (context->isCurrent())
++        return true;
++    if (!context->makeCurrentImpl())
++        return false;
++    context->didMakeContextCurrent();
++    return true;
++}
++
++void GraphicsContextGLANGLE::checkGPUStatus()
++{
++}
++
++void GraphicsContextGLANGLE::platformReleaseThreadResources()
++{
++}
++
++} // namespace WebCore
++
++using WebCore::GraphicsContextGLEmscripten;
++
++const GLubyte* GL_GetString(GLenum name)
++{
++    if (auto* context = GraphicsContextGLEmscripten::current())
++        return reinterpret_cast<const GLubyte*>(context->glString(name));
++    return glGetString(name);
++}
++
++void GL_RequestExtensionANGLE(const GLchar* name)
++{
++    if (auto* context = GraphicsContextGLEmscripten::current())
++        context->requestExtension(name);
++}
++
++// Debug output does not exist in WebGL, and WebGL2 always restarts primitives
++// at the fixed index; enabling either is an error there.
++static bool isImplicitCapability(GLenum capability)
++{
++    return capability == GL_DEBUG_OUTPUT_KHR || capability == GL_DEBUG_OUTPUT_SYNCHRONOUS_KHR || capability == GL_PRIMITIVE_RESTART_FIXED_INDEX;
++}
++
++void GL_Enable(GLenum capability)
++{
++    if (!isImplicitCapability(capability))
++        glEnable(capability);
++}
++
++void GL_Disable(GLenum capability)
++{
++    if (!isImplicitCapability(capability))
++        glDisable(capability);
++}
++
++GLboolean GL_IsEnabled(GLenum capability)
++{
++    if (capability == GL_PRIMITIVE_RESTART_FIXED_INDEX) {
++        auto* context = GraphicsContextGLEmscripten::current();
++        return context && context->isWebGL2();
++    }
++    if (isImplicitCapability(capability))
++        return GL_FALSE;
++    return glIsEnabled(capability);
++}
++
++// WebGL 1 names the packed depth and stencil format DEPTH_STENCIL.
++void GL_RenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, GLsizei height)
++{
++    auto* context = GraphicsContextGLEmscripten::current();
++    if (context && !context->isWebGL2() && internalformat == GL_DEPTH24_STENCIL8_OES)
++        internalformat = GL_DEPTH_STENCIL_OES;
++    glRenderbufferStorage(target, internalformat, width, height);
++}
++
++void GL_RenderbufferStorageMultisampleANGLE(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height)
++{
++    glRenderbufferStorageMultisample(target, samples, internalformat, width, height);
++}
++
++// Only reads are mapped (getBufferSubData): the bytes are copied out of the
++// host buffer and freed on unmap.
++static HashMap<GLenum, void*>& mappedBuffers()
++{
++    static NeverDestroyed<HashMap<GLenum, void*>> buffers;
++    return buffers;
++}
++
++void* GL_MapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access)
++{
++    if (!(access & GL_MAP_READ_BIT) || (access & GL_MAP_WRITE_BIT) || length <= 0)
++        return nullptr;
++    void* data = malloc(length);
++    if (!data)
++        return nullptr;
++    glGetBufferSubData(target, offset, length, data);
++    if (auto previous = mappedBuffers().take(target))
++        free(previous);
++    mappedBuffers().set(target, data);
++    return data;
++}
++
++GLboolean GL_UnmapBuffer(GLenum target)
++{
++    auto data = mappedBuffers().take(target);
++    if (!data)
++        return GL_FALSE;
++    free(data);
++    return GL_TRUE;
++}
++
++static bool currentIsWebGL2()
++{
++    auto* context = GraphicsContextGLEmscripten::current();
++    return context && context->isWebGL2();
++}
++
++void GL_GetQueryivRobustANGLE(GLenum target, GLenum pname, GLsizei, GLsizei* length, GLint* params)
++{
++    if (currentIsWebGL2())
++        glGetQueryiv(target, pname, params);
++    else
++        glGetQueryivEXT(target, pname, params);
++    inceptionSetLength(length, 1);
++}
++
++void GL_GetQueryObjectuivRobustANGLE(GLuint id, GLenum pname, GLsizei, GLsizei* length, GLuint* params)
++{
++    if (currentIsWebGL2())
++        glGetQueryObjectuiv(id, pname, params);
++    else
++        glGetQueryObjectuivEXT(id, pname, params);
++    inceptionSetLength(length, 1);
++}
++
++void GL_GetQueryObjectivRobustANGLE(GLuint id, GLenum pname, GLsizei bufSize, GLsizei* length, GLint* params)
++{
++    GLuint value = 0;
++    GL_GetQueryObjectuivRobustANGLE(id, pname, bufSize, length, &value);
++    *params = static_cast<GLint>(value);
++}
++
++void GL_GetQueryObjectui64vRobustANGLE(GLuint id, GLenum pname, GLsizei bufSize, GLsizei* length, GLuint64* params)
++{
++    GLuint value = 0;
++    GL_GetQueryObjectuivRobustANGLE(id, pname, bufSize, length, &value);
++    *params = value;
++}
++
++#endif // ENABLE(WEBGL)
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/emscripten/angle/ANGLE/entry_points_egl_autogen.h
+@@ -0,0 +1,4 @@
++#pragma once
++
++// WebCore asks for the GL and EGL entry points under these names.
++#include "WebGLOverHostWebGL.h"
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/emscripten/angle/ANGLE/entry_points_egl_ext_autogen.h
+@@ -0,0 +1,4 @@
++#pragma once
++
++// WebCore asks for the GL and EGL entry points under these names.
++#include "WebGLOverHostWebGL.h"
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/emscripten/angle/ANGLE/entry_points_gles_2_0_autogen.h
+@@ -0,0 +1,4 @@
++#pragma once
++
++// WebCore asks for the GL and EGL entry points under these names.
++#include "WebGLOverHostWebGL.h"
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/emscripten/angle/ANGLE/entry_points_gles_3_0_autogen.h
+@@ -0,0 +1,4 @@
++#pragma once
++
++// WebCore asks for the GL and EGL entry points under these names.
++#include "WebGLOverHostWebGL.h"
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/emscripten/angle/ANGLE/entry_points_gles_ext_autogen.h
+@@ -0,0 +1,4 @@
++#pragma once
++
++// WebCore asks for the GL and EGL entry points under these names.
++#include "WebGLOverHostWebGL.h"
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/emscripten/angle/ANGLE/WebGLOverHostWebGL.h
+@@ -0,0 +1,405 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++// The GL entry points WebCore's WebGL implementation calls, served by the host
++// browser's WebGL instead of a native GL driver. WebGL already validates every
++// call the way WebGL requires, so most entry points map straight onto
++// Emscripten's GLES functions; the rest are WebGL-shaped stand-ins for the
++// handful of driver extensions the shared code expects.
++
++#pragma once
++
++// WebCore includes this with prototypes off, expecting function pointers; here
++// the functions are Emscripten's own, so the prototypes are wanted.
++#undef GL_GLES_PROTOTYPES
++#define GL_GLES_PROTOTYPES 1
++#undef GL_GLEXT_PROTOTYPES
++#define GL_GLEXT_PROTOTYPES 1
++
++#include <EGL/egl.h>
++#include <EGL/eglext.h>
++#include <GLES3/gl3.h>
++#include <GLES2/gl2ext.h>
++#include <cstdint>
++
++#ifndef GL_REQUESTABLE_EXTENSIONS_ANGLE
++#define GL_REQUESTABLE_EXTENSIONS_ANGLE 0x93A8
++#endif
++#ifndef GL_TRANSLATED_SHADER_SOURCE_LENGTH_ANGLE
++#define GL_TRANSLATED_SHADER_SOURCE_LENGTH_ANGLE 0x93A0
++#endif
++#ifndef GL_TEXTURE_RECTANGLE_ANGLE
++#define GL_TEXTURE_RECTANGLE_ANGLE 0x84F5
++#endif
++#ifndef GL_TEXTURE_BINDING_RECTANGLE_ANGLE
++#define GL_TEXTURE_BINDING_RECTANGLE_ANGLE 0x84F6
++#endif
++#ifndef GL_PACK_REVERSE_ROW_ORDER_ANGLE
++#define GL_PACK_REVERSE_ROW_ORDER_ANGLE 0x93A4
++#endif
++#ifndef EGL_TEXTURE_RECTANGLE_ANGLE
++#define EGL_TEXTURE_RECTANGLE_ANGLE 0x345B
++#endif
++
++#define GL_ActiveTexture glActiveTexture
++#define GL_AttachShader glAttachShader
++#define GL_BeginQuery glBeginQuery
++#define GL_BeginQueryEXT glBeginQueryEXT
++#define GL_BeginTransformFeedback glBeginTransformFeedback
++#define GL_BindAttribLocation glBindAttribLocation
++#define GL_BindBuffer glBindBuffer
++#define GL_BindBufferBase glBindBufferBase
++#define GL_BindBufferRange glBindBufferRange
++#define GL_BindFramebuffer glBindFramebuffer
++#define GL_BindRenderbuffer glBindRenderbuffer
++#define GL_BindSampler glBindSampler
++#define GL_BindTexture glBindTexture
++#define GL_BindTransformFeedback glBindTransformFeedback
++#define GL_BindVertexArray glBindVertexArray
++#define GL_BindVertexArrayOES glBindVertexArrayOES
++#define GL_BlendColor glBlendColor
++#define GL_BlendEquation glBlendEquation
++#define GL_BlendEquationiOES glBlendEquationiOES
++#define GL_BlendEquationSeparate glBlendEquationSeparate
++#define GL_BlendEquationSeparateiOES glBlendEquationSeparateiOES
++#define GL_BlendFunc glBlendFunc
++#define GL_BlendFunciOES glBlendFunciOES
++#define GL_BlendFuncSeparate glBlendFuncSeparate
++#define GL_BlendFuncSeparateiOES glBlendFuncSeparateiOES
++#define GL_BlitFramebuffer glBlitFramebuffer
++#define GL_BlitFramebufferANGLE glBlitFramebufferANGLE
++#define GL_BlitFramebufferNV glBlitFramebufferNV
++#define GL_BufferData glBufferData
++#define GL_BufferSubData glBufferSubData
++#define GL_CheckFramebufferStatus glCheckFramebufferStatus
++#define GL_Clear glClear
++#define GL_ClearBufferfi glClearBufferfi
++#define GL_ClearBufferfv glClearBufferfv
++#define GL_ClearBufferiv glClearBufferiv
++#define GL_ClearBufferuiv glClearBufferuiv
++#define GL_ClearColor glClearColor
++#define GL_ClearDepthf glClearDepthf
++#define GL_ClearStencil glClearStencil
++#define GL_ClientWaitSync glClientWaitSync
++#define GL_ClipControlEXT glClipControlEXT
++#define GL_ColorMask glColorMask
++#define GL_ColorMaskiOES glColorMaskiOES
++#define GL_CompileShader glCompileShader
++#define GL_CopyBufferSubData glCopyBufferSubData
++#define GL_CopyTexImage2D glCopyTexImage2D
++#define GL_CopyTexSubImage2D glCopyTexSubImage2D
++#define GL_CopyTexSubImage3D glCopyTexSubImage3D
++#define GL_CreateProgram glCreateProgram
++#define GL_CreateShader glCreateShader
++#define GL_CullFace glCullFace
++#define GL_DeleteBuffers glDeleteBuffers
++#define GL_DeleteFramebuffers glDeleteFramebuffers
++#define GL_DeleteProgram glDeleteProgram
++#define GL_DeleteQueries glDeleteQueries
++#define GL_DeleteQueriesEXT glDeleteQueriesEXT
++#define GL_DeleteRenderbuffers glDeleteRenderbuffers
++#define GL_DeleteSamplers glDeleteSamplers
++#define GL_DeleteShader glDeleteShader
++#define GL_DeleteSync glDeleteSync
++#define GL_DeleteTextures glDeleteTextures
++#define GL_DeleteTransformFeedbacks glDeleteTransformFeedbacks
++#define GL_DeleteVertexArrays glDeleteVertexArrays
++#define GL_DeleteVertexArraysOES glDeleteVertexArraysOES
++#define GL_DepthFunc glDepthFunc
++#define GL_DepthMask glDepthMask
++#define GL_DepthRangef glDepthRangef
++#define GL_DetachShader glDetachShader
++#define GL_DisableiOES glDisableiOES
++#define GL_DisableVertexAttribArray glDisableVertexAttribArray
++#define GL_DrawArrays glDrawArrays
++#define GL_DrawArraysInstanced glDrawArraysInstanced
++#define GL_DrawArraysInstancedANGLE glDrawArraysInstancedANGLE
++#define GL_DrawBuffers glDrawBuffers
++#define GL_DrawBuffersEXT glDrawBuffersEXT
++#define GL_DrawElements glDrawElements
++#define GL_DrawElementsInstanced glDrawElementsInstanced
++#define GL_DrawElementsInstancedANGLE glDrawElementsInstancedANGLE
++#define GL_DrawRangeElements glDrawRangeElements
++#define GL_EnableiOES glEnableiOES
++#define GL_EnableVertexAttribArray glEnableVertexAttribArray
++#define GL_EndQuery glEndQuery
++#define GL_EndQueryEXT glEndQueryEXT
++#define GL_EndTransformFeedback glEndTransformFeedback
++#define GL_FenceSync glFenceSync
++#define GL_Finish glFinish
++#define GL_Flush glFlush
++#define GL_FramebufferRenderbuffer glFramebufferRenderbuffer
++#define GL_FramebufferTexture2D glFramebufferTexture2D
++#define GL_FramebufferTextureLayer glFramebufferTextureLayer
++#define GL_FrontFace glFrontFace
++#define GL_GenBuffers glGenBuffers
++#define GL_GenerateMipmap glGenerateMipmap
++#define GL_GenFramebuffers glGenFramebuffers
++#define GL_GenQueries glGenQueries
++#define GL_GenQueriesEXT glGenQueriesEXT
++#define GL_GenRenderbuffers glGenRenderbuffers
++#define GL_GenSamplers glGenSamplers
++#define GL_GenTextures glGenTextures
++#define GL_GenTransformFeedbacks glGenTransformFeedbacks
++#define GL_GenVertexArrays glGenVertexArrays
++#define GL_GenVertexArraysOES glGenVertexArraysOES
++#define GL_GetActiveAttrib glGetActiveAttrib
++#define GL_GetActiveUniform glGetActiveUniform
++#define GL_GetActiveUniformBlockName glGetActiveUniformBlockName
++#define GL_GetActiveUniformsiv glGetActiveUniformsiv
++#define GL_GetAttribLocation glGetAttribLocation
++#define GL_GetBooleanv glGetBooleanv
++#define GL_GetError glGetError
++#define GL_GetFloatv glGetFloatv
++#define GL_GetFragDataLocation glGetFragDataLocation
++#define GL_GetIntegerv glGetIntegerv
++#define GL_GetProgramInfoLog glGetProgramInfoLog
++#define GL_GetProgramiv glGetProgramiv
++#define GL_GetQueryiv glGetQueryiv
++#define GL_GetShaderInfoLog glGetShaderInfoLog
++#define GL_GetShaderiv glGetShaderiv
++#define GL_GetShaderPrecisionFormat glGetShaderPrecisionFormat
++#define GL_GetSynciv glGetSynciv
++#define GL_GetTransformFeedbackVarying glGetTransformFeedbackVarying
++#define GL_GetUniformBlockIndex glGetUniformBlockIndex
++#define GL_GetUniformIndices glGetUniformIndices
++#define GL_GetUniformLocation glGetUniformLocation
++#define GL_Hint glHint
++#define GL_InvalidateFramebuffer glInvalidateFramebuffer
++#define GL_InvalidateSubFramebuffer glInvalidateSubFramebuffer
++#define GL_IsBuffer glIsBuffer
++#define GL_IsFramebuffer glIsFramebuffer
++#define GL_IsProgram glIsProgram
++#define GL_IsQuery glIsQuery
++#define GL_IsQueryEXT glIsQueryEXT
++#define GL_IsRenderbuffer glIsRenderbuffer
++#define GL_IsSampler glIsSampler
++#define GL_IsShader glIsShader
++#define GL_IsSync glIsSync
++#define GL_IsTexture glIsTexture
++#define GL_IsTransformFeedback glIsTransformFeedback
++#define GL_IsVertexArray glIsVertexArray
++#define GL_IsVertexArrayOES glIsVertexArrayOES
++#define GL_LineWidth glLineWidth
++#define GL_LinkProgram glLinkProgram
++#define GL_PauseTransformFeedback glPauseTransformFeedback
++#define GL_PixelStorei glPixelStorei
++#define GL_PolygonOffset glPolygonOffset
++#define GL_PolygonOffsetClampEXT glPolygonOffsetClampEXT
++#define GL_QueryCounterEXT glQueryCounterEXT
++#define GL_ReadBuffer glReadBuffer
++#define GL_RenderbufferStorageMultisample glRenderbufferStorageMultisample
++#define GL_ResumeTransformFeedback glResumeTransformFeedback
++#define GL_SampleCoverage glSampleCoverage
++#define GL_SamplerParameterf glSamplerParameterf
++#define GL_SamplerParameteri glSamplerParameteri
++#define GL_Scissor glScissor
++#define GL_ShaderSource glShaderSource
++#define GL_StencilFunc glStencilFunc
++#define GL_StencilFuncSeparate glStencilFuncSeparate
++#define GL_StencilMask glStencilMask
++#define GL_StencilMaskSeparate glStencilMaskSeparate
++#define GL_StencilOp glStencilOp
++#define GL_StencilOpSeparate glStencilOpSeparate
++#define GL_TexImage2D glTexImage2D
++#define GL_TexParameterf glTexParameterf
++#define GL_TexParameteri glTexParameteri
++#define GL_TexStorage2D glTexStorage2D
++#define GL_TexStorage3D glTexStorage3D
++#define GL_TransformFeedbackVaryings glTransformFeedbackVaryings
++#define GL_Uniform1f glUniform1f
++#define GL_Uniform1fv glUniform1fv
++#define GL_Uniform1i glUniform1i
++#define GL_Uniform1iv glUniform1iv
++#define GL_Uniform1ui glUniform1ui
++#define GL_Uniform1uiv glUniform1uiv
++#define GL_Uniform2f glUniform2f
++#define GL_Uniform2fv glUniform2fv
++#define GL_Uniform2i glUniform2i
++#define GL_Uniform2iv glUniform2iv
++#define GL_Uniform2ui glUniform2ui
++#define GL_Uniform2uiv glUniform2uiv
++#define GL_Uniform3f glUniform3f
++#define GL_Uniform3fv glUniform3fv
++#define GL_Uniform3i glUniform3i
++#define GL_Uniform3iv glUniform3iv
++#define GL_Uniform3ui glUniform3ui
++#define GL_Uniform3uiv glUniform3uiv
++#define GL_Uniform4f glUniform4f
++#define GL_Uniform4fv glUniform4fv
++#define GL_Uniform4i glUniform4i
++#define GL_Uniform4iv glUniform4iv
++#define GL_Uniform4ui glUniform4ui
++#define GL_Uniform4uiv glUniform4uiv
++#define GL_UniformBlockBinding glUniformBlockBinding
++#define GL_UniformMatrix2fv glUniformMatrix2fv
++#define GL_UniformMatrix2x3fv glUniformMatrix2x3fv
++#define GL_UniformMatrix2x4fv glUniformMatrix2x4fv
++#define GL_UniformMatrix3fv glUniformMatrix3fv
++#define GL_UniformMatrix3x2fv glUniformMatrix3x2fv
++#define GL_UniformMatrix3x4fv glUniformMatrix3x4fv
++#define GL_UniformMatrix4fv glUniformMatrix4fv
++#define GL_UniformMatrix4x2fv glUniformMatrix4x2fv
++#define GL_UniformMatrix4x3fv glUniformMatrix4x3fv
++#define GL_UseProgram glUseProgram
++#define GL_ValidateProgram glValidateProgram
++#define GL_VertexAttrib1f glVertexAttrib1f
++#define GL_VertexAttrib1fv glVertexAttrib1fv
++#define GL_VertexAttrib2f glVertexAttrib2f
++#define GL_VertexAttrib2fv glVertexAttrib2fv
++#define GL_VertexAttrib3f glVertexAttrib3f
++#define GL_VertexAttrib3fv glVertexAttrib3fv
++#define GL_VertexAttrib4f glVertexAttrib4f
++#define GL_VertexAttrib4fv glVertexAttrib4fv
++#define GL_VertexAttribDivisor glVertexAttribDivisor
++#define GL_VertexAttribDivisorANGLE glVertexAttribDivisorANGLE
++#define GL_VertexAttribI4i glVertexAttribI4i
++#define GL_VertexAttribI4iv glVertexAttribI4iv
++#define GL_VertexAttribI4ui glVertexAttribI4ui
++#define GL_VertexAttribI4uiv glVertexAttribI4uiv
++#define GL_VertexAttribIPointer glVertexAttribIPointer
++#define GL_VertexAttribPointer glVertexAttribPointer
++#define GL_Viewport glViewport
++#define GL_WaitSync glWaitSync
++
++// Entry points with no WebGL counterpart, or whose behavior must change on
++// WebGL; defined in GraphicsContextGLEmscripten.cpp.
++const GLubyte* GL_GetString(GLenum name);
++void GL_RequestExtensionANGLE(const GLchar* name);
++void GL_Enable(GLenum capability);
++void GL_Disable(GLenum capability);
++GLboolean GL_IsEnabled(GLenum capability);
++void GL_RenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, GLsizei height);
++void GL_RenderbufferStorageMultisampleANGLE(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height);
++void* GL_MapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access);
++GLboolean GL_UnmapBuffer(GLenum target);
++void GL_GetQueryObjectivRobustANGLE(GLuint id, GLenum pname, GLsizei bufSize, GLsizei* length, GLint* params);
++void GL_GetQueryObjectuivRobustANGLE(GLuint id, GLenum pname, GLsizei bufSize, GLsizei* length, GLuint* params);
++void GL_GetQueryObjectui64vRobustANGLE(GLuint id, GLenum pname, GLsizei bufSize, GLsizei* length, GLuint64* params);
++void GL_GetQueryivRobustANGLE(GLenum target, GLenum pname, GLsizei bufSize, GLsizei* length, GLint* params);
++
++// Robust client memory: WebGL bounds-checks every client buffer itself, so the
++// sizes are only needed to report how much was written.
++inline void inceptionSetLength(GLsizei* length, GLsizei value)
++{
++    if (length)
++        *length = value;
++}
++
++inline void GL_GetIntegervRobustANGLE(GLenum pname, GLsizei bufSize, GLsizei* length, GLint* data) { glGetIntegerv(pname, data); inceptionSetLength(length, bufSize); }
++inline void GL_GetIntegeri_vRobustANGLE(GLenum target, GLuint index, GLsizei bufSize, GLsizei* length, GLint* data) { glGetIntegeri_v(target, index, data); inceptionSetLength(length, bufSize); }
++inline void GL_GetInteger64vRobustANGLE(GLenum pname, GLsizei bufSize, GLsizei* length, GLint64* data) { glGetInteger64v(pname, data); inceptionSetLength(length, bufSize); }
++inline void GL_GetInteger64i_vRobustANGLE(GLenum target, GLuint index, GLsizei bufSize, GLsizei* length, GLint64* data) { glGetInteger64i_v(target, index, data); inceptionSetLength(length, bufSize); }
++inline void GL_GetBooleanvRobustANGLE(GLenum pname, GLsizei bufSize, GLsizei* length, GLboolean* data) { glGetBooleanv(pname, data); inceptionSetLength(length, bufSize); }
++inline void GL_GetFloatvRobustANGLE(GLenum pname, GLsizei bufSize, GLsizei* length, GLfloat* data) { glGetFloatv(pname, data); inceptionSetLength(length, bufSize); }
++inline void GL_GetBufferParameterivRobustANGLE(GLenum target, GLenum pname, GLsizei, GLsizei* length, GLint* params) { glGetBufferParameteriv(target, pname, params); inceptionSetLength(length, 1); }
++inline void GL_GetFramebufferAttachmentParameterivRobustANGLE(GLenum target, GLenum attachment, GLenum pname, GLsizei, GLsizei* length, GLint* params) { glGetFramebufferAttachmentParameteriv(target, attachment, pname, params); inceptionSetLength(length, 1); }
++inline void GL_GetProgramivRobustANGLE(GLuint program, GLenum pname, GLsizei, GLsizei* length, GLint* params) { glGetProgramiv(program, pname, params); inceptionSetLength(length, 1); }
++inline void GL_GetRenderbufferParameterivRobustANGLE(GLenum target, GLenum pname, GLsizei, GLsizei* length, GLint* params) { glGetRenderbufferParameteriv(target, pname, params); inceptionSetLength(length, 1); }
++inline void GL_GetShaderivRobustANGLE(GLuint shader, GLenum pname, GLsizei, GLsizei* length, GLint* params)
++{
++    // Shaders reach the host as written; there is no translated source.
++    if (pname == GL_TRANSLATED_SHADER_SOURCE_LENGTH_ANGLE)
++        *params = 0;
++    else
++        glGetShaderiv(shader, pname, params);
++    inceptionSetLength(length, 1);
++}
++inline void GL_GetTexParameterfvRobustANGLE(GLenum target, GLenum pname, GLsizei, GLsizei* length, GLfloat* params) { glGetTexParameterfv(target, pname, params); inceptionSetLength(length, 1); }
++inline void GL_GetTexParameterivRobustANGLE(GLenum target, GLenum pname, GLsizei, GLsizei* length, GLint* params) { glGetTexParameteriv(target, pname, params); inceptionSetLength(length, 1); }
++inline void GL_GetSamplerParameterfvRobustANGLE(GLuint sampler, GLenum pname, GLsizei, GLsizei* length, GLfloat* params) { glGetSamplerParameterfv(sampler, pname, params); inceptionSetLength(length, 1); }
++inline void GL_GetSamplerParameterivRobustANGLE(GLuint sampler, GLenum pname, GLsizei, GLsizei* length, GLint* params) { glGetSamplerParameteriv(sampler, pname, params); inceptionSetLength(length, 1); }
++inline void GL_GetUniformfvRobustANGLE(GLuint program, GLint location, GLsizei bufSize, GLsizei* length, GLfloat* params) { glGetUniformfv(program, location, params); inceptionSetLength(length, bufSize); }
++inline void GL_GetUniformivRobustANGLE(GLuint program, GLint location, GLsizei bufSize, GLsizei* length, GLint* params) { glGetUniformiv(program, location, params); inceptionSetLength(length, bufSize); }
++inline void GL_GetUniformuivRobustANGLE(GLuint program, GLint location, GLsizei bufSize, GLsizei* length, GLuint* params) { glGetUniformuiv(program, location, params); inceptionSetLength(length, bufSize); }
++inline void GL_GetVertexAttribPointervRobustANGLE(GLuint index, GLenum pname, GLsizei, GLsizei* length, void** pointer) { glGetVertexAttribPointerv(index, pname, pointer); inceptionSetLength(length, 1); }
++inline void GL_GetActiveUniformBlockivRobustANGLE(GLuint program, GLuint uniformBlockIndex, GLenum pname, GLsizei bufSize, GLsizei* length, GLint* params) { glGetActiveUniformBlockiv(program, uniformBlockIndex, pname, params); inceptionSetLength(length, bufSize); }
++inline void GL_GetInternalformativRobustANGLE(GLenum target, GLenum internalformat, GLenum pname, GLsizei bufSize, GLsizei* length, GLint* params) { glGetInternalformativ(target, internalformat, pname, bufSize, params); inceptionSetLength(length, bufSize); }
++
++inline void GL_ReadnPixelsRobustANGLE(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei bufSize, GLsizei* length, GLsizei* columns, GLsizei* rows, void* data)
++{
++    glReadPixels(x, y, width, height, format, type, data);
++    inceptionSetLength(length, bufSize);
++    inceptionSetLength(columns, width);
++    inceptionSetLength(rows, height);
++}
++
++inline void GL_TexImage2DRobustANGLE(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, GLsizei, const void* pixels) { glTexImage2D(target, level, internalformat, width, height, border, format, type, pixels); }
++inline void GL_TexSubImage2DRobustANGLE(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei, const void* pixels) { glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels); }
++inline void GL_TexImage3DRobustANGLE(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, GLsizei, const void* pixels) { glTexImage3D(target, level, internalformat, width, height, depth, border, format, type, pixels); }
++inline void GL_TexSubImage3DRobustANGLE(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, GLsizei, const void* pixels) { glTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels); }
++inline void GL_CompressedTexImage2DRobustANGLE(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, GLsizei, const void* data) { glCompressedTexImage2D(target, level, internalformat, width, height, border, imageSize, data); }
++inline void GL_CompressedTexSubImage2DRobustANGLE(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, GLsizei, const void* data) { glCompressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, imageSize, data); }
++inline void GL_CompressedTexImage3DRobustANGLE(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLsizei imageSize, GLsizei, const void* data) { glCompressedTexImage3D(target, level, internalformat, width, height, depth, border, imageSize, data); }
++inline void GL_CompressedTexSubImage3DRobustANGLE(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLsizei imageSize, GLsizei, const void* data) { glCompressedTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, imageSize, data); }
++
++// Multi-draw and base-instance drawing are never offered to pages (their
++// extensions stay unadvertised); these loops only keep the shared code linking
++// and correct if that changes.
++inline void GL_MultiDrawArraysANGLE(GLenum mode, const GLint* firsts, const GLsizei* counts, GLsizei drawcount)
++{
++    for (GLsizei i = 0; i < drawcount; ++i)
++        glDrawArrays(mode, firsts[i], counts[i]);
++}
++inline void GL_MultiDrawArraysInstancedANGLE(GLenum mode, const GLint* firsts, const GLsizei* counts, const GLsizei* instanceCounts, GLsizei drawcount)
++{
++    for (GLsizei i = 0; i < drawcount; ++i)
++        glDrawArraysInstanced(mode, firsts[i], counts[i], instanceCounts[i]);
++}
++inline void GL_MultiDrawElementsANGLE(GLenum mode, const GLsizei* counts, GLenum type, const GLvoid* const* indices, GLsizei drawcount)
++{
++    for (GLsizei i = 0; i < drawcount; ++i)
++        glDrawElements(mode, counts[i], type, indices[i]);
++}
++inline void GL_MultiDrawElementsInstancedANGLE(GLenum mode, const GLsizei* counts, GLenum type, const GLvoid* const* indices, const GLsizei* instanceCounts, GLsizei drawcount)
++{
++    for (GLsizei i = 0; i < drawcount; ++i)
++        glDrawElementsInstanced(mode, counts[i], type, indices[i], instanceCounts[i]);
++}
++inline void GL_DrawArraysInstancedBaseInstanceANGLE(GLenum mode, GLint first, GLsizei count, GLsizei instanceCount, GLuint) { glDrawArraysInstanced(mode, first, count, instanceCount); }
++inline void GL_DrawElementsInstancedBaseVertexBaseInstanceANGLE(GLenum mode, GLsizei count, GLenum type, const GLvoid* indices, GLsizei instanceCount, GLint, GLuint) { glDrawElementsInstanced(mode, count, type, indices, instanceCount); }
++inline void GL_MultiDrawArraysInstancedBaseInstanceANGLE(GLenum mode, const GLint* firsts, const GLsizei* counts, const GLsizei* instanceCounts, const GLuint*, GLsizei drawcount) { GL_MultiDrawArraysInstancedANGLE(mode, firsts, counts, instanceCounts, drawcount); }
++inline void GL_MultiDrawElementsInstancedBaseVertexBaseInstanceANGLE(GLenum mode, const GLsizei* counts, GLenum type, const GLvoid* const* indices, const GLsizei* instanceCounts, const GLint*, const GLuint*, GLsizei drawcount) { GL_MultiDrawElementsInstancedANGLE(mode, counts, type, indices, instanceCounts, drawcount); }
++inline void GL_PolygonModeANGLE(GLenum, GLenum) { }
++inline void GL_ProvokingVertexANGLE(GLenum) { }
++
++inline void GL_GetTranslatedShaderSourceANGLE(GLuint, GLsizei bufSize, GLsizei* length, GLchar* source)
++{
++    if (bufSize > 0 && source)
++        source[0] = 0;
++    inceptionSetLength(length, 0);
++}
++
++// WebGL has no debug output; messages a driver would send through it surface
++// as WebGL errors instead.
++inline void GL_DebugMessageControlKHR(GLenum, GLenum, GLenum, GLsizei, const GLuint*, GLboolean) { }
++template<typename Callback> inline void GL_DebugMessageCallbackKHR(Callback, const void*) { }
++
++// EGL: the host owns every context; there is no display to bind or release.
++inline EGLDisplay EGL_GetCurrentDisplay() { return EGL_NO_DISPLAY; }
++inline EGLBoolean EGL_MakeCurrent(EGLDisplay, EGLSurface, EGLSurface, EGLContext) { return EGL_TRUE; }
++inline EGLBoolean EGL_Terminate(EGLDisplay) { return EGL_TRUE; }
++inline EGLBoolean EGL_ReleaseThread() { return EGL_TRUE; }
++inline EGLBoolean EGL_DestroyImageKHR(EGLDisplay, EGLImageKHR) { return EGL_TRUE; }
++inline EGLBoolean EGL_DestroySync(EGLDisplay, EGLSync) { return EGL_TRUE; }
