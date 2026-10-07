@@ -303,6 +303,11 @@ export class MediaHost {
         width: video.videoWidth,
         height: video.videoHeight,
         error: video.error ? video.error.code : 0,
+        // Players check that frames are really being presented.
+        ...(() => {
+          const quality = video.getVideoPlaybackQuality?.();
+          return quality ? { totalFrames: quality.totalVideoFrames, droppedFrames: quality.droppedVideoFrames } : {};
+        })(),
         buffered,
       });
     });
