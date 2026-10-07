@@ -311,6 +311,11 @@ void HostMediaPlayer::update(JSON::Object& state)
     double rate = state.getDouble("rate"_s).value_or(m_rate);
     auto readyState = readyStateFrom(state.getInteger("readyState"_s).value_or(0));
     auto networkState = networkStateFrom(state.getInteger("networkState"_s).value_or(0), state.getInteger("error"_s).value_or(0));
+    // The page, not the host element, fetches Media Source data, and a stream
+    // the host element keeps open would read as stalled; once data can play,
+    // the engine's element is idle, as browsers report MSE elements.
+    if (networkState == MediaPlayer::NetworkState::Loading && (m_isMediaSource ? readyState >= MediaPlayer::ReadyState::HaveMetadata : readyState == MediaPlayer::ReadyState::HaveEnoughData))
+        networkState = MediaPlayer::NetworkState::Idle;
 
     if (sizeChanged)
         player->sizeChanged();
