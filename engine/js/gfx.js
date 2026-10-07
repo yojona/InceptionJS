@@ -4,18 +4,19 @@ addToLibrary({
   $inceptionGfx: { canvas: null, frameRequested: false, contextState: 0 },
 
   // How many WebGL contexts pages may hold at once. Browsers lose their oldest
-  // context past a per-page cap, and the engine's own is created first, so the
-  // pages get the cap minus the engine's context and one spare for the embedding
-  // page's own WebGL. The cap is not exposed; it follows the renderer: sixteen
-  // on a GPU in Chromium and WebKit, four on a software rasterizer, far more in
-  // Firefox. `requested` (the embedder's webglContexts option) wins when set.
+  // context past a cap, and the engine's own is created first, so pages get
+  // the cap minus that one. Every context here lives in a worker, where
+  // Chromium's cap is four whatever the GPU; elsewhere it is sixteen on a GPU,
+  // four on a software rasterizer. `requested` (the embedder's webglContexts
+  // option) wins when set.
   $inceptionPageContextCap: (gl, requested) => {
     if (requested > 0) return requested;
+    const chromium = navigator.userAgentData?.brands?.some((b) => b.brand === 'Chromium') || /Chrom(e|ium)\//.test(navigator.userAgent);
+    if (chromium) return 3;
     const info = gl.getExtension('WEBGL_debug_renderer_info');
     const renderer = String((info && gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) || '');
     if (/swiftshader|llvmpipe|softpipe|software|basic render/i.test(renderer)) return 3;
-    if (/firefox/i.test(navigator.userAgent)) return 30;
-    return 14;
+    return 15;
   },
 
   // Engine diagnostics reach the host as console events, since worker consoles

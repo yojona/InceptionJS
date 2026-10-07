@@ -111,7 +111,7 @@ const screenPixel = (page, x, y) => page.evaluate(async ([x, y]) => {
 }, [x, y]);
 
 test('the page context budget follows the renderer, or the embedder', async ({ page }) => {
-  // Headless Chrome rasterizes WebGL in software, where the browser's cap is four.
+  // Chromium caps WebGL contexts in workers at four, whatever the GPU.
   expect(await view(page).evaluate((el) => el.ready.then((r) => r.webglContexts))).toBe(3);
   await page.goto(`${PAGE}?url=about:blank&webgl-contexts=2`);
   expect(await view(page).evaluate((el) => el.ready.then((r) => r.webglContexts))).toBe(2);
