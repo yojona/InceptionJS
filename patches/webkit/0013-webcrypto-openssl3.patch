@@ -1,8 +1,9 @@
 WebCrypto on OpenSSL 3.
 
 WebCore's OpenSSL crypto code is written against BoringSSL. With OpenSSL 3,
-EVP_PKEY_get0_EC_KEY returns a const key, HKDF has no one-shot function (it
-goes through an EVP_PKEY derive context), and the X.509 header is lowercase.
+EVP_PKEY_get0_EC_KEY and EVP_PKEY_get0_RSA return const keys, HKDF has no
+one-shot function (it goes through an EVP_PKEY derive context), and the X.509
+header is lowercase.
 
 diff --git a/Source/WebCore/crypto/openssl/CryptoAlgorithmECDSAOpenSSL.cpp b/Source/WebCore/crypto/openssl/CryptoAlgorithmECDSAOpenSSL.cpp
 index e3f9841..a59e7a1 100644
@@ -98,7 +99,7 @@ index b2f7b6b..e305878 100644
          return false;
  
 diff --git a/Source/WebCore/crypto/openssl/CryptoKeyRSAOpenSSL.cpp b/Source/WebCore/crypto/openssl/CryptoKeyRSAOpenSSL.cpp
-index 2993e3b..d47d215 100644
+index 2993e3b..de6062e 100644
 --- a/Source/WebCore/crypto/openssl/CryptoKeyRSAOpenSSL.cpp
 +++ b/Source/WebCore/crypto/openssl/CryptoKeyRSAOpenSSL.cpp
 @@ -32,7 +32,7 @@
@@ -110,3 +111,30 @@ index 2993e3b..d47d215 100644
  #include <openssl/evp.h>
  
  namespace WebCore {
+@@ -164,7 +164,7 @@ bool CryptoKeyRSA::isRestrictedToHash(CryptoAlgorithmIdentifier& identifier) con
+ 
+ size_t CryptoKeyRSA::keySizeInBits() const
+ {
+-    RSA* rsa = EVP_PKEY_get0_RSA(m_platformKey.get());
++    RSA* rsa = const_cast<RSA*>(EVP_PKEY_get0_RSA(m_platformKey.get()));
+     if (!rsa)
+         return 0;
+ 
+@@ -297,7 +297,7 @@ ExceptionOr<Vector<uint8_t>> CryptoKeyRSA::exportPkcs8() const
+ 
+ auto CryptoKeyRSA::algorithm() const -> KeyAlgorithm
+ {
+-    RSA* rsa = EVP_PKEY_get0_RSA(platformKey());
++    RSA* rsa = const_cast<RSA*>(EVP_PKEY_get0_RSA(platformKey()));
+ 
+     auto modulusLength = getRSAModulusLength(rsa);
+     Vector<uint8_t> publicExponent;
+@@ -326,7 +326,7 @@ auto CryptoKeyRSA::algorithm() const -> KeyAlgorithm
+ 
+ std::unique_ptr<CryptoKeyRSAComponents> CryptoKeyRSA::exportData() const
+ {
+-    RSA* rsa = EVP_PKEY_get0_RSA(platformKey());
++    RSA* rsa = const_cast<RSA*>(EVP_PKEY_get0_RSA(platformKey()));
+     if (!rsa)
+         return nullptr;
+ 
