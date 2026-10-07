@@ -1,0 +1,14 @@
+Build dark mode CSS, so prefers-color-scheme and native controls follow the
+embedder's color scheme preference.
+
+--- a/Source/cmake/OptionsEmscripten.cmake
++++ b/Source/cmake/OptionsEmscripten.cmake
+@@ -56,6 +56,8 @@
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_ENCRYPTED_MEDIA PRIVATE OFF)
+ # Mouse-drag text selection lives behind drag support in EventHandler.
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_DRAG_SUPPORT PRIVATE ON)
++# prefers-color-scheme and dark native controls follow the embedder's preference.
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_DARK_MODE_CSS PRIVATE ON)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GAMEPAD PRIVATE OFF)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GEOLOCATION PRIVATE OFF)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_NOTIFICATIONS PRIVATE OFF)

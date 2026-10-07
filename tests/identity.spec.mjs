@@ -33,8 +33,8 @@ test('preferences follow the host unless set', async ({ page }) => {
   await expect.poll(async () => { seen = await read(page); return [seen.languages[0], seen.timeZone]; }).toEqual(['en-GB', 'Europe/Madrid']);
 });
 
-// prefers-color-scheme needs WebKit's dark mode CSS, which the port does not
-// build yet.
-test.fixme('the color scheme follows the host', async ({ page }) => {
+test('the color scheme follows the host unless set', async ({ page }) => {
   expect((await read(page)).dark).toBe(true);
+  await view(page).evaluate((el) => { el.preferences = { colorScheme: 'light' }; });
+  await expect.poll(async () => (await read(page)).dark).toBe(false);
 });
