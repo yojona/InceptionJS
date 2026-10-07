@@ -7,6 +7,7 @@
 // element from it.
 
 import { encodeInitData } from './eme.js';
+import { mediaLog } from './media-log.js';
 
 const STATE_EVENTS = ['loadedmetadata', 'loadeddata', 'canplay', 'canplaythrough', 'playing', 'pause', 'waiting',
   'seeking', 'seeked', 'ended', 'durationchange', 'ratechange', 'volumechange', 'resize', 'error', 'stalled', 'emptied'];
@@ -87,6 +88,7 @@ export class MediaHost {
   }
 
   handleEvent(name, data) {
+    if (name !== 'media.layout') mediaLog(name, data);
     const player = this.#players.get(data.id);
     switch (name) {
     case 'media.create': return this.#create(data);
@@ -139,6 +141,7 @@ export class MediaHost {
 
   append(id, sb, seq, bytes) {
     const player = this.#players.get(id);
+    mediaLog('append', { id, sb, seq, bytes: bytes.byteLength, known: !!player });
     if (!player) return;
     this.#enqueue(player, sb, { seq, run: (native) => native.appendBuffer(bytes) });
   }
@@ -154,6 +157,8 @@ export class MediaHost {
     const player = { id, video, source: null, sourceOpen: null, buffers: new Map(), muted: false, forcedMute: false, wantsPlay: false, pendingDuration: undefined, stateQueued: false };
     for (const type of STATE_EVENTS) video.addEventListener(type, () => this.#queueState(player, type));
     video.addEventListener('error', () => console.warn(`[media] video ${id} error ${video.error?.code}: ${video.error?.message}`));
+    for (const type of ['loadstart', 'loadedmetadata', 'canplay', 'playing', 'pause', 'waiting', 'stalled', 'emptied', 'ended', 'error', 'encrypted', 'waitingforkey'])
+      video.addEventListener(type, () => mediaLog(`video ${id} ${type}`, { t: video.currentTime, readyState: video.readyState, networkState: video.networkState, paused: video.paused, muted: video.muted, keys: !!video.mediaKeys, error: video.error?.code ?? null }));
     video.addEventListener('timeupdate', () => this.#queueState(player, 'timeupdate'));
     // Encrypted media: the page's element fires "encrypted" with the same init
     // data, and reports waiting for a key while the host is.
@@ -184,6 +189,7 @@ export class MediaHost {
   #attachSource(player) {
     const source = new MediaSource();
     player.source = source;
+    for (const type of ['sourceopen', 'sourceended', 'sourceclose']) source.addEventListener(type, () => mediaLog(`source of video ${player.id} ${type}`));
     player.sourceOpen = new Promise((resolve) => source.addEventListener('sourceopen', resolve, { once: true }));
     player.objectUrl = URL.createObjectURL(source);
     player.video.src = player.objectUrl;
@@ -200,6 +206,7 @@ export class MediaHost {
     buffer.ready = (player.sourceOpen ?? Promise.reject(new Error('no MediaSource'))).then(() => {
       buffer.native = player.source.addSourceBuffer(type);
       buffer.native.addEventListener('updateend', () => this.#updateEnded(player, buffer));
+      mediaLog(`video ${player.id} addSourceBuffer ${sb}`, { type });
       buffer.native.addEventListener('error', () => console.warn(`[media] SourceBuffer ${sb} (${type}) reported an error`));
     }).catch((error) => {
       console.warn(`[media] addSourceBuffer(${type}):`, error);
@@ -266,6 +273,7 @@ export class MediaHost {
       const buffered = buffer.native?.buffered;
       for (let i = 0; buffered && i < buffered.length; i++) ranges.push([buffered.start(i), buffered.end(i)]);
     } catch {}
+    mediaLog(`video ${player.id} buffer ${buffer.id} done ${seq}`, { buffered: ranges, error: error ?? null });
     this.#send('media.bufferDone', { id: player.id, sb: buffer.id, seq, buffered: ranges, error });
   }
 
@@ -291,7 +299,9 @@ export class MediaHost {
     const video = player.video;
     try {
       await video.play();
+      mediaLog(`video ${player.id} play() resolved`, { muted: video.muted });
     } catch (error) {
+      mediaLog(`video ${player.id} play() rejected`, { error: `${error?.name}: ${error?.message}`, activated: navigator.userActivation?.hasBeenActive ?? null });
       if (error?.name !== 'NotAllowedError' || this.#soundAllowed || video.muted || !player.wantsPlay) return;
       player.forcedMute = true;
       video.muted = true;
@@ -320,7 +330,9 @@ export class MediaHost {
         await Promise.all(this.#releasing);
         this.#releasing.clear();
       }
+      mediaLog(`video ${player.id} setMediaKeys`, { keys, same: player.video.mediaKeys === mediaKeys });
       await player.video.setMediaKeys(mediaKeys);
+      mediaLog(`video ${player.id} setMediaKeys done`);
     } catch (error) {
       console.warn(`[media] setMediaKeys on video ${player.id}:`, error);
     }

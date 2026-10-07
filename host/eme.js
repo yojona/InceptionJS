@@ -5,6 +5,8 @@
 // to the page, which sends them to its license server itself; this side only
 // relays opaque bytes, size-limited.
 
+import { mediaLog } from './media-log.js';
+
 const MAX_MESSAGE = 1024 * 1024;
 
 const toBase64 = (buffer) => {
@@ -58,9 +60,14 @@ export class EncryptedMedia {
     };
     const handler = handlers[name];
     if (!handler) return false;
+    mediaLog(name, data);
     const reply = handler();
     if (reply instanceof Promise && data.req !== undefined) {
-      reply.then((result) => this.#send('eme.reply', { req: data.req, ok: true, ...result }), (error) => {
+      reply.then((result) => {
+        mediaLog(`${name} ok`, result);
+        this.#send('eme.reply', { req: data.req, ok: true, ...result });
+      }, (error) => {
+        mediaLog(`${name} failed`, { error: `${error?.name}: ${error?.message}` });
         // A refused key system is ordinary (pages probe several, FairPlay first
         // when the UA says Safari): say which, and what was asked.
         if (name === 'eme.access') console.debug(`[eme] host refused ${data.keySystem} ${describeConfiguration(data.configuration)} (${error?.name ?? error})`);
@@ -116,8 +123,10 @@ export class EncryptedMedia {
         entry.first = null;
         return resolve(message);
       }
+      mediaLog(`eme session ${session} message`, message);
       this.#send('eme.message', { session, ...message });
     });
+    native.addEventListener('keystatuseschange', () => mediaLog(`eme session ${session} keystatuses`, this.#statuses(native)));
     native.addEventListener('keystatuseschange', () => this.#send('eme.keyStatuses', { session, statuses: this.#statuses(native) }));
     return native;
   }

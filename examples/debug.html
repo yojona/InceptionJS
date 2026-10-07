@@ -22,8 +22,11 @@
 </aside>
 <script type="module">
   import { Inception } from '../host/inception-view.js';
+  import { setMediaLog } from '../host/media-log.js';
 
   const params = new URLSearchParams(location.search);
+  // ?medialog=1: trace every media and EME operation in the console.
+  setMediaLog(params.get('medialog') === '1');
   Inception.configure({
     engineUrl: new URL('../engine/inception-engine.js', import.meta.url).href,
     wispUrl: params.get('wisp') ?? `ws://${location.hostname}:5001/`,
