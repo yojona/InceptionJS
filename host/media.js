@@ -78,20 +78,26 @@ export class MediaHost {
       player.buffers.delete(data.sb);
       if (buffer?.native && player.source.readyState === 'open') player.source.removeSourceBuffer(buffer.native);
     });
-    case 'media.remove': return this.#bufferOp(player, data, (native) => native.remove(data.start, data.end === null ? Infinity : data.end));
-    case 'media.abort': return this.#withBuffer(player, data.sb, (buffer) => { if (buffer.native.updating) buffer.native.abort(); });
-    case 'media.setTimestampOffset': return this.#withBuffer(player, data.sb, (buffer) => { buffer.native.timestampOffset = data.offset; });
-    case 'media.setAppendWindow': return this.#withBuffer(player, data.sb, (buffer) => {
-      buffer.native.appendWindowStart = 0;
-      buffer.native.appendWindowEnd = data.end === null ? Infinity : data.end;
-      buffer.native.appendWindowStart = data.start;
-    });
-    case 'media.setMode': return this.#withBuffer(player, data.sb, (buffer) => { buffer.native.mode = data.mode; });
+    // Every SourceBuffer operation runs in order through one queue per
+    // buffer, as the page issued it; appends and removals report back by seq.
+    case 'media.remove': return this.#enqueue(player, data.sb, { seq: data.seq, run: (native) => native.remove(data.start, data.end === null ? Infinity : data.end) });
+    case 'media.abort': return this.#abort(player, data.sb);
+    case 'media.setTimestampOffset': return this.#enqueue(player, data.sb, { run: (native) => { native.timestampOffset = data.offset; } });
+    case 'media.setAppendWindow': return this.#enqueue(player, data.sb, { run: (native) => {
+      native.appendWindowStart = 0;
+      native.appendWindowEnd = data.end === null ? Infinity : data.end;
+      native.appendWindowStart = data.start;
+    } });
+    case 'media.setMode': return this.#enqueue(player, data.sb, { run: (native) => { native.mode = data.mode; } });
     case 'media.duration':
       player.pendingDuration = data.duration;
       return this.#withSource(player, () => this.#applyPendingDuration(player));
     case 'media.endOfStream': return this.#withSource(player, () => this.#whenIdle(player, () => {
-      if (player.source.readyState === 'open') player.source.endOfStream(data.error || undefined);
+      try {
+        if (player.source.readyState === 'open') player.source.endOfStream(data.error || undefined);
+      } catch (error) {
+        console.warn('[media] endOfStream:', error);
+      }
     }));
     case 'media.play': player.wantsPlay = true; return this.#play(player);
     case 'media.pause': player.wantsPlay = false; player.video.pause(); return;
@@ -106,10 +112,10 @@ export class MediaHost {
     }
   }
 
-  append(id, sb, bytes) {
+  append(id, sb, seq, bytes) {
     const player = this.#players.get(id);
     if (!player) return;
-    this.#bufferOp(player, { sb }, (native) => native.appendBuffer(bytes));
+    this.#enqueue(player, sb, { seq, run: (native) => native.appendBuffer(bytes) });
   }
 
   // --- players ----------------------------------------------------------------
@@ -122,6 +128,7 @@ export class MediaHost {
     this.#layer.append(video);
     const player = { id, video, source: null, sourceOpen: null, buffers: new Map(), muted: false, forcedMute: false, wantsPlay: false, pendingDuration: undefined, stateQueued: false };
     for (const type of STATE_EVENTS) video.addEventListener(type, () => this.#queueState(player, type));
+    video.addEventListener('error', () => console.warn(`[media] video ${id} error ${video.error?.code}: ${video.error?.message}`));
     video.addEventListener('timeupdate', () => this.#queueState(player, 'timeupdate'));
     this.#players.set(id, player);
   }
@@ -151,64 +158,78 @@ export class MediaHost {
   }
 
   #addSourceBuffer(player, { sb, type }) {
-    const buffer = { id: sb, native: null, queue: [], running: false, failed: null, ready: null };
+    const buffer = { id: sb, native: null, queue: [], running: null, failed: null, ready: null };
     player.buffers.set(sb, buffer);
     buffer.ready = (player.sourceOpen ?? Promise.reject(new Error('no MediaSource'))).then(() => {
       buffer.native = player.source.addSourceBuffer(type);
-      buffer.native.addEventListener('updateend', () => this.#runQueue(player, buffer));
+      buffer.native.addEventListener('updateend', () => this.#updateEnded(player, buffer));
+      buffer.native.addEventListener('error', () => console.warn(`[media] SourceBuffer ${sb} (${type}) reported an error`));
     }).catch((error) => {
+      console.warn(`[media] addSourceBuffer(${type}):`, error);
       buffer.failed = String(error);
     });
   }
 
-  #withBuffer(player, sb, fn) {
-    const buffer = player.buffers.get(sb);
-    if (!buffer) return;
-    buffer.ready.then(() => buffer.native && fn(buffer));
-  }
-
-  // Appends and removals are serialized per buffer: each waits for the
-  // previous one's updateend, and its completion is reported to the engine.
-  #bufferOp(player, { sb }, op) {
+  // Operations with a seq (appends, removals) complete on updateend and are
+  // reported; the others apply at once, between them.
+  #enqueue(player, sb, op) {
     const buffer = player.buffers.get(sb);
     if (!buffer) return;
     buffer.queue.push(op);
-    buffer.ready.then(() => {
+    buffer.ready.then(() => this.#pump(player, buffer));
+  }
+
+  #pump(player, buffer) {
+    while (buffer.queue.length && !buffer.running) {
       if (buffer.failed) {
-        buffer.queue.length = 0;
-        return this.#finishOp(player, buffer, buffer.failed);
+        const op = buffer.queue.shift();
+        if (op.seq !== undefined) this.#report(player, buffer, op.seq, buffer.failed);
+        continue;
       }
-      if (!buffer.running && !buffer.native.updating) this.#runQueue(player, buffer);
+      if (buffer.native.updating) return;
+      const op = buffer.queue.shift();
+      try {
+        op.run(buffer.native);
+      } catch (error) {
+        console.warn(`[media] SourceBuffer ${buffer.id}:`, error);
+        if (op.seq !== undefined) this.#report(player, buffer, op.seq, `${error.name}: ${error.message}`);
+        continue;
+      }
+      if (op.seq !== undefined) buffer.running = op;
+    }
+    this.#applyPendingDuration(player);
+  }
+
+  #updateEnded(player, buffer) {
+    const op = buffer.running;
+    buffer.running = null;
+    if (op) this.#report(player, buffer, op.seq, null);
+    this.#pump(player, buffer);
+  }
+
+  // The engine abandons its pending appends; nothing queued is reported.
+  #abort(player, sb) {
+    const buffer = player.buffers.get(sb);
+    if (!buffer) return;
+    buffer.queue = buffer.queue.filter((op) => op.seq === undefined);
+    buffer.ready.then(() => {
+      buffer.running = null;
+      try {
+        if (buffer.native?.updating) buffer.native.abort();
+      } catch (error) {
+        console.warn(`[media] SourceBuffer ${buffer.id} abort:`, error);
+      }
+      this.#pump(player, buffer);
     });
   }
 
-  #runQueue(player, buffer) {
-    if (buffer.running) {
-      buffer.running = false;
-      this.#finishOp(player, buffer, null);
-    }
-    if (!buffer.queue.length || buffer.native.updating) {
-      this.#applyPendingDuration(player);
-      return;
-    }
-    const op = buffer.queue.shift();
-    buffer.running = true;
-    try {
-      op(buffer.native);
-    } catch (error) {
-      buffer.running = false;
-      this.#finishOp(player, buffer, String(error));
-      this.#runQueue(player, buffer);
-    }
-  }
-
-  #finishOp(player, buffer, error) {
+  #report(player, buffer, seq, error) {
     const ranges = [];
     try {
       const buffered = buffer.native?.buffered;
       for (let i = 0; buffered && i < buffered.length; i++) ranges.push([buffered.start(i), buffered.end(i)]);
     } catch {}
-    this.#send('media.bufferDone', { id: player.id, sb: buffer.id, buffered: ranges, error });
+    this.#send('media.bufferDone', { id: player.id, sb: buffer.id, seq, buffered: ranges, error });
   }
 
   #applyPendingDuration(player) {
@@ -221,9 +242,9 @@ export class MediaHost {
   }
 
   #whenIdle(player, fn) {
-    const busy = [...player.buffers.values()].filter((b) => b.native?.updating);
+    const busy = [...player.buffers.values()].filter((b) => b.native?.updating || b.queue.length);
     if (!busy.length) return fn();
-    busy[0].native.addEventListener('updateend', () => this.#whenIdle(player, fn), { once: true });
+    setTimeout(() => this.#whenIdle(player, fn), 20);
   }
 
   // Unmuted first. Only a NotAllowedError from the autoplay policy falls back to
