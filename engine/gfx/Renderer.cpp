@@ -58,6 +58,12 @@ static void reportMissingGLFunctions()
     StringBuilder names;
     missing = &names;
     auto interface = GrGLMakeAssembledInterface(nullptr, [](void*, const char* name) -> GrGLFuncPtr {
+        // Same version the port reports (see SkiaGLInterfaceEmscripten.cpp).
+        if (!strcmp(name, "glGetString")) {
+            return reinterpret_cast<GrGLFuncPtr>(+[](GLenum value) -> const GLubyte* {
+                return value == GL_VERSION ? reinterpret_cast<const GLubyte*>("OpenGL ES 3.0") : glGetString(value);
+            });
+        }
         auto proc = reinterpret_cast<GrGLFuncPtr>(emscripten_webgl_get_proc_address(name));
         if (!proc && strcmp(name, "glGetInternalformativ"))
             missing->append(' ', String::fromLatin1(name));
