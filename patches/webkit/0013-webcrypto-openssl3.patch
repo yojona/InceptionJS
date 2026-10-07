@@ -1,0 +1,112 @@
+WebCrypto on OpenSSL 3.
+
+WebCore's OpenSSL crypto code is written against BoringSSL. With OpenSSL 3,
+EVP_PKEY_get0_EC_KEY returns a const key, HKDF has no one-shot function (it
+goes through an EVP_PKEY derive context), and the X.509 header is lowercase.
+
+diff --git a/Source/WebCore/crypto/openssl/CryptoAlgorithmECDSAOpenSSL.cpp b/Source/WebCore/crypto/openssl/CryptoAlgorithmECDSAOpenSSL.cpp
+index e3f9841..a59e7a1 100644
+--- a/Source/WebCore/crypto/openssl/CryptoAlgorithmECDSAOpenSSL.cpp
++++ b/Source/WebCore/crypto/openssl/CryptoAlgorithmECDSAOpenSSL.cpp
+@@ -45,7 +45,7 @@ ExceptionOr<Vector<uint8_t>> CryptoAlgorithmECDSA::platformSign(const CryptoAlgo
+     if (!digest)
+         return Exception { ExceptionCode::OperationError };
+ 
+-    EC_KEY* ecKey = EVP_PKEY_get0_EC_KEY(key.platformKey().get());
++    EC_KEY* ecKey = const_cast<EC_KEY*>(EVP_PKEY_get0_EC_KEY(key.platformKey().get()));
+     if (!ecKey)
+         return Exception { ExceptionCode::OperationError };
+ 
+@@ -89,7 +89,7 @@ ExceptionOr<bool> CryptoAlgorithmECDSA::platformVerify(const CryptoAlgorithmEcds
+     if (!digest)
+         return Exception { ExceptionCode::OperationError };
+ 
+-    EC_KEY* ecKey = EVP_PKEY_get0_EC_KEY(key.platformKey().get());
++    EC_KEY* ecKey = const_cast<EC_KEY*>(EVP_PKEY_get0_EC_KEY(key.platformKey().get()));
+     if (!ecKey)
+         return Exception { ExceptionCode::OperationError };
+ 
+diff --git a/Source/WebCore/crypto/openssl/CryptoAlgorithmHKDFOpenSSL.cpp b/Source/WebCore/crypto/openssl/CryptoAlgorithmHKDFOpenSSL.cpp
+index 8b80eb4..f8eb554 100644
+--- a/Source/WebCore/crypto/openssl/CryptoAlgorithmHKDFOpenSSL.cpp
++++ b/Source/WebCore/crypto/openssl/CryptoAlgorithmHKDFOpenSSL.cpp
+@@ -30,7 +30,11 @@
+ #include "CryptoKeyRaw.h"
+ #include "ExceptionOr.h"
+ #include "OpenSSLUtilities.h"
++#if defined(OPENSSL_IS_BORINGSSL)
+ #include <openssl/hkdf.h>
++#else
++#include <openssl/kdf.h>
++#endif
+ 
+ namespace WebCore {
+ 
+@@ -41,8 +45,23 @@ ExceptionOr<Vector<uint8_t>> CryptoAlgorithmHKDF::platformDeriveBits(const Crypt
+         return Exception { ExceptionCode::NotSupportedError };
+ 
+     Vector<uint8_t> output(length / 8);
++#if !defined(OPENSSL_IS_BORINGSSL)
++    // OpenSSL has no one-shot HKDF(); it derives through an EVP_PKEY context.
++    auto context = EvpPKeyCtxPtr(EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, nullptr));
++    size_t outputLength = output.size();
++    if (!context
++        || EVP_PKEY_derive_init(context.get()) <= 0
++        || EVP_PKEY_CTX_set_hkdf_md(context.get(), algorithm) <= 0
++        || EVP_PKEY_CTX_set1_hkdf_salt(context.get(), parameters.saltVector().span().data(), parameters.saltVector().size()) <= 0
++        || EVP_PKEY_CTX_set1_hkdf_key(context.get(), key.key().span().data(), key.key().size()) <= 0
++        || EVP_PKEY_CTX_add1_hkdf_info(context.get(), parameters.infoVector().span().data(), parameters.infoVector().size()) <= 0
++        || EVP_PKEY_derive(context.get(), output.mutableSpan().data(), &outputLength) <= 0
++        || outputLength != output.size())
++        return Exception { ExceptionCode::OperationError };
++#else
+     if (HKDF(output.mutableSpan().data(), output.size(), algorithm, key.key().span().data(), key.key().size(), parameters.saltVector().span().data(), parameters.saltVector().size(), parameters.infoVector().span().data(), parameters.infoVector().size()) <= 0)
+         return Exception { ExceptionCode::OperationError };
++#endif
+ 
+     return output;
+ }
+diff --git a/Source/WebCore/crypto/openssl/CryptoKeyECOpenSSL.cpp b/Source/WebCore/crypto/openssl/CryptoKeyECOpenSSL.cpp
+index b2f7b6b..e305878 100644
+--- a/Source/WebCore/crypto/openssl/CryptoKeyECOpenSSL.cpp
++++ b/Source/WebCore/crypto/openssl/CryptoKeyECOpenSSL.cpp
+@@ -358,7 +358,7 @@ RefPtr<CryptoKeyEC> CryptoKeyEC::platformImportPkcs8(CryptoAlgorithmIdentifier i
+     if (!pkey || EVP_PKEY_base_id(pkey.get()) != EVP_PKEY_EC)
+         return nullptr;
+ 
+-    auto ecKey = EVP_PKEY_get0_EC_KEY(pkey.get());
++    auto* ecKey = const_cast<EC_KEY*>(EVP_PKEY_get0_EC_KEY(pkey.get()));
+     if (!ecKey)
+         return nullptr;
+ 
+@@ -375,7 +375,7 @@ RefPtr<CryptoKeyEC> CryptoKeyEC::platformImportPkcs8(CryptoAlgorithmIdentifier i
+ 
+ Vector<uint8_t> CryptoKeyEC::platformExportRaw() const
+ {
+-    EC_KEY* key = EVP_PKEY_get0_EC_KEY(platformKey().get());
++    EC_KEY* key = const_cast<EC_KEY*>(EVP_PKEY_get0_EC_KEY(platformKey().get()));
+     if (!key)
+         return { };
+     
+@@ -396,7 +396,7 @@ bool CryptoKeyEC::platformAddFieldElements(JsonWebKey& jwk) const
+ {
+     size_t keySizeInBytes = (keySizeInBits() + 7) / 8;
+ 
+-    EC_KEY* key = EVP_PKEY_get0_EC_KEY(platformKey().get());
++    EC_KEY* key = const_cast<EC_KEY*>(EVP_PKEY_get0_EC_KEY(platformKey().get()));
+     if (!key)
+         return false;
+ 
+diff --git a/Source/WebCore/crypto/openssl/CryptoKeyRSAOpenSSL.cpp b/Source/WebCore/crypto/openssl/CryptoKeyRSAOpenSSL.cpp
+index 2993e3b..d47d215 100644
+--- a/Source/WebCore/crypto/openssl/CryptoKeyRSAOpenSSL.cpp
++++ b/Source/WebCore/crypto/openssl/CryptoKeyRSAOpenSSL.cpp
+@@ -32,7 +32,7 @@
+ #include "ExceptionOr.h"
+ #include "OpenSSLUtilities.h"
+ #include <JavaScriptCore/TypedArrayInlines.h>
+-#include <openssl/X509.h>
++#include <openssl/x509.h>
+ #include <openssl/evp.h>
+ 
+ namespace WebCore {
