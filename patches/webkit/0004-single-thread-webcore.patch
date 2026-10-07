@@ -1,0 +1,234 @@
+WebCore pieces that assume extra threads: IndexedDB serialization, file streams,
+image decoding and dedicated workers run on the engine thread's loop; the few
+synchronous cross-thread waits a single thread cannot satisfy fail cleanly
+(module workers, synchronous loads and sockets in workers, crypto key wrapping).
+
+diff --git a/Source/WebCore/Modules/indexeddb/server/IDBBackingStore.h b/Source/WebCore/Modules/indexeddb/server/IDBBackingStore.h
+index f90708b..313dd28 100644
+--- a/Source/WebCore/Modules/indexeddb/server/IDBBackingStore.h
++++ b/Source/WebCore/Modules/indexeddb/server/IDBBackingStore.h
+@@ -63,7 +63,12 @@ class IDBBackingStore : public CanMakeThreadSafeCheckedPtr<IDBBackingStore> {
+     WTF_MAKE_TZONE_ALLOCATED(IDBBackingStore);
+     WTF_OVERRIDE_DELETE_FOR_CHECKED_PTR(IDBBackingStore);
+ public:
++#if PLATFORM(EMSCRIPTEN)
++    // The IndexedDB server runs on the engine's only thread.
++    virtual ~IDBBackingStore() = default;
++#else
+     virtual ~IDBBackingStore() { RELEASE_ASSERT(!isMainThread()); }
++#endif
+ 
+     virtual IDBError getOrEstablishDatabaseInfo(IDBDatabaseInfo&) = 0;
+     virtual uint64_t databaseVersion() = 0;
+@@ -115,7 +120,11 @@ public:
+     virtual void handleLowMemoryWarning() = 0;
+ 
+ protected:
++#if PLATFORM(EMSCRIPTEN)
++    IDBBackingStore() = default;
++#else
+     IDBBackingStore() { RELEASE_ASSERT(!isMainThread()); }
++#endif
+ };
+ 
+ } // namespace IDBServer
+diff --git a/Source/WebCore/Modules/websockets/WebSocket.cpp b/Source/WebCore/Modules/websockets/WebSocket.cpp
+index d6483e7..9338394 100644
+--- a/Source/WebCore/Modules/websockets/WebSocket.cpp
++++ b/Source/WebCore/Modules/websockets/WebSocket.cpp
+@@ -177,6 +177,12 @@ ExceptionOr<Ref<WebSocket>> WebSocket::create(ScriptExecutionContext& context, c
+     if (url.isNull())
+         return Exception { ExceptionCode::SyntaxError };
+ 
++#if PLATFORM(EMSCRIPTEN)
++    // A worker's socket bridge waits for the page's thread, which is this one here.
++    if (is<WorkerGlobalScope>(context))
++        return Exception { ExceptionCode::NotSupportedError, "WebSocket in workers is not supported by this engine"_s };
++#endif
++
+     auto socket = adoptRef(*new WebSocket(context));
+     socket->suspendIfNeeded();
+ 
+diff --git a/Source/WebCore/bindings/js/IDBBindingUtilities.cpp b/Source/WebCore/bindings/js/IDBBindingUtilities.cpp
+index c6998bf..364e86a 100644
+--- a/Source/WebCore/bindings/js/IDBBindingUtilities.cpp
++++ b/Source/WebCore/bindings/js/IDBBindingUtilities.cpp
+@@ -585,6 +585,14 @@ private:
+ 
+ void callOnIDBSerializationThreadAndWait(Function<void(JSC::JSGlobalObject&)>&& function)
+ {
++#if PLATFORM(EMSCRIPTEN)
++    // No second thread to hand the work to: run it here, in the serialization
++    // context (its own small VM) that the thread would have owned.
++    static NeverDestroyed<IDBSerializationContext> context;
++    AutodrainedPool pool;
++    function(context->globalObject());
++    return;
++#endif
+     static NeverDestroyed<MessageQueue<Function<void(JSC::JSGlobalObject&)>>> queue;
+     static std::once_flag createThread;
+ 
+diff --git a/Source/WebCore/fileapi/AsyncFileStream.cpp b/Source/WebCore/fileapi/AsyncFileStream.cpp
+index b9df166..2d9f153 100644
+--- a/Source/WebCore/fileapi/AsyncFileStream.cpp
++++ b/Source/WebCore/fileapi/AsyncFileStream.cpp
+@@ -40,6 +40,7 @@
+ #include <wtf/MainThread.h>
+ #include <wtf/MessageQueue.h>
+ #include <wtf/NeverDestroyed.h>
++#include <wtf/RunLoop.h>
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/Threading.h>
+ #include <wtf/URL.h>
+@@ -70,6 +71,13 @@ static void callOnFileThread(Function<void ()>&& function)
+     ASSERT(isMainThread());
+     ASSERT(function);
+ 
++#if PLATFORM(EMSCRIPTEN)
++    // File streams read the in-memory file system; a later turn of the engine loop
++    // stands in for the file thread, in the same order.
++    RunLoop::mainSingleton().dispatch(WTF::move(function));
++    return;
++#endif
++
+     static NeverDestroyed<MessageQueue<Function<void ()>>> queue;
+ 
+     static std::once_flag createFileThreadOnce;
+diff --git a/Source/WebCore/loader/WorkerThreadableLoader.cpp b/Source/WebCore/loader/WorkerThreadableLoader.cpp
+index 34cce58..1804822 100644
+--- a/Source/WebCore/loader/WorkerThreadableLoader.cpp
++++ b/Source/WebCore/loader/WorkerThreadableLoader.cpp
+@@ -72,6 +72,14 @@ WorkerThreadableLoader::~WorkerThreadableLoader()
+ 
+ void WorkerThreadableLoader::loadResourceSynchronously(WorkerOrWorkletGlobalScope& workerOrWorkletGlobalScope, ResourceRequest&& request, ThreadableLoaderClient& client, const ThreadableLoaderOptions& options)
+ {
++#if PLATFORM(EMSCRIPTEN)
++    // A worker on the engine thread cannot wait for bytes that only arrive when that
++    // thread returns to its loop. Fail like a network error instead of hanging.
++    UNUSED_PARAM(workerOrWorkletGlobalScope);
++    UNUSED_PARAM(options);
++    client.didFail(std::nullopt, ResourceError { errorDomainWebKitInternal, 0, request.url(), "Synchronous loads in workers are not supported by this engine"_s });
++    return;
++#endif
+     WorkerRunLoop& runLoop = workerOrWorkletGlobalScope.workerOrWorkletThread()->runLoop();
+ 
+     // Create a unique mode just for this synchronous resource load.
+diff --git a/Source/WebCore/platform/graphics/ImageFrameWorkQueue.cpp b/Source/WebCore/platform/graphics/ImageFrameWorkQueue.cpp
+index 1c8e16f..58f004e 100644
+--- a/Source/WebCore/platform/graphics/ImageFrameWorkQueue.cpp
++++ b/Source/WebCore/platform/graphics/ImageFrameWorkQueue.cpp
+@@ -114,10 +114,29 @@ void ImageFrameWorkQueue::dispatch(const Request& request)
+ {
+     ASSERT(isMainThread());
+ 
++#if PLATFORM(EMSCRIPTEN)
++    // The request queue makes the decoder thread and this one wait on each other,
++    // which one thread cannot do. Decode on a later turn of the engine loop, with
++    // the same checks the asynchronous path makes when the result comes back.
++    RefPtr decoder = protectedSource()->decoder();
++    if (!decoder)
++        return;
++    decodeQueue().append(request);
++    callOnMainThread([protectedThis = Ref { *this }, source = protectedSource(), decoder = decoder.releaseNonNull(), request] () mutable {
++        if (source.ptr() != protectedThis->m_source.get())
++            return;
++        if (protectedThis->decodeQueue().isEmpty() || protectedThis->decodeQueue().first() != request)
++            return;
++        RefPtr nativeImage = NativeImage::create(decoder->createFrameImageAtIndex(request.index, request.subsamplingLevel, request.options));
++        protectedThis->decodeQueue().removeFirst();
++        source->imageFrameDecodeAtIndexHasFinished(request.index, request.subsamplingLevel, request.animatingState, request.options, WTF::move(nativeImage));
++    });
++#else
+     requestQueue().enqueue(request);
+     decodeQueue().append(request);
+ 
+     start();
++#endif
+ }
+ 
+ void ImageFrameWorkQueue::stop()
+diff --git a/Source/WebCore/workers/Worker.cpp b/Source/WebCore/workers/Worker.cpp
+index a74247d..6191368 100644
+--- a/Source/WebCore/workers/Worker.cpp
++++ b/Source/WebCore/workers/Worker.cpp
+@@ -101,6 +101,12 @@ Worker::Worker(ScriptExecutionContext& context, JSC::RuntimeFlags runtimeFlags,
+ 
+ ExceptionOr<Ref<Worker>> Worker::create(ScriptExecutionContext& context, JSC::RuntimeFlags runtimeFlags, Variant<RefPtr<TrustedScriptURL>, String>&& url, WorkerOptions&& options)
+ {
++#if PLATFORM(EMSCRIPTEN)
++    // Starting a module worker waits for its module graph synchronously, but the
++    // graph arrives through the same thread's loop: it would never finish.
++    if (options.type == WorkerType::Module)
++        return Exception { ExceptionCode::NotSupportedError, "Module workers are not supported by this engine"_s };
++#endif
+     auto compliantScriptURLString = trustedTypeCompliantString(context, WTF::move(url), "Worker constructor"_s);
+     if (compliantScriptURLString.hasException())
+         return compliantScriptURLString.releaseException();
+diff --git a/Source/WebCore/workers/WorkerGlobalScope.cpp b/Source/WebCore/workers/WorkerGlobalScope.cpp
+index e1a8096..c2ca371 100644
+--- a/Source/WebCore/workers/WorkerGlobalScope.cpp
++++ b/Source/WebCore/workers/WorkerGlobalScope.cpp
+@@ -511,6 +511,11 @@ void WorkerGlobalScope::addMessage(MessageSource source, MessageLevel level, con
+ 
+ std::optional<Vector<uint8_t>> WorkerGlobalScope::serializeAndWrapCryptoKey(CryptoKeyData&& keyData)
+ {
++#if PLATFORM(EMSCRIPTEN)
++    // This waits for the page's thread, which is this same thread here.
++    UNUSED_PARAM(keyData);
++    return std::nullopt;
++#endif
+     Ref protectedThis { *this };
+     auto* workerLoaderProxy = thread()->workerLoaderProxy();
+     if (!workerLoaderProxy)
+@@ -528,6 +533,11 @@ std::optional<Vector<uint8_t>> WorkerGlobalScope::serializeAndWrapCryptoKey(Cryp
+ 
+ std::optional<Vector<uint8_t>> WorkerGlobalScope::unwrapCryptoKey(const Vector<uint8_t>& wrappedKey)
+ {
++#if PLATFORM(EMSCRIPTEN)
++    // This waits for the page's thread, which is this same thread here.
++    UNUSED_PARAM(wrappedKey);
++    return std::nullopt;
++#endif
+     Ref protectedThis { *this };
+     auto* workerLoaderProxy = thread()->workerLoaderProxy();
+     if (!workerLoaderProxy)
+diff --git a/Source/WebCore/workers/WorkerMessagingProxy.cpp b/Source/WebCore/workers/WorkerMessagingProxy.cpp
+index 0cade10..b0f338e 100644
+--- a/Source/WebCore/workers/WorkerMessagingProxy.cpp
++++ b/Source/WebCore/workers/WorkerMessagingProxy.cpp
+@@ -159,7 +159,14 @@ void WorkerMessagingProxy::startWorkerGlobalScope(const URL& scriptURL, PAL::Ses
+ 
+     m_scriptURL = scriptURL;
+ 
+-    WorkerParameters params { scriptURL, scriptExecutionContext->url(), name, identifier, WTF::move(initializationData.userAgent), isOnline, contentSecurityPolicyResponseHeaders, shouldBypassMainWorldContentSecurityPolicy, crossOriginEmbedderPolicy, timeOrigin, referrerPolicy, workerType, credentials, scriptExecutionContext->settingsValues(), WorkerThreadMode::CreateNewThread, sessionID,
++#if PLATFORM(EMSCRIPTEN)
++    // Workers share the engine thread and its loop, the mode WebKit also uses to
++    // run workers in-process.
++    constexpr auto workerThreadMode = WorkerThreadMode::UseMainThread;
++#else
++    constexpr auto workerThreadMode = WorkerThreadMode::CreateNewThread;
++#endif
++    WorkerParameters params { scriptURL, scriptExecutionContext->url(), name, identifier, WTF::move(initializationData.userAgent), isOnline, contentSecurityPolicyResponseHeaders, shouldBypassMainWorldContentSecurityPolicy, crossOriginEmbedderPolicy, timeOrigin, referrerPolicy, workerType, credentials, scriptExecutionContext->settingsValues(), workerThreadMode, sessionID,
+         WTF::move(initializationData.serviceWorkerData),
+         initializationData.clientIdentifier,
+         scriptExecutionContext->advancedPrivacyProtections(),
+diff --git a/Source/WebCore/workers/WorkerRunLoop.cpp b/Source/WebCore/workers/WorkerRunLoop.cpp
+index 1b4f47b..6f48326 100644
+--- a/Source/WebCore/workers/WorkerRunLoop.cpp
++++ b/Source/WebCore/workers/WorkerRunLoop.cpp
+@@ -468,8 +468,14 @@ void WorkerMainRunLoop::postTaskForMode(ScriptExecutionContext::Task&& task, con
+             if (!checkedThis || checkedThis->m_terminated)
+                 return;
+             scope = checkedThis->m_workerOrWorkletGlobalScope.get();
+-            if (!scope)
++            if (!scope) {
++#if PLATFORM(EMSCRIPTEN)
++                // Messages posted before the worker's start-up task ran would be
++                // dropped; the start-up task is already queued, so try again after it.
++                checkedThis->postTaskForMode(WTF::move(task), WorkerRunLoop::defaultMode());
++#endif
+                 return;
++            }
+         }
+         task.performTask(*scope);
+     });
