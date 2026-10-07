@@ -8,6 +8,9 @@
 #include "LocalFrame.h"
 #include "MediaStrategy.h"
 #include "NetworkLoadMetrics.h"
+#include "Pasteboard.h"
+#include "PasteboardCustomData.h"
+#include "PasteboardItemInfo.h"
 #include "PasteboardStrategy.h"
 #include "PlatformStrategies.h"
 #include "ResourceError.h"
@@ -124,7 +127,7 @@ public:
     RefPtr<SharedBuffer> readBufferFromPasteboard(std::optional<size_t>, const String& type, const String&, const PasteboardContext*) final
     {
         auto value = m_items.get(type);
-        return value.isNull() ? nullptr : RefPtr { SharedBuffer::create(value.utf8().span()) };
+        return value.isNull() ? nullptr : RefPtr { SharedBuffer::create(byteCast<uint8_t>(value.utf8().span())) };
     }
     URL readURLFromPasteboard(size_t, const String&, String&, const PasteboardContext*) final { return URL { m_items.get("text/uri-list"_s) }; }
     std::optional<PasteboardItemInfo> informationForItemAtIndex(size_t, const String&, int64_t, const PasteboardContext*) final { return std::nullopt; }
