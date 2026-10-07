@@ -61,6 +61,7 @@ export class EngineRuntime extends EventTarget {
     if (data.inceptionWasm) return this.#translateWasm(data.inceptionWasm);
     if (data.inceptionPixels) return this.#presentPixels(data.inceptionPixels);
     if (data.inceptionCrash) return this.#crashed(data.inceptionCrash);
+    if (data.inceptionAsk) return this.#answer(data.inceptionAsk);
     if (typeof data.inception !== 'string') return;
     const { event, data: payload } = JSON.parse(data.inception);
     if (event === 'started') {
@@ -83,15 +84,31 @@ export class EngineRuntime extends EventTarget {
 
   // The engine thread is blocked on `slot` until the reply is written.
   async #translateWasm({ bytes, length, slot }) {
-    const memory = () => this.#module.wasmMemory.buffer;
-    const input = new Uint8Array(memory(), bytes, length).slice();
+    const input = new Uint8Array(this.#module.wasmMemory.buffer, bytes, length).slice();
     let reply;
     try {
       reply = this.wasmTranslator ? await this.wasmTranslator.translate(input) : 'error:WebAssembly is not available in this view';
     } catch (error) {
       reply = `error:${error?.message ?? error}`;
     }
-    const encoded = new TextEncoder().encode(reply);
+    this.#reply(slot, reply);
+  }
+
+  // A question the engine waits on (a dialog); `onAsk` answers with any JSON
+  // value, or undefined for none.
+  async #answer({ question, slot }) {
+    let reply;
+    try {
+      reply = await this.onAsk?.(JSON.parse(question));
+    } catch (error) {
+      console.error('[engine] unanswered question', error);
+    }
+    this.#reply(slot, reply === undefined ? 'null' : JSON.stringify(reply));
+  }
+
+  #reply(slot, text) {
+    const memory = () => this.#module.wasmMemory.buffer;
+    const encoded = new TextEncoder().encode(text);
     const pointer = this.#module._malloc(encoded.length + 1);
     const heap = new Uint8Array(memory());
     heap.set(encoded, pointer);
@@ -100,6 +117,11 @@ export class EngineRuntime extends EventTarget {
     Atomics.store(words, (slot >> 2) + 1, pointer);
     Atomics.store(words, slot >> 2, 1);
     Atomics.notify(words, slot >> 2);
+  }
+
+  // Copies a file into the engine's file system; the bytes are transferred.
+  sendFile(name, bytes) {
+    this.#worker?.postMessage({ inceptionFile: { name, bytes } }, [bytes]);
   }
 
   #presentBitmap(bitmap) {

@@ -2,6 +2,7 @@
 
 #include "EmptyClients.h"
 #include "EmptyFrameLoaderClient.h"
+#include "FileChooser.h"
 #include <wtf/WeakRef.h>
 
 namespace WebCore {
@@ -35,11 +36,27 @@ private:
     void exitFullScreenForElement(WebCore::Element*, CompletionHandler<void()>&&) final;
     void hostFullscreenChanged(bool active, const String& error);
 
+    // Dialogs: the host shows them; the page waits for the answer, as it
+    // would for a native one.
+    bool canRunBeforeUnloadConfirmPanel() final { return true; }
+    bool runBeforeUnloadConfirmPanel(String&& message, WebCore::LocalFrame&) final;
+    void runJavaScriptAlert(WebCore::LocalFrame&, const String&) final;
+    bool runJavaScriptConfirm(WebCore::LocalFrame&, const String&) final;
+    bool runJavaScriptPrompt(WebCore::LocalFrame&, const String& message, const String& defaultValue, String& result) final;
+
+    RefPtr<WebCore::PopupMenu> createPopupMenu(WebCore::PopupMenuClient&) const final;
+
+    // The host's file picker; the chosen files are copied into the engine's
+    // file system before "file.chosen" arrives.
+    void runOpenPanel(WebCore::LocalFrame&, WebCore::FileChooser&) final;
+    void filesChosen(bool cancelled);
+
     void setCursor(const WebCore::Cursor&) final;
     void setCursorHiddenUntilMouseMoves(bool) final { }
 
     bool isEmptyChromeClient() const final { return false; }
 
+    RefPtr<WebCore::FileChooser> m_fileChooser;
     String m_cursor;
     CompletionHandler<void(WebCore::ExceptionOr<void>)> m_willEnterFullscreen;
     CompletionHandler<bool(bool)> m_didEnterFullscreen;
