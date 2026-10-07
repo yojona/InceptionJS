@@ -6,6 +6,7 @@
 #include "gfx/Renderer.h"
 #include "input/Input.h"
 #include "media/MediaBridge.h"
+#include "storage/Profile.h"
 #include "wasm/GuestWasm.h"
 #include "platform/Strategies.h"
 #include "view/View.h"
@@ -52,6 +53,8 @@ static void registerCommands()
         if (auto media = args.getObject("media"_s))
             Media::setCapabilities(*media);
         GuestWasm::setPolyfill(args.getString("wasmPolyfill"_s));
+        // Before the page exists: storage opens its files on first use.
+        Profile::select(args.getString("profile"_s), args.getBoolean("freshProfile"_s).value_or(false));
         auto mode = Renderer::singleton().initialize(expandedIntSize(FloatSize(cssSize) * scale), preferGPU);
         View::create(cssSize, scale);
         View::singleton()->setUserAgent(args.getString("userAgent"_s));
