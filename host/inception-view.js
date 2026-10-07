@@ -1,4 +1,5 @@
 import { attachInput } from './input.js';
+import { SelectMenu, answerDialog, chooseFiles } from './ui.js';
 import { MediaHost, probeMediaCapabilities } from './media.js';
 import { EngineRuntime } from './runtime.js';
 import { WasmTranslator } from './wasm-translator.js';
@@ -30,6 +31,9 @@ export class InceptionView extends HTMLElement {
   #client = null;
   #canvas;
   #mediaLayer;
+  #textInput;
+  #shadow;
+  #selectMenu = null;
   #media = null;
   #debugRequests = 0;
   #ready = null;
@@ -42,9 +46,12 @@ export class InceptionView extends HTMLElement {
       :host { display: block; position: relative; overflow: hidden; contain: strict; width: 800px; height: 600px; outline: none; }
       canvas, .media { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
       .media { overflow: hidden; pointer-events: none; }
-    </style><div class="media" part="media"></div><canvas part="screen"></canvas>`;
+      textarea { position: absolute; left: 0; top: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; resize: none; pointer-events: none; }
+    </style><div class="media" part="media"></div><canvas part="screen"></canvas><textarea aria-hidden="true" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>`;
     this.#canvas = shadow.querySelector('canvas');
     this.#mediaLayer = shadow.querySelector('.media');
+    this.#textInput = shadow.querySelector('textarea');
+    this.#shadow = shadow;
     if (!this.hasAttribute('tabindex')) this.tabIndex = 0;
   }
 
@@ -130,7 +137,13 @@ export class InceptionView extends HTMLElement {
       if (name === 'cursor') this.#canvas.style.cursor = data.cursor;
       if (name === 'fullscreen') this.#setFullscreen(data.active);
       if (name.startsWith('media.')) this.#media.handleEvent(name, data);
+      if (name === 'select.show') this.#selectMenu.show(this, data);
+      if (name === 'select.update') this.#selectMenu.update(data);
+      if (name === 'select.hide') this.#selectMenu.hide(data.id);
+      if (name === 'file.choose') chooseFiles(this, this.#runtime, data);
     };
+    this.#selectMenu = new SelectMenu(this.#shadow, (command, args) => this.#runtime.send(command, args));
+    this.#runtime.onAsk = (question) => answerDialog(this, question);
     this.#runtime.onMediaAppend = ({ id, sb, seq, bytes }) => this.#media.append(id, sb, seq, bytes);
     translator ??= new WasmTranslator(config.binaryenUrl ?? new URL('../node_modules/binaryen/index.js', import.meta.url).href);
     this.#runtime.wasmTranslator = translator;
@@ -154,8 +167,8 @@ export class InceptionView extends HTMLElement {
     this.#runtime.addEventListener('crash', (e) => this.dispatchEvent(new CustomEvent('crash', { detail: { reason: e.detail.message, stack: e.detail.stack } })));
     if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');
     this.dataset.renderer = ready.renderer;
-    attachInput(this, this.#canvas, (command, args) => this.#runtime.send(command, args));
-    if (document.activeElement === this) this.#runtime.send('focus', { focused: true });
+    attachInput(this, this.#canvas, this.#textInput, (command, args) => this.#runtime.send(command, args));
+    if (document.activeElement === this) this.focusInput();
 
     document.addEventListener('fullscreenchange', () => {
       if (document.fullscreenElement !== this) this.#runtime.send('fullscreen.changed', { active: false });

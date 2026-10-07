@@ -1,7 +1,11 @@
 #include "config.h"
 #include "input/Input.h"
 
+#include "CompositionHighlight.h"
+#include "CompositionUnderline.h"
+#include "Editor.h"
 #include "EventHandler.h"
+#include "LocalFrameInlines.h"
 #include "HandleUserInputEventResult.h"
 #include "FocusController.h"
 #include "LocalFrame.h"
@@ -41,6 +45,13 @@ static RefPtr<LocalFrame> mainFrame()
 {
     auto* view = View::singleton();
     return view ? view->mainFrame() : nullptr;
+}
+
+static RefPtr<LocalFrame> focusedFrame()
+{
+    auto* view = View::singleton();
+    RefPtr<Page> page = view ? &view->page() : nullptr;
+    return page ? page->focusController().focusedOrMainFrame() : nullptr;
 }
 
 static MouseButton buttonFrom(int button)
@@ -180,6 +191,29 @@ static void handleFocus(JSON::Object& args)
 
 void registerInputCommands()
 {
+    // Text from the host's input method: dead keys, accents, IME. "ime.set"
+    // {text, selectionStart, selectionEnd} shows a composition in progress,
+    // "ime.commit" {text} ends it with its final text (or inserts text when
+    // nothing was being composed), "ime.cancel" drops it.
+    registerCommand("ime.set"_s, [](JSON::Object& args) {
+        RefPtr frame = focusedFrame();
+        if (!frame)
+            return;
+        auto text = args.getString("text"_s);
+        unsigned start = args.getInteger("selectionStart"_s).value_or(text.length());
+        unsigned end = args.getInteger("selectionEnd"_s).value_or(start);
+        Vector<CompositionUnderline> underlines { CompositionUnderline { 0, text.length(), CompositionUnderlineColor::TextColor, Color::black, false } };
+        frame->editor().setComposition(text, underlines, { }, { }, start, end);
+    });
+    registerCommand("ime.commit"_s, [](JSON::Object& args) {
+        if (RefPtr frame = focusedFrame())
+            frame->editor().confirmComposition(args.getString("text"_s));
+    });
+    registerCommand("ime.cancel"_s, [](JSON::Object&) {
+        if (RefPtr frame = focusedFrame())
+            frame->editor().cancelComposition();
+    });
+
     registerCommand("mouse"_s, handleMouse);
     registerCommand("wheel"_s, handleWheel);
     registerCommand("key"_s, handleKey);

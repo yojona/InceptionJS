@@ -18,16 +18,24 @@ function belongsToHost(event) {
   return ['r', 'w', 't', 'n', 'q', 'l', 'Tab'].includes(event.key) || (event.altKey && event.key.toLowerCase() === 'i');
 }
 
-export function attachInput(element, canvas, send) {
+// Keyboard input goes through `textInput`, a hidden <textarea> that holds the
+// focus whenever the view has it: the platform's input method (dead keys and
+// accents, IME composition, the emoji picker, dictation) only works on a real
+// text field. Plain keys are forwarded as key events and kept out of it;
+// composed text arrives through composition and input events.
+export function attachInput(element, canvas, textInput, send) {
   const position = (event) => {
     const rect = canvas.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   };
+  const focusInput = () => textInput.focus({ preventScroll: true });
+  element.focusInput = focusInput;
+  element.addEventListener('focus', focusInput);
 
   let pressedButton = null;
   canvas.addEventListener('mousedown', (event) => {
     event.preventDefault();
-    element.focus({ preventScroll: true });
+    focusInput();
     pressedButton = event.button;
     send('mouse', { type: 'down', ...position(event), button: event.button, clickCount: event.detail || 1, modifiers: modifiersOf(event) });
   });
@@ -50,15 +58,50 @@ export function attachInput(element, canvas, send) {
     send('wheel', { ...position(event), deltaX: event.deltaX, deltaY: event.deltaY, deltaMode: event.deltaMode, modifiers: modifiersOf(event) });
   }, { passive: false });
 
-  const key = (type) => (event) => {
-    if (belongsToHost(event)) return;
+  // While composing, keys belong to the input method; a dead key starts a
+  // composition of its own.
+  let composing = false;
+  const composingKey = (event) => composing || event.isComposing || event.key === 'Dead' || event.keyCode === 229;
+  textInput.addEventListener('keydown', (event) => {
+    if (belongsToHost(event) || composingKey(event)) return;
     event.preventDefault();
-    const text = type === 'down' && event.key.length === 1 ? event.key : type === 'down' && event.key === 'Enter' ? '\r' : '';
-    send('key', { type, key: event.key, code: event.code, keyCode: event.keyCode, text, repeat: event.repeat, modifiers: modifiersOf(event) });
-  };
-  element.addEventListener('keydown', key('down'));
-  element.addEventListener('keyup', key('up'));
+    const text = event.key.length === 1 || [...event.key].length === 1 ? event.key : event.key === 'Enter' ? '\r' : '';
+    send('key', { type: 'down', key: event.key, code: event.code, keyCode: event.keyCode, text, repeat: event.repeat, modifiers: modifiersOf(event) });
+  });
+  textInput.addEventListener('keyup', (event) => {
+    if (belongsToHost(event) || composingKey(event)) return;
+    event.preventDefault();
+    send('key', { type: 'up', key: event.key, code: event.code, keyCode: event.keyCode, text: '', repeat: false, modifiers: modifiersOf(event) });
+  });
 
-  element.addEventListener('focus', () => send('focus', { focused: true }));
-  element.addEventListener('blur', () => send('focus', { focused: false }));
+  textInput.addEventListener('compositionstart', () => {
+    composing = true;
+  });
+  textInput.addEventListener('compositionupdate', (event) => {
+    send('ime.set', { text: event.data, selectionStart: event.data.length, selectionEnd: event.data.length });
+  });
+  textInput.addEventListener('compositionend', (event) => {
+    composing = false;
+    send('ime.commit', { text: event.data });
+    textInput.value = '';
+  });
+  // Text that came without keys being forwarded: the emoji picker, dictation,
+  // autocorrect.
+  textInput.addEventListener('input', (event) => {
+    if (composing || event.isComposing) return;
+    if (event.data) send('ime.commit', { text: event.data });
+    textInput.value = '';
+  });
+  // Clipboard shortcuts reach the textarea as events; the engine handles
+  // them from the key events it already received.
+  for (const type of ['cut', 'copy', 'paste']) textInput.addEventListener(type, (event) => event.preventDefault());
+
+  textInput.addEventListener('focus', () => send('focus', { focused: true }));
+  textInput.addEventListener('blur', () => {
+    if (composing) {
+      composing = false;
+      send('ime.cancel', {});
+    }
+    send('focus', { focused: false });
+  });
 }
