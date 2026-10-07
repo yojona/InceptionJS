@@ -10,6 +10,7 @@
 #include "ResourceLoader.h"
 #include "ResourceResponse.h"
 #include "SharedBuffer.h"
+#include "net/Session.h"
 
 namespace Inception {
 using namespace WebCore;
@@ -30,6 +31,7 @@ NetworkLoad::~NetworkLoad()
 void NetworkLoad::start(const ResourceRequest& request)
 {
     m_request = request;
+    addCookieHeader(m_request);
     m_curl = CurlRequest::create(m_request, *this);
     m_curl->resume();
 }
@@ -60,6 +62,7 @@ void NetworkLoad::curlDidReceiveResponse(CurlRequest& curl, CurlResponse&& curlR
     if (!loader)
         return;
 
+    storeResponseCookies(m_request, curlResponse);
     ResourceResponse response(curlResponse);
     if (response.isRedirection() && !response.httpHeaderField(HTTPHeaderName::Location).isEmpty()) {
         followRedirect(WTF::move(response));
