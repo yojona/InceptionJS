@@ -84,6 +84,20 @@ View::View(IntSize cssSize, float deviceScaleFactor)
     settings.setLocalStorageEnabled(true);
     settings.setSessionStorageEnabled(true);
     settings.setDataTransferItemsEnabled(true);
+    // Features shipping browsers have on; raw WebCore defaults them off.
+    settings.setBeaconAPIEnabled(true);
+    settings.setCompressionStreamEnabled(true);
+    settings.setCrossOriginEmbedderPolicyEnabled(true);
+    settings.setCrossOriginOpenerPolicyEnabled(true);
+    settings.setLazyIframeLoadingEnabled(true);
+    settings.setLazyImageLoadingEnabled(true);
+    settings.setMediaCapabilitiesEnabled(true);
+    settings.setMediaCapabilitiesExtensionsEnabled(true);
+    settings.setUserActivationAPIEnabled(true);
+    settings.setVisualViewportAPIEnabled(true);
+    settings.setAsyncClipboardAPIEnabled(true);
+    settings.setPermissionsAPIEnabled(true);
+    settings.setFullScreenEnabled(true);
     settings.setMinimumLogicalFontSize(9);
     settings.setStandardFontFamily("serif"_s);
     settings.setSerifFontFamily("serif"_s);
