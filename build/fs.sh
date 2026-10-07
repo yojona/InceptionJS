@@ -28,6 +28,13 @@ cp "$SYSROOT/share/icu/$ICU_DATA_VERSION/$dat" "$FS/usr/share/icu/$dat"
 fonts=/usr/share/fonts/truetype/dejavu
 [ -d "$fonts" ] || fail "no DejaVu fonts at $fonts (the build image installs them)"
 cp "$fonts"/*.ttf "$FS/usr/share/fonts/"
+# Emoji and Chinese, Japanese and Korean text; only the regular CJK weight,
+# which the font engine emboldens when a page asks for bold.
+for font in /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc; do
+  [ -f "$font" ] || fail "missing $font (the build image installs it)"
+  cp "$font" "$FS/usr/share/fonts/"
+done
+
 resources="$WORK/webkit/Source/WebCore/Resources"
 [ -d "$resources" ] || fail "no WebKit checkout at $WORK/webkit; run build/webkit.sh first"
 mkdir -p "$FS/usr/share/inception/resources"
