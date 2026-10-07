@@ -90,7 +90,7 @@ static void handleMouse(JSON::Object& args)
         handler.handleMouseReleaseEvent(event);
         break;
     default:
-        handler.handleMouseMoveEvent(event);
+        handler.mouseMoved(event);
         break;
     }
 }
