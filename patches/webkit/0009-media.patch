@@ -1,0 +1,75 @@
+Media elements and Media Source Extensions with embedder-supplied engines.
+
+VIDEO and MEDIA_SOURCE are on. MediaPlayer gains a hook through which the
+embedder registers its media engines, which play through the host page's
+media stack; WebCore keeps the elements, the controls and the MSE logic.
+
+diff --git a/Source/WebCore/platform/graphics/MediaPlayer.cpp b/Source/WebCore/platform/graphics/MediaPlayer.cpp
+index b5733a1..05364d0 100644
+--- a/Source/WebCore/platform/graphics/MediaPlayer.cpp
++++ b/Source/WebCore/platform/graphics/MediaPlayer.cpp
+@@ -308,6 +308,15 @@ void RemoteMediaPlayerSupport::setRegisterRemotePlayerCallback(RegisterRemotePla
+     registerRemotePlayerCallback() = WTF::move(callback);
+ }
+ 
++#if PLATFORM(EMSCRIPTEN)
++static MediaEngineRegister* s_registerEmbedderMediaEngines;
++
++void EmbedderMediaPlayerSupport::setRegisterMediaEngines(MediaEngineRegister* registerEngines)
++{
++    s_registerEmbedderMediaEngines = registerEngines;
++}
++#endif
++
+ static void buildMediaEnginesVector() WTF_REQUIRES_LOCK(mediaEngineVectorLock)
+ {
+     ASSERT(mediaEngineVectorLock.isLocked());
+@@ -375,6 +384,11 @@ static void buildMediaEnginesVector() WTF_REQUIRES_LOCK(mediaEngineVectorLock)
+     }
+ #endif
+ 
++#if PLATFORM(EMSCRIPTEN)
++    if (s_registerEmbedderMediaEngines)
++        s_registerEmbedderMediaEngines(addMediaEngine);
++#endif
++
+     haveMediaEnginesVector() = true;
+ }
+ 
+diff --git a/Source/WebCore/platform/graphics/MediaPlayer.h b/Source/WebCore/platform/graphics/MediaPlayer.h
+index 5d8e3b6..3159b6c 100644
+--- a/Source/WebCore/platform/graphics/MediaPlayer.h
++++ b/Source/WebCore/platform/graphics/MediaPlayer.h
+@@ -905,6 +905,15 @@ public:
+     WEBCORE_EXPORT static void callRegisterMediaEngine(MediaEngineRegister);
+ };
+ 
++#if PLATFORM(EMSCRIPTEN)
++// Media engines come from the embedder: players backed by the host page's own
++// media stack. Set before the first media element is created.
++class EmbedderMediaPlayerSupport {
++public:
++    WEBCORE_EXPORT static void setRegisterMediaEngines(MediaEngineRegister*);
++};
++#endif
++
+ class RemoteMediaPlayerSupport {
+ public:
+     using RegisterRemotePlayerCallback = Function<void(MediaEngineRegistrar, MediaPlayerEnums::MediaEngineIdentifier)>;
+diff --git a/Source/cmake/OptionsEmscripten.cmake b/Source/cmake/OptionsEmscripten.cmake
+index cc511cc..2e2737d 100644
+--- a/Source/cmake/OptionsEmscripten.cmake
++++ b/Source/cmake/OptionsEmscripten.cmake
+@@ -43,8 +43,10 @@ WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_SKIA_ENCODERS PRIVATE OFF)
+ # allowed.
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_FTPDIR PRIVATE OFF)
+ 
+-WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_VIDEO PRIVATE OFF)
+-WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MEDIA_SOURCE PRIVATE OFF)
++# Media elements play through engines the embedder registers (host <video> and
++# MediaSource); WebCore keeps the element, controls and MSE byte stream logic.
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_VIDEO PRIVATE ON)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MEDIA_SOURCE PRIVATE ON)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_FULLSCREEN_API PRIVATE OFF)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEB_AUDIO PRIVATE OFF)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEBGL PRIVATE OFF)
