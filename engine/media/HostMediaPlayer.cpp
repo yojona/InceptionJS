@@ -187,6 +187,15 @@ void HostMediaPlayer::paint(GraphicsContext& context, const FloatRect& rect)
     m_paintedRect = deviceRect;
 }
 
+std::optional<VideoPlaybackQualityMetrics> HostMediaPlayer::videoPlaybackQualityMetrics()
+{
+    VideoPlaybackQualityMetrics metrics;
+    metrics.totalVideoFrames = m_totalFrames;
+    metrics.droppedVideoFrames = m_droppedFrames;
+    metrics.displayCompositedVideoFrames = m_totalFrames - std::min(m_droppedFrames, m_totalFrames);
+    return metrics;
+}
+
 DestinationColorSpace HostMediaPlayer::colorSpace()
 {
     return DestinationColorSpace::SRGB();
@@ -293,6 +302,9 @@ void HostMediaPlayer::update(JSON::Object& state)
         }
     }
     m_buffered = WTF::move(buffered);
+
+    m_totalFrames = state.getInteger("totalFrames"_s).value_or(m_totalFrames);
+    m_droppedFrames = state.getInteger("droppedFrames"_s).value_or(m_droppedFrames);
 
     bool paused = state.getBoolean("paused"_s).value_or(true);
     bool ended = state.getBoolean("ended"_s).value_or(false);

@@ -3,6 +3,7 @@
 #include "FloatRect.h"
 #include "MediaPlayerPrivate.h"
 #include "PlatformTimeRanges.h"
+#include "VideoPlaybackQualityMetrics.h"
 #include <wtf/RefCounted.h>
 
 namespace Inception::Media {
@@ -71,6 +72,9 @@ private:
     bool didLoadingProgress() const final;
 
     void paint(WebCore::GraphicsContext&, const WebCore::FloatRect&) final;
+    unsigned decodedFrameCount() const final { return m_totalFrames; }
+    unsigned droppedFrameCount() const final { return m_droppedFrames; }
+    std::optional<WebCore::VideoPlaybackQualityMetrics> videoPlaybackQualityMetrics() final;
     WebCore::DestinationColorSpace colorSpace() final;
 
     ThreadSafeWeakPtr<WebCore::MediaPlayer> m_player;
@@ -91,6 +95,8 @@ private:
     bool m_seeking { false };
     bool m_ended { false };
     bool m_muted { false };
+    unsigned m_totalFrames { 0 };
+    unsigned m_droppedFrames { 0 };
 
     std::optional<WebCore::FloatRect> m_paintedRect;
     std::optional<WebCore::FloatRect> m_reportedRect;
