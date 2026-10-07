@@ -126,21 +126,20 @@ void Renderer::paintGPU(const Function<void(GraphicsContext&)>& paint)
         return;
     auto* grContext = display.skiaGrContext();
 
-    // The default framebuffer of the OffscreenCanvas; WebGL flips it on present,
-    // hence the bottom-left origin.
-    GrGLFramebufferInfo framebuffer { 0, GL_RGBA8 };
-    // Stencil bits must match the framebuffer's actual stencil format, or Skia
-    // refuses to wrap it.
-    GLint stencilBits = 0;
-    glGetIntegerv(GL_STENCIL_BITS, &stencilBits);
-    auto target = GrBackendRenderTargets::MakeGL(m_size.width(), m_size.height(), 0, stencilBits, framebuffer);
-    auto properties = FontRenderOptions::singleton().createSurfaceProps();
-    auto surface = SkSurfaces::WrapBackendRenderTarget(grContext, target, kBottomLeft_GrSurfaceOrigin,
-        kRGBA_8888_SkColorType, SkColorSpace::MakeSRGB(), &properties);
-    if (!surface) {
-        report("error"_s, makeString("Skia could not wrap the WebGL2 framebuffer at "_s, m_size.width(), 'x', m_size.height(), " (stencil "_s, stencilBits, ", target "_s, target.isValid() ? "valid"_s : "invalid"_s, ')'));
-        return;
+    // Skia paints into a render target of its own, which is then blitted to the
+    // canvas's default framebuffer: Skia will not wrap WebGL's default
+    // framebuffer directly. Bottom-left origin, like the canvas, so the blit
+    // needs no flip.
+    if (!m_surface || m_surface->width() != m_size.width() || m_surface->height() != m_size.height()) {
+        auto info = SkImageInfo::Make(m_size.width(), m_size.height(), kRGBA_8888_SkColorType, kPremul_SkAlphaType, SkColorSpace::MakeSRGB());
+        auto properties = FontRenderOptions::singleton().createSurfaceProps();
+        m_surface = SkSurfaces::RenderTarget(grContext, skgpu::Budgeted::kNo, info, 0, kBottomLeft_GrSurfaceOrigin, &properties);
+        if (!m_surface) {
+            report("error"_s, makeString("Skia could not create a "_s, m_size.width(), 'x', m_size.height(), " render target"_s));
+            return;
+        }
     }
+    auto* surface = m_surface.get();
 
     auto* canvas = surface->getCanvas();
     canvas->clear(SK_ColorTRANSPARENT);
@@ -148,7 +147,16 @@ void Renderer::paintGPU(const Function<void(GraphicsContext&)>& paint)
         GraphicsContextSkia context(*canvas, RenderingMode::Accelerated, RenderingPurpose::Unspecified);
         paint(context);
     }
-    grContext->flushAndSubmit(surface.get(), GrSyncCpu::kNo);
+    grContext->flushAndSubmit(surface, GrSyncCpu::kNo);
+
+    GrBackendRenderTarget target = SkSurfaces::GetBackendRenderTarget(surface, SkSurfaces::BackendHandleAccess::kFlushRead);
+    GrGLFramebufferInfo framebuffer;
+    if (!GrBackendRenderTargets::GetGLFramebufferInfo(target, &framebuffer))
+        return;
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer.fFBOID);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBlitFramebuffer(0, 0, m_size.width(), m_size.height(), 0, 0, m_size.width(), m_size.height(), GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    grContext->resetContext(kRenderTarget_GrGLBackendState);
     inception_gfx_present();
 }
 

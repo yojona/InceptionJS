@@ -4,6 +4,12 @@
 #include <wtf/Function.h>
 #include <wtf/Vector.h>
 
+WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+#include <skia/core/SkRefCnt.h>
+WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
+
+class SkSurface;
+
 namespace WebCore {
 class GraphicsContext;
 }
@@ -37,6 +43,7 @@ private:
     Mode m_mode { Mode::CPU };
     WebCore::IntSize m_size;
     Vector<uint8_t> m_pixels;
+    sk_sp<SkSurface> m_surface;
 };
 
 } // namespace Inception
