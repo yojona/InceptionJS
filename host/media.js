@@ -227,19 +227,21 @@ export class MediaHost {
   }
 
   // Unmuted first. Only a NotAllowedError from the autoplay policy falls back to
-  // muted playback, and the next user gesture restores the sound.
+  // muted playback, and the next user gesture restores the sound. The engine
+  // stays the source of truth: if it paused meanwhile, nothing plays.
   async #play(player) {
     const video = player.video;
     try {
       await video.play();
     } catch (error) {
-      if (error?.name !== 'NotAllowedError' || this.#soundAllowed || video.muted) return;
+      if (error?.name !== 'NotAllowedError' || this.#soundAllowed || video.muted || !player.wantsPlay) return;
       player.forcedMute = true;
       video.muted = true;
       try {
         await video.play();
       } catch {}
     }
+    if (!player.wantsPlay && !video.paused) video.pause();
   }
 
   #layout(player, rect) {
@@ -252,16 +254,19 @@ export class MediaHost {
   }
 
   #queueState(player, reason) {
+    (player.reasons ??= new Set()).add(reason);
     if (player.stateQueued) return;
     player.stateQueued = true;
     queueMicrotask(() => {
       player.stateQueued = false;
+      const reasons = [...player.reasons];
+      player.reasons.clear();
       const video = player.video;
       const buffered = [];
       for (let i = 0; i < video.buffered.length; i++) buffered.push([video.buffered.start(i), video.buffered.end(i)]);
       this.#send('media.state', {
         id: player.id,
-        reason,
+        reasons,
         currentTime: video.currentTime,
         // NaN (unknown) and Infinity (live) do not survive JSON.
         duration: Number.isFinite(video.duration) ? video.duration : (Number.isNaN(video.duration) ? null : -1),
@@ -271,6 +276,9 @@ export class MediaHost {
         readyState: video.readyState,
         networkState: video.networkState,
         rate: video.playbackRate,
+        // Muted by the host to get past the autoplay policy, which the page
+        // must see as muted until a gesture lifts it.
+        muted: video.muted,
         width: video.videoWidth,
         height: video.videoHeight,
         error: video.error ? video.error.code : 0,
