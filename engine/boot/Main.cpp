@@ -1,5 +1,6 @@
 #include "config.h"
 
+#include "FloatSize.h"
 #include "IntSize.h"
 #include "bridge/Bridge.h"
 #include "gfx/Renderer.h"

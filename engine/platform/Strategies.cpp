@@ -90,7 +90,6 @@ public:
     ResourceError blockedByContentBlockerError(const ResourceRequest& request) const final { return makeError(request.url(), 102, "Blocked by content blocker"_s); }
     ResourceError cannotShowURLError(const ResourceRequest& request) const final { return makeError(request.url(), 103, "Cannot show URL"_s); }
     ResourceError interruptedForPolicyChangeError(const ResourceRequest& request) const final { return makeError(request.url(), 104, "Interrupted by policy change"_s, ResourceError::Type::Cancellation); }
-    ResourceError blockedByContentFilterError(const ResourceRequest& request) const final { return makeError(request.url(), 105, "Blocked by content filter"_s); }
     ResourceError cannotShowMIMETypeError(const ResourceResponse& response) const final { return makeError(response.url(), 106, "Cannot show content of this type"_s); }
     ResourceError fileDoesNotExistError(const ResourceResponse& response) const final { return makeError(response.url(), 107, "File does not exist"_s); }
     ResourceError httpsUpgradeRedirectLoopError(const ResourceRequest& request) const final { return makeError(request.url(), 108, "HTTPS upgrade redirect loop"_s); }

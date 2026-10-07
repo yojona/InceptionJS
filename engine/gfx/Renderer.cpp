@@ -2,6 +2,7 @@
 #include "gfx/Renderer.h"
 
 #include "FontRenderOptions.h"
+#include "GLContext.h"
 #include "GraphicsContextSkia.h"
 #include "PlatformDisplay.h"
 #include "PlatformDisplayEmscripten.h"

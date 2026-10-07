@@ -1,6 +1,7 @@
 #include "config.h"
 #include "view/View.h"
 
+#include "CookieJar.h"
 #include "EmptyClients.h"
 #include "FrameLoadRequest.h"
 #include "FrameLoader.h"
