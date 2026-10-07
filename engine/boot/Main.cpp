@@ -7,6 +7,7 @@
 #include "input/Input.h"
 #include "media/MediaBridge.h"
 #include "net/Sockets.h"
+#include "storage/Disk.h"
 #include "storage/Profile.h"
 #include "wasm/GuestWasm.h"
 #include "platform/Strategies.h"
@@ -56,6 +57,7 @@ static void registerCommands()
         GuestWasm::setPolyfill(args.getString("wasmPolyfill"_s));
         Sockets::configure(args.getString("wispUrl"_s));
         // Before the page exists: storage opens its files on first use.
+        bool persistent = Disk::mount();
         Profile::select(args.getString("profile"_s), args.getBoolean("freshProfile"_s).value_or(false));
         auto mode = Renderer::singleton().initialize(expandedIntSize(FloatSize(cssSize) * scale), preferGPU);
         View::create(cssSize, scale);
@@ -64,6 +66,7 @@ static void registerCommands()
         auto ready = JSON::Object::create();
         ready->setInteger("version"_s, bridgeVersion);
         ready->setString("renderer"_s, mode == Renderer::Mode::GPU ? "gpu"_s : "cpu"_s);
+        ready->setBoolean("persistent"_s, persistent);
         emitEvent("ready"_s, WTF::move(ready));
 
         auto url = args.getString("url"_s);
