@@ -132,7 +132,10 @@ export class InceptionView extends HTMLElement {
     const gesture = () => this.#media.userGesture();
     for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, gesture, { capture: true });
 
-    const engineReady = new Promise((resolve) => this.#runtime.addEventListener('ready', (e) => resolve(e.detail), { once: true }));
+    const engineReady = new Promise((resolve, reject) => {
+      this.#runtime.addEventListener('ready', (e) => resolve(e.detail), { once: true });
+      this.#runtime.addEventListener('crash', (e) => reject(new Error(`the engine crashed while starting: ${e.detail.message}`)), { once: true });
+    });
     await this.#runtime.start();
     await this.#client.hello();
 
@@ -140,6 +143,7 @@ export class InceptionView extends HTMLElement {
     const gpu = this.getAttribute('gpu') ?? 'auto';
     this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: probeMediaCapabilities(), wasmPolyfill, wispUrl: config.wispUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? '', url: this.getAttribute('src') ?? '' });
     const ready = await engineReady;
+    this.#runtime.addEventListener('crash', (e) => this.dispatchEvent(new CustomEvent('crash', { detail: { reason: e.detail.message, stack: e.detail.stack } })));
     if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');
     this.dataset.renderer = ready.renderer;
     attachInput(this, this.#canvas, (command, args) => this.#runtime.send(command, args));

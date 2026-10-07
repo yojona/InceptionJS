@@ -60,6 +60,7 @@ export class EngineRuntime extends EventTarget {
     if (data.inceptionMediaAppend) return this.onMediaAppend?.(data.inceptionMediaAppend);
     if (data.inceptionWasm) return this.#translateWasm(data.inceptionWasm);
     if (data.inceptionPixels) return this.#presentPixels(data.inceptionPixels);
+    if (data.inceptionCrash) return this.#crashed(data.inceptionCrash);
     if (typeof data.inception !== 'string') return;
     const { event, data: payload } = JSON.parse(data.inception);
     if (event === 'started') {
@@ -71,6 +72,13 @@ export class EngineRuntime extends EventTarget {
     }
     this.onEngineEvent?.(event, payload);
     this.dispatchEvent(new CustomEvent(event, { detail: payload }));
+  }
+
+  #crashed({ message, stack }) {
+    if (this.crash) return;
+    this.crash = { message, stack };
+    console.error(`[engine] crashed: ${message}\n${stack}`);
+    this.dispatchEvent(new CustomEvent('crash', { detail: this.crash }));
   }
 
   // The engine thread is blocked on `slot` until the reply is written.
