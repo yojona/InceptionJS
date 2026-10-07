@@ -1,0 +1,82 @@
+Drag platform pieces for the port.
+
+Drag support needs per-port DragController constants and image handling,
+which the GLib port's file provides without GLib dependencies, plus a
+drag-and-drop pasteboard, drag image and file list. Drags never leave the
+engine's page, so those are the ordinary pasteboard, no image and no files.
+
+diff --git a/Source/WebCore/PlatformEmscripten.cmake b/Source/WebCore/PlatformEmscripten.cmake
+index 2af0ccd..aecbb4a 100644
+--- a/Source/WebCore/PlatformEmscripten.cmake
++++ b/Source/WebCore/PlatformEmscripten.cmake
+@@ -39,6 +39,9 @@ list(APPEND WebCore_SOURCES
+ 
+     editing/libwpe/EditorLibWPE.cpp
+ 
++    page/glib/DragControllerGLib.cpp
++
++    platform/emscripten/DragEmscripten.cpp
+     platform/emscripten/MIMETypeRegistryEmscripten.cpp
+     platform/emscripten/PlatformKeyboardEventEmscripten.cpp
+     platform/emscripten/PlatformScreenEmscripten.cpp
+diff --git a/Source/WebCore/platform/emscripten/DragEmscripten.cpp b/Source/WebCore/platform/emscripten/DragEmscripten.cpp
+new file mode 100644
+index 0000000..e5e9da5
+--- /dev/null
++++ b/Source/WebCore/platform/emscripten/DragEmscripten.cpp
+@@ -0,0 +1,55 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++
++#if ENABLE(DRAG_SUPPORT)
++
++#include "DragData.h"
++#include "DragImage.h"
++#include "Pasteboard.h"
++
++namespace WebCore {
++
++// Drags stay inside the engine's page: there is no system drag session, so a
++// drag-and-drop pasteboard is an ordinary one, without a drag image, and no
++// files arrive from outside.
++
++std::unique_ptr<Pasteboard> Pasteboard::createForDragAndDrop(std::unique_ptr<PasteboardContext>&& context)
++{
++    return makeUnique<Pasteboard>(WTF::move(context));
++}
++
++void Pasteboard::setDragImage(DragImage, const IntPoint&)
++{
++}
++
++Vector<String> DragData::asFilenames() const
++{
++    return { };
++}
++
++} // namespace WebCore
++
++#endif // ENABLE(DRAG_SUPPORT)
