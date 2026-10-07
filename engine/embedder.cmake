@@ -34,6 +34,9 @@ target_link_options(inception-engine PRIVATE
     -sDEFAULT_PTHREAD_STACK_SIZE=8MB
     -sSTACK_SIZE=8MB
 
+    # Function names in the binary, so crashes report readable stacks.
+    --profiling-funcs
+
     -sALLOW_MEMORY_GROWTH=1
     -sINITIAL_MEMORY=256MB
     -sMAXIMUM_MEMORY=4GB
