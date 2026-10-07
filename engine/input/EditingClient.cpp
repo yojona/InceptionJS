@@ -5,8 +5,9 @@
 #include "Editor.h"
 #include "EventNames.h"
 #include "KeyboardEvent.h"
-#include "LocalFrame.h"
-#include "Node.h"
+#include "FrameDestructionObserverInlines.h"
+#include "LocalFrameInlines.h"
+#include "NodeDocument.h"
 #include "PlatformKeyboardEvent.h"
 #include "TextChecking.h"
 #include <wtf/TZoneMallocInlines.h>
