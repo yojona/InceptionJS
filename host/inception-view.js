@@ -4,6 +4,7 @@ import { Preferences } from './preferences.js';
 import { defaultUserAgent } from './identity.js';
 import { PROVENANCE_STYLE, Provenance } from './provenance.js';
 import { MediaHost, probeMediaCapabilities } from './media.js';
+import { EncryptedMedia } from './eme.js';
 import { EngineRuntime } from './runtime.js';
 import { WasmTranslator } from './wasm-translator.js';
 import { ProtocolClient, ProtocolServer, createInPagePair } from './protocol.js';
@@ -146,11 +147,13 @@ export class InceptionView extends HTMLElement {
     // Videos play in the host page, under the canvas (host/media.js).
     // `autoplay-sound`: the embedder knows playback with sound is allowed here.
     const soundAllowed = this.hasAttribute('autoplay-sound') || config.policy?.autoplaySound === true;
-    this.#media = new MediaHost(this.#mediaLayer, (command, args) => this.#runtime.send(command, args), { soundAllowed });
+    const eme = new EncryptedMedia((command, args) => this.#runtime.send(command, args));
+    this.#media = new MediaHost(this.#mediaLayer, (command, args) => this.#runtime.send(command, args), { soundAllowed, eme });
     this.#runtime.onEngineEvent = (name, data) => {
       if (name === 'cursor') this.#canvas.style.cursor = data.cursor;
       if (name === 'fullscreen') this.#setFullscreen(data.active);
       if (name.startsWith('media.')) this.#media.handleEvent(name, data);
+      if (name.startsWith('eme.')) eme.handleEvent(name, data);
       if (name === 'select.show') this.#selectMenu.show(this, data);
       if (name === 'select.update') this.#selectMenu.update(data);
       if (name === 'select.hide') this.#selectMenu.hide(data.id);

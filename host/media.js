@@ -6,6 +6,8 @@
 // browser's. State flows back to the engine, which drives the page's media
 // element from it.
 
+import { encodeInitData } from './eme.js';
+
 const STATE_EVENTS = ['loadedmetadata', 'loadeddata', 'canplay', 'canplaythrough', 'playing', 'pause', 'waiting',
   'seeking', 'seeked', 'ended', 'durationchange', 'ratechange', 'volumechange', 'resize', 'error', 'stalled', 'emptied'];
 
@@ -57,14 +59,17 @@ export class MediaHost {
   #layer;
   #send;
   #soundAllowed;
+  #eme;
 
   // `layer` is the element that holds the videos, under the canvas.
   // `soundAllowed`: the embedder knows autoplay with sound is permitted (a
   // kiosk policy, an iframe allow="autoplay"); never fall back to muted.
-  constructor(layer, send, { soundAllowed = false } = {}) {
+  // `eme`: the EncryptedMedia whose MediaKeys the videos decrypt with.
+  constructor(layer, send, { soundAllowed = false, eme = null } = {}) {
     this.#layer = layer;
     this.#send = send;
     this.#soundAllowed = soundAllowed;
+    this.#eme = eme;
   }
 
   // A user gesture anywhere in the host page: videos muted only to get past
@@ -127,6 +132,7 @@ export class MediaHost {
       if (!player.forcedMute) player.video.muted = data.muted;
       return;
     case 'media.layout': return this.#layout(player, data.rect);
+    case 'media.setMediaKeys': return this.#setMediaKeys(player, data.keys);
     }
   }
 
@@ -148,6 +154,14 @@ export class MediaHost {
     for (const type of STATE_EVENTS) video.addEventListener(type, () => this.#queueState(player, type));
     video.addEventListener('error', () => console.warn(`[media] video ${id} error ${video.error?.code}: ${video.error?.message}`));
     video.addEventListener('timeupdate', () => this.#queueState(player, 'timeupdate'));
+    // Encrypted media: the page's element fires "encrypted" with the same init
+    // data, and reports waiting for a key while the host is.
+    video.addEventListener('encrypted', (event) => {
+      if (event.initData && event.initData.byteLength <= 64 * 1024)
+        this.#send('media.encrypted', { id, initDataType: event.initDataType, initData: encodeInitData(event.initData) });
+    });
+    video.addEventListener('waitingforkey', () => { player.waitingForKey = true; this.#queueState(player, 'waitingforkey'); });
+    for (const type of ['playing', 'timeupdate']) video.addEventListener(type, () => { player.waitingForKey = false; });
     this.#players.set(id, player);
   }
 
@@ -283,6 +297,14 @@ export class MediaHost {
     if (!player.wantsPlay && !video.paused) video.pause();
   }
 
+  async #setMediaKeys(player, keys) {
+    try {
+      await player.video.setMediaKeys(keys ? await this.#eme?.mediaKeys(keys) : null);
+    } catch (error) {
+      console.warn(`[media] setMediaKeys on video ${player.id}:`, error);
+    }
+  }
+
   #layout(player, rect) {
     const style = player.video.style;
     if (!rect) {
@@ -321,6 +343,7 @@ export class MediaHost {
         width: video.videoWidth,
         height: video.videoHeight,
         error: video.error ? video.error.code : 0,
+        waitingForKey: !!player.waitingForKey,
         // Players check that frames are really being presented.
         ...(() => {
           const quality = video.getVideoPlaybackQuality?.();
