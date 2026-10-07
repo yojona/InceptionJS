@@ -47,7 +47,7 @@ private:
         auto validated = validateURL(*document, url);
         if (!validated)
             return ConnectStatus::KO;
-        m_handshake = makeUnique<WebSocketHandshake>(validated->url, protocol, standardUserAgentForURL(validated->url), document->securityOrigin().toString(), validated->areCookiesAllowed, false);
+        m_handshake = makeUnique<WebSocketHandshake>(validated->url, protocol, document->userAgent(validated->url), document->securityOrigin().toString(), validated->areCookiesAllowed, false);
         m_streamID = CurlContext::singleton().streamScheduler().createStream(validated->url, *this, CurlStream::ServerTrustEvaluation::Enable, CurlStream::LocalhostAlias::Disable);
         return ConnectStatus::OK;
     }

@@ -1,6 +1,8 @@
 #include "config.h"
 
 #include "FloatSize.h"
+#include "NavigatorBase.h"
+#include "UserAgent.h"
 #include "IntSize.h"
 #include "bridge/Bridge.h"
 #include "gfx/Renderer.h"
@@ -40,6 +42,24 @@ static IntSize sizeFrom(JSON::Object& args)
     return { args.getInteger("width"_s).value_or(800), args.getInteger("height"_s).value_or(600) };
 }
 
+// navigator.platform as the browser the user agent names reports it.
+static String platformForUserAgent(const String& userAgent)
+{
+    if (userAgent.contains("iPhone"_s))
+        return "iPhone"_s;
+    if (userAgent.contains("iPad"_s))
+        return "iPad"_s;
+    if (userAgent.contains("Macintosh"_s))
+        return "MacIntel"_s;
+    if (userAgent.contains("Windows"_s))
+        return "Win32"_s;
+    if (userAgent.contains("Android"_s))
+        return "Linux armv81"_s;
+    if (userAgent.contains("Linux"_s))
+        return "Linux x86_64"_s;
+    return emptyString();
+}
+
 static void registerCommands()
 {
     // The host finds the engine's worker and greets it; the reply carries the
@@ -66,9 +86,11 @@ static void registerCommands()
         Profile::select(args.getString("profile"_s), args.getBoolean("freshProfile"_s).value_or(false));
         auto mode = Renderer::singleton().initialize(expandedIntSize(FloatSize(cssSize) * scale), preferGPU);
         View::create(cssSize, scale);
-        View::singleton()->setUserAgent(args.getString("userAgent"_s));
+        auto userAgent = args.getString("userAgent"_s);
+        View::singleton()->setUserAgent(userAgent);
         if (auto preferences = args.getObject("preferences"_s))
             applyPreferences(*preferences);
+        NavigatorBase::setPlatformName(platformForUserAgent(userAgent.isEmpty() ? standardUserAgent() : userAgent));
 
         auto ready = JSON::Object::create();
         ready->setInteger("version"_s, bridgeVersion);

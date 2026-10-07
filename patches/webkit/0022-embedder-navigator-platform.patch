@@ -1,0 +1,47 @@
+Let the embedder set navigator.platform.
+
+The wasm engine has no OS to report; the platform must match the user agent
+the embedder chose.
+
+--- a/Source/WebCore/page/NavigatorBase.cpp
++++ b/Source/WebCore/page/NavigatorBase.cpp
+@@ -94,9 +94,24 @@
+     return agent.substring(agent.find('/') + 1);
+ }
+ 
++#if PLATFORM(EMSCRIPTEN)
++static String& embedderPlatformName()
++{
++    static NeverDestroyed<String> name;
++    return name;
++}
++
++void NavigatorBase::setPlatformName(const String& name)
++{
++    embedderPlatformName() = name;
++}
++#endif
++
+ String NavigatorBase::platform() const
+ {
+-#if OS(LINUX)
++#if PLATFORM(EMSCRIPTEN)
++    return embedderPlatformName().isolatedCopy();
++#elif OS(LINUX)
+     static NeverDestroyed<String> platformName = [] {
+         struct utsname osname;
+         return uname(&osname) >= 0 ? makeString(unsafeSpan(osname.sysname), " "_s, unsafeSpan(osname.machine)) : emptyString();
+--- a/Source/WebCore/page/NavigatorBase.h
++++ b/Source/WebCore/page/NavigatorBase.h
+@@ -58,6 +58,11 @@
+     String appVersion() const;
+     virtual const String& userAgent() const = 0;
+     virtual String platform() const;
++#if PLATFORM(EMSCRIPTEN)
++    // The engine runs on no OS of its own; the embedder names the platform its
++    // user agent describes.
++    WEBCORE_EXPORT static void setPlatformName(const String&);
++#endif
+ 
+     static String appCodeName();
+     static String product();
