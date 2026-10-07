@@ -95,6 +95,17 @@ export class InceptionView extends HTMLElement {
 
   async #start() {
     if (!config.engineUrl) throw new Error('Inception.configure({engineUrl, wispUrl}) first');
+    // A profile's files are open by one engine at a time: the second tab would
+    // get read-only file handles. Held for the life of this page.
+    const profile = this.getAttribute('profile') ?? config.storage?.profile ?? 'default';
+    if (navigator.locks) {
+      const acquired = await new Promise((resolve) => navigator.locks.request(`inception-profile:${profile}`, { ifAvailable: true }, (lock) => {
+        resolve(!!lock);
+        return lock ? new Promise(() => {}) : undefined;
+      }));
+      if (!acquired) throw new Error(`The profile "${profile}" is open in another tab or window`);
+    }
+    navigator.storage?.persist?.().catch(() => {});
     this.#runtime = new EngineRuntime({ engineUrl: config.engineUrl, wispUrl: config.wispUrl, canvas: this.#canvas });
     this.#server = this.#createServer();
     const [serverSide, clientSide] = createInPagePair();
@@ -127,7 +138,7 @@ export class InceptionView extends HTMLElement {
 
     const { width, height } = this.#cssSize();
     const gpu = this.getAttribute('gpu') ?? 'auto';
-    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: probeMediaCapabilities(), wasmPolyfill, wispUrl: config.wispUrl, profile: this.getAttribute('profile') ?? config.storage?.profile ?? 'default', freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? '', url: this.getAttribute('src') ?? '' });
+    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: probeMediaCapabilities(), wasmPolyfill, wispUrl: config.wispUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? '', url: this.getAttribute('src') ?? '' });
     const ready = await engineReady;
     if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');
     this.dataset.renderer = ready.renderer;
