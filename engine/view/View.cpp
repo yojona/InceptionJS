@@ -10,6 +10,7 @@
 #include "GraphicsContext.h"
 #include "LocalFrameInlines.h"
 #include "LocalFrameView.h"
+#include "MemoryCache.h"
 #include "Page.h"
 #include "PageIdentifier.h"
 #include "PageConfiguration.h"
@@ -68,10 +69,24 @@ View::View(IntSize cssSize, float deviceScaleFactor)
 
     m_page = Page::create(WTF::move(configuration));
 
+    // Raw WebCore defaults are off for most of what a browser turns on; each of
+    // these is a feature pages expect.
     auto& settings = m_page->settings();
     settings.setScriptEnabled(true);
+    settings.setLoadsImagesAutomatically(true);
+    settings.setRequestIdleCallbackEnabled(true);
+    settings.setDataTransferItemsEnabled(true);
+    settings.setMinimumLogicalFontSize(9);
+    settings.setStandardFontFamily("serif"_s);
+    settings.setSerifFontFamily("serif"_s);
+    settings.setSansSerifFontFamily("sans-serif"_s);
+    settings.setFixedFontFamily("monospace"_s);
+    settings.setCanvasUsesAcceleratedDrawing(Renderer::singleton().mode() == Renderer::Mode::GPU);
     // Until the layer compositor lands, everything paints into one surface.
     settings.setAcceleratedCompositingEnabled(false);
+
+    // The default memory cache (8 MB) holds less than one modern page.
+    MemoryCache::singleton().setCapacities(0, 16 * 1024 * 1024, 64 * 1024 * 1024);
 
     // The main frame must exist before activity state reaches it.
     if (RefPtr frame = mainFrame())
