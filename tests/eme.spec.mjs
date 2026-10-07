@@ -49,7 +49,7 @@ test('MediaKeys follow the element across source changes', async ({ page }) => {
   // On an http page: blob URLs made in about:blank do not load in this engine yet.
   await page.goto(`${PAGE}?url=https://example.com/`);
   await view(page).evaluate((el) => el.ready);
-  await expect.poll(() => evaluate(page, 'document.readyState'), { timeout: 30_000 }).toBe('complete');
+  await expect.poll(() => evaluate(page, 'location.host + " " + document.readyState'), { timeout: 30_000 }).toBe('example.com complete');
   const warnings = [];
   page.on('console', (m) => { if (/setMediaKeys|releasing MediaKeys/.test(m.text())) warnings.push(m.text()); });
   await evaluate(page, `(async () => {
