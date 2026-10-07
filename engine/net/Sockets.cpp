@@ -16,7 +16,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
-#include <wtf/Deque.h>
+#include <wtf/Vector.h>
 #include <wtf/HashMap.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/Vector.h>
@@ -54,7 +54,19 @@ struct Socket {
     int error { 0 };
     // Socket pairs deliver to each other in memory instead of the relay.
     int pairedWith { -1 };
-    Deque<uint8_t> input;
+    // Unread bytes are input[inputStart...].
+    Vector<uint8_t> input;
+    size_t inputStart { 0 };
+
+    size_t available() const { return input.size() - inputStart; }
+    void append(std::span<const uint8_t> data)
+    {
+        if (inputStart && inputStart == input.size()) {
+            input.shrink(0);
+            inputStart = 0;
+        }
+        input.append(data);
+    }
     in_addr_t address { 0 };
     in_port_t port { 0 };
 };
@@ -137,7 +149,7 @@ static void fillAddress(const Socket& socket, sockaddr* address, socklen_t* leng
 static short readiness(const Socket& socket, short events)
 {
     short revents = 0;
-    if ((events & POLLIN) && (!socket.input.isEmpty() || socket.peerClosed || socket.state == State::Closed))
+    if ((events & POLLIN) && (socket.available() || socket.peerClosed || socket.state == State::Closed))
         revents |= POLLIN;
     if ((events & POLLOUT) && socket.state == State::Open && !socket.peerClosed)
         revents |= POLLOUT;
@@ -148,18 +160,29 @@ static short readiness(const Socket& socket, short events)
     return revents;
 }
 
-static ssize_t receive(Socket& socket, uint8_t* buffer, size_t length)
+// MSG_PEEK matters: curl probes idle connections with a one-byte peek, and
+// consuming that byte would corrupt the next TLS record.
+static ssize_t receive(Socket& socket, uint8_t* buffer, size_t length, int flags)
 {
-    if (socket.input.isEmpty()) {
+    if (!socket.available()) {
         if (socket.state == State::Failed)
             return -(socket.error ? socket.error : ECONNRESET);
         if (socket.peerClosed || socket.state == State::Closed)
             return 0;
         return -EAGAIN;
     }
-    size_t count = std::min(length, socket.input.size());
-    for (size_t i = 0; i < count; ++i)
-        buffer[i] = socket.input.takeFirst();
+    size_t count = std::min(length, socket.available());
+    memcpy(buffer, socket.input.span().data() + socket.inputStart, count);
+    if (flags & MSG_PEEK)
+        return count;
+    socket.inputStart += count;
+    if (socket.inputStart == socket.input.size()) {
+        socket.input.shrink(0);
+        socket.inputStart = 0;
+    } else if (socket.inputStart >= 64 * 1024 && socket.inputStart * 2 >= socket.input.size()) {
+        socket.input.removeAt(0, socket.inputStart);
+        socket.inputStart = 0;
+    }
     return count;
 }
 
@@ -169,8 +192,7 @@ static ssize_t transmit(int fd, Socket& socket, const uint8_t* data, size_t leng
         auto* peer = socketFor(socket.pairedWith);
         if (!peer)
             return -EPIPE;
-        for (size_t i = 0; i < length; ++i)
-            peer->input.append(data[i]);
+        peer->append({ data, length });
         return length;
     }
     switch (socket.state) {
@@ -204,8 +226,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void inception_tcp_data(int fd, const uint8_t* d
     auto* socket = socketFor(fd);
     if (!socket)
         return;
-    for (size_t i = 0; i < length; ++i)
-        socket->input.append(data[i]);
+    socket->append({ data, length });
 }
 
 // The relay has no half-close: a close is the end of both directions. A
@@ -331,12 +352,12 @@ int __wrap___syscall_sendto(int fd, intptr_t message, size_t length, int, intptr
     return transmit(fd, *socket, reinterpret_cast<const uint8_t*>(message), length);
 }
 
-int __wrap___syscall_recvfrom(int fd, intptr_t buffer, size_t length, int, intptr_t, intptr_t)
+int __wrap___syscall_recvfrom(int fd, intptr_t buffer, size_t length, int flags, intptr_t, intptr_t)
 {
     auto* socket = socketFor(fd);
     if (!socket)
         return -ENOTSOCK;
-    return receive(*socket, reinterpret_cast<uint8_t*>(buffer), length);
+    return receive(*socket, reinterpret_cast<uint8_t*>(buffer), length, flags);
 }
 
 int __wrap___syscall_sendmsg(int fd, intptr_t message, int, intptr_t, size_t, int)
@@ -355,15 +376,19 @@ int __wrap___syscall_sendmsg(int fd, intptr_t message, int, intptr_t, size_t, in
     return total;
 }
 
-int __wrap___syscall_recvmsg(int fd, intptr_t message, int, int, int, int)
+int __wrap___syscall_recvmsg(int fd, intptr_t message, int flags, int, int, int)
 {
     auto* socket = socketFor(fd);
     if (!socket)
         return -ENOTSOCK;
     auto* header = reinterpret_cast<msghdr*>(message);
+    if (flags & MSG_PEEK) {
+        // Peeking several buffers would need an offset; nothing here asks for that.
+        return header->msg_iovlen ? receive(*socket, static_cast<uint8_t*>(header->msg_iov[0].iov_base), header->msg_iov[0].iov_len, flags) : 0;
+    }
     ssize_t total = 0;
     for (int i = 0; i < header->msg_iovlen; ++i) {
-        auto received = receive(*socket, static_cast<uint8_t*>(header->msg_iov[i].iov_base), header->msg_iov[i].iov_len);
+        auto received = receive(*socket, static_cast<uint8_t*>(header->msg_iov[i].iov_base), header->msg_iov[i].iov_len, flags);
         if (received <= 0)
             return total ? total : received;
         total += received;
@@ -492,7 +517,7 @@ int __wrap___syscall_ioctl(int fd, int request, ...)
         return 0;
     }
     if (request == FIONREAD) {
-        *reinterpret_cast<int*>(argument) = socket->input.size();
+        *reinterpret_cast<int*>(argument) = socket->available();
         return 0;
     }
     return -ENOTTY;
