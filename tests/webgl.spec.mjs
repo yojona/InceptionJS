@@ -119,18 +119,14 @@ test('the page context budget follows the renderer, or the embedder', async ({ p
 
 test('pages hold their whole budget; one more loses their oldest', async ({ page }) => {
   const budget = await view(page).evaluate((el) => el.ready.then((r) => r.webglContexts));
+  // The lost event comes later, as in browsers; isContextLost() answers now.
   const counts = JSON.parse(await evaluate(page, `(() => {
     window.held = [];
-    let lost = 0;
-    const make = () => {
-      const canvas = document.createElement('canvas');
-      canvas.addEventListener('webglcontextlost', () => lost++);
-      window.held.push(canvas.getContext('webgl2'));
-    };
-    for (let i = 0; i < ${budget}; i++) make();
-    const within = lost;
-    make();
-    return JSON.stringify({ within, past: lost, firstLost: window.held[0].isContextLost(), lastLost: window.held.at(-1).isContextLost() });
+    const lostCount = () => window.held.filter((gl) => gl.isContextLost()).length;
+    for (let i = 0; i < ${budget}; i++) window.held.push(document.createElement('canvas').getContext('webgl2'));
+    const within = lostCount();
+    window.held.push(document.createElement('canvas').getContext('webgl2'));
+    return JSON.stringify({ within, past: lostCount(), firstLost: window.held[0].isContextLost(), lastLost: window.held.at(-1).isContextLost() });
   })()`));
   expect(counts).toEqual({ within: 0, past: 1, firstLost: true, lastLost: false });
 });
