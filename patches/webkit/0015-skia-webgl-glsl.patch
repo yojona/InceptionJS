@@ -1,0 +1,75 @@
+Present WebGL's GLSL version string to Skia in GLES form.
+
+WebGL reports "WebGL GLSL ES 3.00 (...)", which Skia cannot parse, so it
+refused the context and painting fell back to the CPU. Both version strings
+are now rewritten to their GLES forms.
+
+diff --git a/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.cpp b/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.cpp
+index 62a9cb6..4e4de6c 100644
+--- a/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.cpp
++++ b/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.cpp
+@@ -28,7 +28,8 @@
+ #if USE(SKIA)
+ 
+ #include <GLES3/gl3.h>
+-#include <algorithm>
++#include <array>
++#include <cstdio>
+ #include <cstring>
+ #include <emscripten/em_js.h>
+ #include <emscripten/html5_webgl.h>
+@@ -56,25 +57,40 @@ EM_JS(void, inceptionGetInternalformativ, (GLenum target, GLenum internalformat,
+ 
+ namespace WebCore {
+ 
+-// Skia classifies "OpenGL ES 3.0 (WebGL 2.0 ...)" as the WebGL standard, whose
+-// interface is compiled out of this Skia build. Under WebGL2 the GLES 3.0
+-// interface is the right one, so the version string stops before "(WebGL".
++// WebGL reports itself in two strings Skia does not parse:
++//   GL_VERSION                   "OpenGL ES 3.0 (WebGL 2.0 (...))"
++//   GL_SHADING_LANGUAGE_VERSION  "WebGL GLSL ES 3.00 (...)"
++// The first would select Skia's WebGL interface, which this Skia build leaves
++// out; under WebGL2 the GLES 3.0 interface is the right one. The second would
++// make the GLSL version invalid. Both are rewritten to their GLES forms.
++static const GLubyte* rewriteVersion(const GLubyte* value, const char* dropPrefix, const char* addPrefix, std::array<char, 64>& storage)
++{
++    if (storage[0])
++        return reinterpret_cast<const GLubyte*>(storage.data());
++    const char* source = reinterpret_cast<const char*>(value);
++    size_t dropLength = strlen(dropPrefix);
++    if (!strncmp(source, dropPrefix, dropLength))
++        source += dropLength;
++    const char* cut = strstr(source, " (");
++    size_t length = cut ? static_cast<size_t>(cut - source) : strlen(source);
++    snprintf(storage.data(), storage.size(), "%s%.*s", addPrefix, static_cast<int>(length), source);
++    return reinterpret_cast<const GLubyte*>(storage.data());
++}
++
+ static const GLubyte* GL_APIENTRY getStringForSkia(GLenum name)
+ {
+     const GLubyte* value = glGetString(name);
+-    if (name != GL_VERSION || !value)
++    if (!value)
+         return value;
+-
+-    static char version[32];
+-    if (!version[0]) {
+-        const char* source = reinterpret_cast<const char*>(value);
+-        const char* cut = strstr(source, " (");
+-        size_t length = cut ? static_cast<size_t>(cut - source) : strlen(source);
+-        length = std::min(length, sizeof(version) - 1);
+-        memcpy(version, source, length);
+-        version[length] = '\0';
++    if (name == GL_VERSION) {
++        static std::array<char, 64> version;
++        return rewriteVersion(value, "", "", version);
++    }
++    if (name == GL_SHADING_LANGUAGE_VERSION) {
++        static std::array<char, 64> glslVersion;
++        return rewriteVersion(value, "WebGL GLSL ES ", "OpenGL ES GLSL ES ", glslVersion);
+     }
+-    return reinterpret_cast<const GLubyte*>(version);
++    return value;
+ }
+ 
+ static GrGLFuncPtr getProc(void*, const char* name)
