@@ -11,9 +11,25 @@
 #include <JavaScriptCore/JSCJSValueInlines.h>
 #include <JavaScriptCore/JSLock.h>
 #include <emscripten/heap.h>
+#include <wtf/NeverDestroyed.h>
 
 namespace Inception {
 using namespace WebCore;
+
+static String& injectedScript()
+{
+    static NeverDestroyed<String> source;
+    return source;
+}
+
+// Runs the script set with "debug.inject" in each new window, before the
+// page's own scripts. Development aid for tracing what pages touch.
+void runInjectedScript(LocalFrame& frame, DOMWrapperWorld& world)
+{
+    if (injectedScript().isEmpty() || !world.isNormal())
+        return;
+    frame.script().executeScriptIgnoringException(injectedScript(), JSC::SourceTaintedOrigin::Untainted);
+}
 
 // {source, id}: evaluates script in the main frame and answers with a
 // "debug.result" event carrying its string value. Development aid only; the
@@ -23,6 +39,11 @@ void registerDebugCommands()
     // {enabled}: report network requests as console debug events.
     registerCommand("debug.netlog"_s, [](JSON::Object& args) {
         NetworkLoad::setLogging(args.getBoolean("enabled"_s).value_or(false));
+    });
+
+    // {source}: see runInjectedScript; an empty source stops it.
+    registerCommand("debug.inject"_s, [](JSON::Object& args) {
+        injectedScript() = args.getString("source"_s);
     });
 
     registerCommand("debug.evaluate"_s, [](JSON::Object& args) {
