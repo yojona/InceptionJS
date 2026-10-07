@@ -28,6 +28,7 @@ export class InceptionView extends HTMLElement {
   #canvas;
   #mediaLayer;
   #media = null;
+  #debugRequests = 0;
   #ready = null;
   #state = { url: '', title: '', loading: false };
 
@@ -37,7 +38,7 @@ export class InceptionView extends HTMLElement {
     shadow.innerHTML = `<style>
       :host { display: block; position: relative; overflow: hidden; contain: strict; width: 800px; height: 600px; outline: none; }
       canvas, .media { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-      .media { overflow: hidden; }
+      .media { overflow: hidden; pointer-events: none; }
     </style><div class="media" part="media"></div><canvas part="screen"></canvas>`;
     this.#canvas = shadow.querySelector('canvas');
     this.#mediaLayer = shadow.querySelector('.media');
@@ -62,6 +63,21 @@ export class InceptionView extends HTMLElement {
   async navigate(url) {
     await this.ready;
     return this.#client.request('view.navigate', { url });
+  }
+
+  // Development aid: evaluates script in the engine's main frame.
+  async debugEvaluate(source) {
+    await this.ready;
+    const id = ++this.#debugRequests;
+    return new Promise((resolve) => {
+      const listener = (e) => {
+        if (e.detail.id !== id) return;
+        this.#runtime.removeEventListener('debug.result', listener);
+        resolve(e.detail.value);
+      };
+      this.#runtime.addEventListener('debug.result', listener);
+      this.#runtime.send('debug.evaluate', { id, source });
+    });
   }
 
   serve(transport) {
