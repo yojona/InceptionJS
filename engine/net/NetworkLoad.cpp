@@ -42,7 +42,7 @@ void NetworkLoad::start(const ResourceRequest& request)
     m_request = request;
     addCookieHeader(m_request);
     if (s_logging)
-        report("debug"_s, makeString("net "_s, m_request.httpMethod(), ' ', m_request.url().string().left(300)));
+        report("debug"_s, makeString("net "_s, m_request.httpMethod(), ' ', m_request.url().string().left(4000)));
     m_curl = CurlRequest::create(m_request, *this);
     m_curl->resume();
 }
