@@ -101,3 +101,36 @@ test('many short-lived page contexts leave the engine painting', async ({ page }
     return [...copy.getImageData(10, 10, 1, 1).data.slice(0, 3)];
   }), { timeout: 20_000 }).toEqual([255, 0, 0]);
 });
+
+const screenPixel = (page, x, y) => page.evaluate(async ([x, y]) => {
+  const canvas = document.querySelector('inception-view').shadowRoot.querySelector('canvas');
+  const bitmap = await createImageBitmap(canvas);
+  const copy = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d');
+  copy.drawImage(bitmap, 0, 0);
+  return [...copy.getImageData(x, y, 1, 1).data.slice(0, 3)];
+}, [x, y]);
+
+test('the page context budget follows the renderer, or the embedder', async ({ page }) => {
+  // Headless Chrome rasterizes WebGL in software, where the browser's cap is four.
+  expect(await view(page).evaluate((el) => el.ready.then((r) => r.webglContexts))).toBe(3);
+  await page.goto(`${PAGE}?url=about:blank&webgl-contexts=2`);
+  expect(await view(page).evaluate((el) => el.ready.then((r) => r.webglContexts))).toBe(2);
+});
+
+test('pages hold their whole budget; one more loses their oldest', async ({ page }) => {
+  const budget = await view(page).evaluate((el) => el.ready.then((r) => r.webglContexts));
+  const counts = JSON.parse(await evaluate(page, `(() => {
+    window.held = [];
+    let lost = 0;
+    const make = () => {
+      const canvas = document.createElement('canvas');
+      canvas.addEventListener('webglcontextlost', () => lost++);
+      window.held.push(canvas.getContext('webgl2'));
+    };
+    for (let i = 0; i < ${budget}; i++) make();
+    const within = lost;
+    make();
+    return JSON.stringify({ within, past: lost, firstLost: window.held[0].isContextLost(), lastLost: window.held.at(-1).isContextLost() });
+  })()`));
+  expect(counts).toEqual({ within: 0, past: 1, firstLost: true, lastLost: false });
+});

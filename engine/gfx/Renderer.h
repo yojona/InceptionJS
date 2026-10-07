@@ -25,8 +25,10 @@ public:
 
     static Renderer& singleton();
 
-    // `preferGPU` false forces the CPU path. Returns the mode in use.
-    Mode initialize(WebCore::IntSize pixelSize, bool preferGPU);
+    // `preferGPU` false forces the CPU path. `pageContexts` caps the WebGL
+    // contexts pages may hold (0: derived from the host's renderer). Returns the
+    // mode in use.
+    Mode initialize(WebCore::IntSize pixelSize, bool preferGPU, int pageContexts = 0);
     Mode mode() const { return m_mode; }
 
     void resize(WebCore::IntSize pixelSize);
@@ -41,6 +43,7 @@ private:
     void paintCPU(const Function<void(WebCore::GraphicsContext&)>&);
 
     Mode m_mode { Mode::CPU };
+    int m_requestedPageContexts { 0 };
     WebCore::IntSize m_size;
     Vector<uint8_t> m_pixels;
     sk_sp<SkSurface> m_surface;

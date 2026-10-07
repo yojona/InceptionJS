@@ -23,7 +23,7 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
 WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
 
 extern "C" {
-int inception_gfx_create_context(int width, int height);
+int inception_gfx_create_context(int width, int height, int requestedPageContexts);
 void inception_gfx_resize(int width, int height);
 void inception_gfx_present();
 void inception_gfx_present_pixels(const uint8_t*, int width, int height);
@@ -38,16 +38,17 @@ Renderer& Renderer::singleton()
     return renderer;
 }
 
-Renderer::Mode Renderer::initialize(IntSize pixelSize, bool preferGPU)
+Renderer::Mode Renderer::initialize(IntSize pixelSize, bool preferGPU, int pageContexts)
 {
     m_size = pixelSize;
+    m_requestedPageContexts = pageContexts;
     m_mode = preferGPU && initializeGPU() ? Mode::GPU : Mode::CPU;
     return m_mode;
 }
 
 bool Renderer::initializeGPU()
 {
-    auto handle = inception_gfx_create_context(m_size.width(), m_size.height());
+    auto handle = inception_gfx_create_context(m_size.width(), m_size.height(), m_requestedPageContexts);
     if (!handle)
         return false;
     setSharedWebGLContext(handle);

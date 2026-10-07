@@ -30,6 +30,7 @@
 
 extern "C" {
 void inception_loop_schedule(double delayMs);
+int inception_gfx_page_context_cap();
 }
 
 namespace Inception {
@@ -84,7 +85,7 @@ static void registerCommands()
         // Before the page exists: storage opens its files on first use.
         bool persistent = Disk::mount();
         Profile::select(args.getString("profile"_s), args.getBoolean("freshProfile"_s).value_or(false));
-        auto mode = Renderer::singleton().initialize(expandedIntSize(FloatSize(cssSize) * scale), preferGPU);
+        auto mode = Renderer::singleton().initialize(expandedIntSize(FloatSize(cssSize) * scale), preferGPU, args.getInteger("webglContexts"_s).value_or(0));
         View::create(cssSize, scale);
         auto userAgent = args.getString("userAgent"_s);
         View::singleton()->setUserAgent(userAgent);
@@ -96,6 +97,7 @@ static void registerCommands()
         ready->setInteger("version"_s, bridgeVersion);
         ready->setString("renderer"_s, mode == Renderer::Mode::GPU ? "gpu"_s : "cpu"_s);
         ready->setBoolean("persistent"_s, persistent);
+        ready->setInteger("webglContexts"_s, inception_gfx_page_context_cap());
         emitEvent("ready"_s, WTF::move(ready));
 
         auto url = args.getString("url"_s);
