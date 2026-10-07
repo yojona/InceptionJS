@@ -22,6 +22,7 @@
 #include "media/MediaBridge.h"
 #include "net/Session.h"
 #include "storage/IndexedDB.h"
+#include "storage/WebStorage.h"
 #include "view/Clients.h"
 #include <emscripten/em_macros.h>
 #include <pal/SessionID.h>
@@ -58,6 +59,7 @@ View::View(IntSize cssSize, float deviceScaleFactor)
     configuration.chromeClient = makeUniqueRef<ChromeClientImpl>(*this);
     configuration.cookieJar = createCookieJar();
     configuration.databaseProvider = createDatabaseProvider();
+    configuration.storageNamespaceProvider = createStorageNamespaceProvider();
     configuration.editorClient = makeUniqueRef<EditorClientImpl>();
     configuration.mainFrameCreationParameters = PageConfiguration::LocalMainFrameCreationParameters {
         CompletionHandler<UniqueRef<LocalFrameLoaderClient>(LocalFrame&, FrameLoader&)> { [this](auto& frame, auto& frameLoader) {
@@ -75,6 +77,8 @@ View::View(IntSize cssSize, float deviceScaleFactor)
     settings.setScriptEnabled(true);
     settings.setLoadsImagesAutomatically(true);
     settings.setRequestIdleCallbackEnabled(true);
+    settings.setLocalStorageEnabled(true);
+    settings.setSessionStorageEnabled(true);
     settings.setDataTransferItemsEnabled(true);
     settings.setMinimumLogicalFontSize(9);
     settings.setStandardFontFamily("serif"_s);
