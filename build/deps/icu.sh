@@ -20,7 +20,7 @@ rm -rf "$wasm"; mkdir -p "$wasm"
 (
   cd "$wasm"
   logged icu-configure emconfigure "$src/source/configure" \
-    --build="$("$src/source/config.guess")" --host=wasm32-unknown-emscripten \
+    --build="$(sh "$src/source/config.guess")" --host=wasm32-unknown-emscripten \
     --with-cross-build="$host" \
     --enable-static --disable-shared --disable-tests --disable-samples \
     --disable-extras --disable-tools --disable-dyload \
