@@ -130,8 +130,11 @@ void Renderer::paintGPU(const Function<void(GraphicsContext&)>& paint)
         return;
     glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer.fFBOID);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    // The blit obeys the scissor test, and Skia leaves it set to whatever it
+    // drew last; without this only that region reaches the canvas.
+    glDisable(GL_SCISSOR_TEST);
     glBlitFramebuffer(0, 0, m_size.width(), m_size.height(), 0, 0, m_size.width(), m_size.height(), GL_COLOR_BUFFER_BIT, GL_NEAREST);
-    grContext->resetContext(kRenderTarget_GrGLBackendState);
+    grContext->resetContext();
     inception_gfx_present();
 }
 
