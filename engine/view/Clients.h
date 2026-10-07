@@ -44,6 +44,8 @@ private:
     CompletionHandler<void(WebCore::ExceptionOr<void>)> m_willEnterFullscreen;
     CompletionHandler<bool(bool)> m_didEnterFullscreen;
     bool m_hostFullscreen { false };
+    RefPtr<WebCore::Element> m_fullscreenElement;
+    WebCore::HTMLMediaElementEnums::VideoFullscreenMode m_fullscreenMode { };
 
     View& m_view;
 };

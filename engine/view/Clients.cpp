@@ -33,7 +33,7 @@ ChromeClientImpl::ChromeClientImpl(View& view)
     });
 }
 
-void ChromeClientImpl::enterFullScreenForElement(Element&, HTMLMediaElementEnums::VideoFullscreenMode, CompletionHandler<void(ExceptionOr<void>)>&& willEnter, CompletionHandler<bool(bool)>&& didEnter)
+void ChromeClientImpl::enterFullScreenForElement(Element& element, HTMLMediaElementEnums::VideoFullscreenMode mode, CompletionHandler<void(ExceptionOr<void>)>&& willEnter, CompletionHandler<bool(bool)>&& didEnter)
 {
     if (m_willEnterFullscreen)
         m_willEnterFullscreen(Exception { ExceptionCode::TypeError, "Another fullscreen request is pending"_s });
@@ -41,13 +41,17 @@ void ChromeClientImpl::enterFullScreenForElement(Element&, HTMLMediaElementEnums
         m_didEnterFullscreen(false);
     m_willEnterFullscreen = WTF::move(willEnter);
     m_didEnterFullscreen = WTF::move(didEnter);
+    m_fullscreenElement = &element;
+    m_fullscreenMode = mode;
     auto data = JSON::Object::create();
     data->setBoolean("active"_s, true);
     emitEvent("fullscreen"_s, WTF::move(data));
 }
 
-void ChromeClientImpl::exitFullScreenForElement(Element*, CompletionHandler<void()>&& completion)
+void ChromeClientImpl::exitFullScreenForElement(Element* element, CompletionHandler<void()>&& completion)
 {
+    if (element)
+        element->document().fullscreen().willExitFullscreen();
     if (m_hostFullscreen) {
         auto data = JSON::Object::create();
         data->setBoolean("active"_s, false);
@@ -60,10 +64,14 @@ void ChromeClientImpl::hostFullscreenChanged(bool active, const String& error)
 {
     bool wasActive = std::exchange(m_hostFullscreen, active);
     if (m_willEnterFullscreen) {
-        if (active) {
-            m_willEnterFullscreen({ });
+        RefPtr element = std::exchange(m_fullscreenElement, nullptr);
+        if (active && element) {
+            // The document enters fullscreen in two steps around the host's own.
+            auto result = element->document().fullscreen().willEnterFullscreen(*element, m_fullscreenMode);
+            bool succeeded = !result.hasException();
+            m_willEnterFullscreen(WTF::move(result));
             if (m_didEnterFullscreen)
-                m_didEnterFullscreen(true);
+                m_didEnterFullscreen(succeeded);
         } else {
             m_willEnterFullscreen(Exception { ExceptionCode::TypeError, error.isEmpty() ? "Fullscreen request denied"_s : error });
             if (m_didEnterFullscreen)
