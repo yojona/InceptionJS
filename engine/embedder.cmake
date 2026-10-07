@@ -13,9 +13,7 @@ set_target_properties(inception-engine PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 
-# Source directories first: WebCore also exports copies of its headers, and
-# mixing the two copies of one header defeats #pragma once.
-target_include_directories(inception-engine BEFORE PRIVATE
+target_include_directories(inception-engine PRIVATE
     ${INCEPTION_ENGINE_DIR}
     ${WebCore_PRIVATE_INCLUDE_DIRECTORIES}
     ${WebCore_DERIVED_SOURCES_DIR}

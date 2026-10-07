@@ -2,6 +2,7 @@
 #include "view/View.h"
 
 #include "CookieJar.h"
+#include "DocumentView.h"
 #include "EmptyClients.h"
 #include "FrameLoadRequest.h"
 #include "FrameLoader.h"
