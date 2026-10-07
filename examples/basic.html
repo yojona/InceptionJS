@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InceptionJS: basic</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; background: #f4f4f5; }
+  form { display: flex; gap: 8px; padding: 8px; }
+  input { flex: 1; padding: 6px 8px; font: inherit; }
+  inception-view { width: 100vw; height: calc(100vh - 50px); background: #fff; }
+</style>
+<form id="bar">
+  <input id="address" value="https://example.com/" autocomplete="off" spellcheck="false">
+  <button>Go</button>
+</form>
+<inception-view id="view" src="https://example.com/"></inception-view>
+<script type="module">
+  import { Inception } from '../host/inception-view.js';
+
+  const params = new URLSearchParams(location.search);
+  Inception.configure({
+    engineUrl: new URL('../engine/inception-engine.js', import.meta.url).href,
+    wispUrl: params.get('wisp') ?? `ws://${location.hostname}:5001/`,
+  });
+
+  const view = document.getElementById('view');
+  const address = document.getElementById('address');
+  if (params.get('url')) view.setAttribute('src', address.value = params.get('url'));
+  document.getElementById('bar').addEventListener('submit', (e) => {
+    e.preventDefault();
+    view.navigate(address.value);
+  });
+  view.addEventListener('navigate', (e) => (address.value = e.detail.url));
+  view.addEventListener('title', (e) => (document.title = e.detail.title || 'InceptionJS'));
+  view.addEventListener('crash', (e) => console.error('engine crashed:', e.detail.reason));
+</script>
