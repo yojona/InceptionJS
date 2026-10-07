@@ -62,9 +62,6 @@ private:
     Ref<ComputeSeekPromise> computeSeekTime(const WebCore::SeekTarget&) final;
     void seekToTime(const MediaTime&) final { }
 
-    const Logger& sourceBufferLogger() const final;
-    uint64_t sourceBufferLogIdentifier() final { return 0; }
-
     void send(const String& event, Ref<JSON::Object>&& = JSON::Object::create());
     void sendAppendWindow();
 

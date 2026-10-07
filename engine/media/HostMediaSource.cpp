@@ -7,7 +7,6 @@
 #include "SourceBufferPrivateClient.h"
 #include "media/HostMediaPlayer.h"
 #include "media/MediaBridge.h"
-#include <wtf/Logger.h>
 #include <wtf/NeverDestroyed.h>
 
 extern "C" {
@@ -208,12 +207,6 @@ void HostSourceBuffer::sendAppendWindow()
 Ref<SourceBufferPrivate::ComputeSeekPromise> HostSourceBuffer::computeSeekTime(const SeekTarget& target)
 {
     return ComputeSeekPromise::createAndResolve(target.time);
-}
-
-const Logger& HostSourceBuffer::sourceBufferLogger() const
-{
-    static NeverDestroyed<Ref<Logger>> logger = Logger::create(this);
-    return logger.get();
 }
 
 } // namespace Inception::Media
