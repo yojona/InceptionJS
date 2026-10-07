@@ -46,6 +46,9 @@
     view.addEventListener(name, (e) => add(name === 'crash' ? 'error' : '', `${name} ${JSON.stringify(e.detail)}`));
   view.addEventListener('console', (e) => add(e.detail.level, `console.${e.detail.level} ${e.detail.message}`));
 
+  // ?netlog=1 reports every network request in the log.
+  if (params.get('netlog')) view.ready.then(() => view.debugCommand('debug.netlog', { enabled: true }));
+
   const started = performance.now();
   view.ready.then((ready) => (status.textContent = `renderer ${ready.renderer}, ready in ${Math.round(performance.now() - started)} ms`));
   view.addEventListener('crash', (e) => (status.textContent = `crashed: ${e.detail.reason}`));

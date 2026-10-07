@@ -83,6 +83,12 @@ export class InceptionView extends HTMLElement {
     });
   }
 
+  // Development aid: sends a raw engine command.
+  async debugCommand(command, args = {}) {
+    await this.ready;
+    this.#runtime.send(command, args);
+  }
+
   serve(transport) {
     return this.#server.connect(transport);
   }
