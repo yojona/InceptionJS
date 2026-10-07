@@ -1,5 +1,6 @@
 #include "config.h"
 
+#include "DOMWrapperWorld.h"
 #include "JSDOMGlobalObject.h"
 #include "LocalFrame.h"
 #include "ScriptController.h"
