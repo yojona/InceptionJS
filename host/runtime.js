@@ -56,6 +56,7 @@ export class EngineRuntime extends EventTarget {
 
   #onWorkerMessage(worker, data) {
     if (!data || typeof data !== 'object') return;
+    if (data.inceptionWantsFrame) return requestAnimationFrame(() => worker.postMessage({ inceptionFrameTick: 1 }));
     if (data.inceptionFrame) return this.#presentBitmap(data.inceptionFrame);
     if (data.inceptionPixels) return this.#presentPixels(data.inceptionPixels);
     if (typeof data.inception !== 'string') return;

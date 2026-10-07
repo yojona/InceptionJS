@@ -65,15 +65,24 @@ addToLibrary({
     postMessage({ inceptionPixels: { width, height, buffer: bytes.buffer } }, [bytes.buffer]);
   },
 
+  // Frames are paced by the host page's requestAnimationFrame: the engine asks
+  // once, the host answers on its next frame. Worker-side rAF is not reliable
+  // for a canvas that is not tied to the page.
   inception_gfx_request_frame__deps: ['$inceptionGfx'],
   inception_gfx_request_frame: () => {
     if (inceptionGfx.frameRequested) return;
     inceptionGfx.frameRequested = true;
-    const run = () => {
+    postMessage({ inceptionWantsFrame: 1 });
+  },
+
+  $inceptionGfxInstall__deps: ['$inceptionGfx'],
+  $inceptionGfxInstall__postset: 'inceptionGfxInstall();',
+  $inceptionGfxInstall: () => {
+    if (!ENVIRONMENT_IS_PTHREAD) return;
+    self.addEventListener('message', (e) => {
+      if (!e.data?.inceptionFrameTick) return;
       inceptionGfx.frameRequested = false;
       Module._inception_gfx_frame();
-    };
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
-    else setTimeout(run, 16);
+    });
   },
 });
