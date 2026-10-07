@@ -135,7 +135,9 @@ void Renderer::paintGPU(const Function<void(GraphicsContext&)>& paint)
         auto properties = FontRenderOptions::singleton().createSurfaceProps();
         m_surface = SkSurfaces::RenderTarget(grContext, skgpu::Budgeted::kNo, info, 0, kBottomLeft_GrSurfaceOrigin, &properties);
         if (!m_surface) {
-            report("error"_s, makeString("Skia could not create a "_s, m_size.width(), 'x', m_size.height(), " render target"_s));
+            report("error"_s, makeString("Skia could not create a "_s, m_size.width(), 'x', m_size.height(), " render target (RGBA8 surface "_s,
+                grContext->colorTypeSupportedAsSurface(kRGBA_8888_SkColorType) ? "supported"_s : "unsupported"_s, ", max target "_s, grContext->maxRenderTargetSize(),
+                ", max texture "_s, grContext->maxTextureSize(), ", abandoned "_s, grContext->abandoned() ? "yes"_s : "no"_s, ')'));
             return;
         }
     }
