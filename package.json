@@ -1,0 +1,12 @@
+{
+  "name": "inceptionjs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "node tests/serve.mjs",
+    "test": "playwright test -c tests/playwright.config.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}
