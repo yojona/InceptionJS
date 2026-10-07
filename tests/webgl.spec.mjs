@@ -134,3 +134,12 @@ test('pages hold their whole budget; one more loses their oldest', async ({ page
   })()`));
   expect(counts).toEqual({ within: 0, past: 1, firstLost: true, lastLost: false });
 });
+
+test('the engine recovers when its own WebGL context is lost', async ({ page }) => {
+  await evaluate(page, `document.body.style.margin = '0'; document.body.innerHTML = '<div style="width:100px;height:100px;background:rgb(0,0,255)"></div>'; 'ok'`);
+  await expect.poll(() => screenPixel(page, 10, 10), { timeout: 20_000 }).toEqual([0, 0, 255]);
+  await view(page).evaluate((el) => el.debugCommand('debug.loseGPU', { restoreAfterMs: 300 }));
+  await page.waitForTimeout(1000);
+  await evaluate(page, `document.body.firstChild.style.background = 'rgb(255,0,0)'; 'ok'`);
+  await expect.poll(() => screenPixel(page, 10, 10), { timeout: 20_000 }).toEqual([255, 0, 0]);
+});

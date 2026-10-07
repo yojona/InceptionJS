@@ -197,6 +197,14 @@ void View::frame()
 
 } // namespace Inception
 
+// js/gfx.js: the engine's WebGL context was restored; the next frame rebuilds
+// Skia's context and repaints everything.
+extern "C" EMSCRIPTEN_KEEPALIVE void inception_gfx_context_restored()
+{
+    if (auto* view = Inception::View::singleton())
+        view->setNeedsPaint();
+}
+
 extern "C" EMSCRIPTEN_KEEPALIVE void inception_gfx_frame()
 {
     if (auto* view = Inception::View::singleton())

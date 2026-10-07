@@ -24,6 +24,7 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
 
 extern "C" {
 int inception_gfx_create_context(int width, int height, int requestedPageContexts);
+int inception_gfx_take_context_state();
 void inception_gfx_resize(int width, int height);
 void inception_gfx_present();
 void inception_gfx_present_pixels(const uint8_t*, int width, int height);
@@ -88,8 +89,32 @@ void Renderer::paintFrame(const Function<void(GraphicsContext&)>& paint)
         paintCPU(paint);
 }
 
+// The WebGL context came back after a loss: every GL object Skia held is gone.
+// Skia's context is abandoned (WebCore's buffers that still reference it stop
+// drawing instead of touching dead objects) and a fresh one is built on the same
+// WebGL context.
+void Renderer::rebuildGPU()
+{
+    auto& display = PlatformDisplay::sharedDisplay();
+    if (display.skiaGLContext()) {
+        if (auto* grContext = display.skiaGrContext())
+            grContext->abandonContext();
+    }
+    m_surface = nullptr;
+    display.clearGLContexts();
+    if (!display.skiaGLContext() || !display.skiaGrContext())
+        report("error"_s, "Skia could not use the restored WebGL context"_s);
+}
+
 void Renderer::paintGPU(const Function<void(GraphicsContext&)>& paint)
 {
+    switch (inception_gfx_take_context_state()) {
+    case 1:
+        return;
+    case 2:
+        rebuildGPU();
+        break;
+    }
     auto& display = PlatformDisplay::sharedDisplay();
     if (!display.skiaGLContext()->makeContextCurrent())
         return;

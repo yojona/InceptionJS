@@ -39,6 +39,7 @@ public:
 
 private:
     bool initializeGPU();
+    void rebuildGPU();
     void paintGPU(const Function<void(WebCore::GraphicsContext&)>&);
     void paintCPU(const Function<void(WebCore::GraphicsContext&)>&);
 

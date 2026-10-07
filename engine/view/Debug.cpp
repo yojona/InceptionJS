@@ -13,6 +13,8 @@
 #include <emscripten/heap.h>
 #include <wtf/NeverDestroyed.h>
 
+extern "C" void inception_gfx_debug_lose_context(int restoreAfterMs);
+
 namespace Inception {
 using namespace WebCore;
 
@@ -58,6 +60,11 @@ void registerDebugCommands()
             result->setString("value"_s, value ? value.toWTFString(globalObject) : "undefined"_s);
         }
         emitEvent("debug.result"_s, WTF::move(result));
+    });
+
+    // {restoreAfterMs}: loses the engine's WebGL context, then restores it.
+    registerCommand("debug.loseGPU"_s, [](JSON::Object& args) {
+        inception_gfx_debug_lose_context(args.getInteger("restoreAfterMs"_s).value_or(500));
     });
 
     // {}: answers with a "debug.heap" event: JS heap and wasm memory sizes,

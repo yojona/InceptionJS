@@ -1,7 +1,7 @@
 // Engine-side graphics: the engine owns an OffscreenCanvas and its WebGL2
 // context; each finished frame moves to the host as an ImageBitmap (no copy).
 addToLibrary({
-  $inceptionGfx: { canvas: null, frameRequested: false },
+  $inceptionGfx: { canvas: null, frameRequested: false, contextState: 0 },
 
   // How many WebGL contexts pages may hold at once. Browsers lose their oldest
   // context past a per-page cap, and the engine's own is created first, so the
@@ -24,7 +24,7 @@ addToLibrary({
     postMessage({ inception: JSON.stringify({ event: 'console', data: { level, message: `[engine] ${message}`, source: 'engine', line: 0, column: 0 } }) });
   },
 
-  inception_gfx_create_context__deps: ['$GL', '$inceptionGfx', '$inceptionReport', '$inceptionPageContextCap'],
+  inception_gfx_create_context__deps: ['$GL', '$inceptionGfx', '$inceptionReport', '$inceptionPageContextCap', 'inception_gfx_request_frame'],
   inception_gfx_create_context: (width, height, requestedPageContexts) => {
     if (typeof OffscreenCanvas === 'undefined') {
       inceptionReport('warn', 'no OffscreenCanvas in the engine worker; painting on the CPU');
@@ -56,16 +56,42 @@ addToLibrary({
     // Skia asks for the GPU's name; without the extension that is an error.
     gl.getExtension('WEBGL_debug_renderer_info');
     globalThis.inceptionPageContextCap = inceptionPageContextCap(gl, requestedPageContexts);
-    // Pages' WebGL contexts are capped so the browser never reclaims this one;
-    // if it is lost anyway (GPU reset), say so instead of going blank quietly.
+    // Pages' WebGL contexts are capped so the browser never reclaims this one.
+    // If it is lost anyway (a GPU reset, another WebGL user in the host page),
+    // painting pauses and resumes on a rebuilt Skia context once it is back.
     canvas.addEventListener('webglcontextlost', (e) => {
       e.preventDefault();
-      inceptionReport('error', 'the engine lost its WebGL context; reload to restore painting');
+      inceptionGfx.contextState = 1;
+      inceptionReport('warn', 'the engine lost its WebGL context; painting resumes when it is restored');
+    });
+    canvas.addEventListener('webglcontextrestored', () => {
+      inceptionGfx.contextState = 2;
+      inceptionReport('info', 'the engine\'s WebGL context is back; rebuilding');
+      Module._inception_gfx_context_restored();
     });
     return handle;
   },
 
+  // Development aid: loses the engine's own WebGL context and restores it
+  // after `restoreAfterMs`, to exercise the recovery path.
+  inception_gfx_debug_lose_context__deps: ['$GL', '$inceptionGfx'],
+  inception_gfx_debug_lose_context: (restoreAfterMs) => {
+    const context = Object.values(GL.contexts).find((c) => c && c.GLctx && c.GLctx.canvas === inceptionGfx.canvas);
+    const lose = context?.GLctx.getExtension('WEBGL_lose_context');
+    if (!lose) return;
+    lose.loseContext();
+    setTimeout(() => lose.restoreContext(), restoreAfterMs);
+  },
+
   inception_gfx_page_context_cap: () => globalThis.inceptionPageContextCap | 0,
+
+  // 0: usable, 1: lost, 2: restored and not yet rebuilt (read once).
+  inception_gfx_take_context_state__deps: ['$inceptionGfx'],
+  inception_gfx_take_context_state: () => {
+    const state = inceptionGfx.contextState;
+    if (state === 2) inceptionGfx.contextState = 0;
+    return state;
+  },
 
   inception_gfx_resize__deps: ['$inceptionGfx'],
   inception_gfx_resize: (width, height) => {
