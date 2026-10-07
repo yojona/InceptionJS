@@ -1,0 +1,88 @@
+Run garbage collections only at the top of the engine's event loop.
+
+The conservative stack scan reads linear memory, but wasm keeps C++ locals in
+the engine's own locals, out of its reach: a collection started in the middle
+of a call (an allocation slow path, a DeferGC release, a safepoint) freed cells
+still in use. Requests made there are recorded instead, and the embedder runs
+them when no native frame holds cells.
+
+--- a/Source/JavaScriptCore/heap/Heap.cpp
++++ b/Source/JavaScriptCore/heap/Heap.cpp
+@@ -2340,10 +2340,44 @@
+         MonotonicTime after = MonotonicTime::now();
+         dataLog((after - before).milliseconds(), "ms]\n");
+     }
++}
++
++#if PLATFORM(EMSCRIPTEN)
++// Past this much allocation, a long task without a top-level turn collects
++// where it stands, as before: a likely-safe collection beats certain OOM.
++static constexpr size_t deferredCollectionAllocationLimit = 512 * MB;
++
++void Heap::deferCollectionsToTopLevel(Function<void()>&& wake)
++{
++    m_defersCollectionsToTopLevel = true;
++    m_wakeForDeferredCollections = WTF::move(wake);
++}
++
++void Heap::runDeferredCollections()
++{
++    if (m_deferredRequests.isEmpty())
++        return;
++    auto requests = std::exchange(m_deferredRequests, { });
++    SetForScope atTopLevel(m_isAtTopLevel, true);
++    for (auto& request : requests)
++        collectAsync(WTF::move(request));
++    stopIfNecessary();
+ }
++#endif
+ 
+ Heap::Ticket Heap::requestCollection(GCRequest request)
+ {
++#if PLATFORM(EMSCRIPTEN)
++    if (m_defersCollectionsToTopLevel && !m_isAtTopLevel && totalBytesAllocatedThisCycle() < deferredCollectionAllocationLimit) {
++        bool wasEmpty = m_deferredRequests.isEmpty();
++        m_deferredRequests.append(WTF::move(request));
++        if (wasEmpty && m_wakeForDeferredCollections)
++            m_wakeForDeferredCollections();
++        // Nothing to wait for here: synchronous callers carry on and the
++        // collection happens at the next top-level turn.
++        return m_lastServedTicket;
++    }
++#endif
+     stopIfNecessary();
+     
+     ASSERT(vm().currentThreadIsHoldingAPILock());
+--- a/Source/JavaScriptCore/heap/Heap.h
++++ b/Source/JavaScriptCore/heap/Heap.h
+@@ -422,6 +422,17 @@
+     
+     void collectIfNecessaryOrDefer(GCDeferralContext* = nullptr);
+ 
++#if PLATFORM(EMSCRIPTEN)
++    // Under wasm, pointers held in C++ locals live outside linear memory where
++    // the conservative stack scan cannot see them, so a collection is only safe
++    // when no native frame holds cells. Once enabled, collections requested
++    // anywhere else are recorded and run by runDeferredCollections(), which the
++    // embedder calls from the top of its event loop. `wake` asks for that call.
++    JS_EXPORT_PRIVATE void deferCollectionsToTopLevel(Function<void()>&& wake);
++    bool hasDeferredCollections() const { return !m_deferredRequests.isEmpty(); }
++    JS_EXPORT_PRIVATE void runDeferredCollections();
++#endif
++
+     void completeAllJITPlans();
+     
+     // Note that:
+@@ -986,6 +997,12 @@
+     bool m_threadShouldStop { false };
+     bool m_mutatorDidRun { true };
+     bool m_didDeferGCWork { false };
++#if PLATFORM(EMSCRIPTEN)
++    bool m_defersCollectionsToTopLevel { false };
++    bool m_isAtTopLevel { false };
++    Vector<GCRequest> m_deferredRequests;
++    Function<void()> m_wakeForDeferredCollections;
++#endif
+     bool m_shouldStopCollectingContinuously { false };
+     bool m_isCompilerThreadsSuspended { false };
+ 
