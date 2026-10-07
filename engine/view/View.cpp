@@ -2,6 +2,7 @@
 #include "view/View.h"
 
 #include "CookieJar.h"
+#include "SocketProvider.h"
 #include "DatabaseProvider.h"
 #include "DocumentView.h"
 #include "EmptyClients.h"
@@ -22,6 +23,7 @@
 #include "input/EditingClient.h"
 #include "media/MediaBridge.h"
 #include "net/Session.h"
+#include "net/WebSocketChannel.h"
 #include "storage/IndexedDB.h"
 #include "storage/WebStorage.h"
 #include "view/Clients.h"
@@ -59,6 +61,7 @@ View::View(IntSize cssSize, float deviceScaleFactor)
     auto configuration = pageConfigurationWithEmptyClients(PageIdentifier::generate(), PAL::SessionID::defaultSessionID());
     configuration.chromeClient = makeUniqueRef<ChromeClientImpl>(*this);
     configuration.cookieJar = createCookieJar();
+    configuration.socketProvider = createSocketProvider();
     configuration.databaseProvider = createDatabaseProvider();
     configuration.storageNamespaceProvider = createStorageNamespaceProvider();
     configuration.editorClient = makeUniqueRef<EditorClientImpl>();
