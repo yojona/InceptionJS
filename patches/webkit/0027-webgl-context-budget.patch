@@ -1,0 +1,45 @@
+Size pages' WebGL context budget from the host's renderer.
+
+The cap of live page contexts was fixed at three, the smallest any browser
+allows. It now comes from the engine, which derives it from the host's
+renderer when it creates its own context (or takes the embedder's setting):
+far more pages fit on a GPU, and the engine's context still never becomes the
+oldest one past the browser's cap.
+
+diff --git a/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.cpp b/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.cpp
+index 64c4242..7df2a13 100644
+--- a/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.cpp
++++ b/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.cpp
+@@ -99,10 +99,19 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(GraphicsContextGLEmscripten);
+ static GraphicsContextGLEmscripten* s_current;
+ 
+ // Browsers cap live WebGL contexts and lose the oldest past the cap, which
+-// would be the engine's own. The cap varies: sixteen on a desktop GPU, four in
+-// a headless or software-rendered browser. Pages get few enough to stay under
+-// the smallest; past that their oldest context is lost, as a browser would do.
+-static constexpr size_t maxPageContexts = 3;
++// would be the engine's own. The cap follows the host's renderer (sixteen on a
++// GPU, four on a software rasterizer) or the embedder's setting; the engine
++// derives it when it creates its own context. Past it, the page's oldest
++// context is lost, as a browser would do.
++EM_JS(int, inception_webgl_page_context_cap, (), {
++    return globalThis.inceptionPageContextCap | 0;
++});
++
++static size_t maxPageContexts()
++{
++    int cap = inception_webgl_page_context_cap();
++    return cap > 0 ? cap : 3;
++}
+ 
+ static Vector<GraphicsContextGLEmscripten*>& liveContexts()
+ {
+@@ -232,7 +241,7 @@ void GraphicsContextGLEmscripten::forceContextLost()
+ bool GraphicsContextGLEmscripten::platformInitializeContext()
+ {
+     m_isForWebGL2 = contextAttributes().isWebGL2;
+-    if (liveContexts().size() >= maxPageContexts)
++    if (liveContexts().size() >= maxPageContexts())
+         liveContexts().first()->forceContextLost();
+     m_handle = inception_webgl_create_guest_context(m_isForWebGL2 ? 2 : 1);
+     if (!m_handle || !makeContextCurrent())
