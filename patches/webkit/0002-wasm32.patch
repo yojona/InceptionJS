@@ -1,0 +1,223 @@
+wasm32 build support: integer widths that differ from LP64 (size_t is unsigned long
+but 32-bit), libc functions Emscripten lacks, no dladdr, and the LLInt offset
+extractors read from their .wasm binaries.
+
+diff --git a/Source/JavaScriptCore/CMakeLists.txt b/Source/JavaScriptCore/CMakeLists.txt
+index ea9ea17..61412ce 100644
+--- a/Source/JavaScriptCore/CMakeLists.txt
++++ b/Source/JavaScriptCore/CMakeLists.txt
+@@ -312,11 +312,22 @@ add_custom_command(
+     COMMAND ${Ruby_EXECUTABLE} ${JAVASCRIPTCORE_DIR}/offlineasm/generate_settings_extractor.rb -I${JavaScriptCore_DERIVED_SOURCES_DIR}/ ${JAVASCRIPTCORE_DIR}/llint/LowLevelInterpreter.asm ${JavaScriptCore_DERIVED_SOURCES_DIR}/LLIntDesiredSettings.h ${OFFLINE_ASM_BACKEND}
+     VERBATIM)
+ 
++# offlineasm scans the extractor executables for magic values. An Emscripten
++# executable target is a JavaScript loader; the scannable code is the .wasm file
++# next to it.
++if (EMSCRIPTEN)
++    set(LLINT_SETTINGS_EXTRACTOR_BINARY $<TARGET_FILE_DIR:LLIntSettingsExtractor>/$<TARGET_FILE_BASE_NAME:LLIntSettingsExtractor>.wasm)
++    set(LLINT_OFFSETS_EXTRACTOR_BINARY $<TARGET_FILE_DIR:LLIntOffsetsExtractor>/$<TARGET_FILE_BASE_NAME:LLIntOffsetsExtractor>.wasm)
++else ()
++    set(LLINT_SETTINGS_EXTRACTOR_BINARY $<TARGET_FILE:LLIntSettingsExtractor>)
++    set(LLINT_OFFSETS_EXTRACTOR_BINARY $<TARGET_FILE:LLIntOffsetsExtractor>)
++endif ()
++
+ add_custom_command(
+     OUTPUT ${JavaScriptCore_DERIVED_SOURCES_DIR}/LLIntDesiredOffsets.h
+     MAIN_DEPENDENCY ${JAVASCRIPTCORE_DIR}/offlineasm/generate_offset_extractor.rb
+     DEPENDS LLIntSettingsExtractor ${LLINT_ASM} ${OFFLINE_ASM} ${JavaScriptCore_DERIVED_SOURCES_DIR}/InitBytecodes.asm ${JavaScriptCore_DERIVED_SOURCES_DIR}/AirOpcode.h ${JavaScriptCore_DERIVED_SOURCES_DIR}/WasmOps.h
+-    COMMAND ${Ruby_EXECUTABLE} ${JAVASCRIPTCORE_DIR}/offlineasm/generate_offset_extractor.rb -I${JavaScriptCore_DERIVED_SOURCES_DIR}/ ${JAVASCRIPTCORE_DIR}/llint/LowLevelInterpreter.asm $<TARGET_FILE:LLIntSettingsExtractor> ${JavaScriptCore_DERIVED_SOURCES_DIR}/LLIntDesiredOffsets.h ${OFFLINE_ASM_BACKEND} ${BUILD_VARIANTS}
++    COMMAND ${Ruby_EXECUTABLE} ${JAVASCRIPTCORE_DIR}/offlineasm/generate_offset_extractor.rb -I${JavaScriptCore_DERIVED_SOURCES_DIR}/ ${JAVASCRIPTCORE_DIR}/llint/LowLevelInterpreter.asm ${LLINT_SETTINGS_EXTRACTOR_BINARY} ${JavaScriptCore_DERIVED_SOURCES_DIR}/LLIntDesiredOffsets.h ${OFFLINE_ASM_BACKEND} ${BUILD_VARIANTS}
+     VERBATIM)
+ 
+ # JSCBuiltins
+@@ -447,6 +458,13 @@ if (NOT USE_SYSTEM_MALLOC)
+ endif ()
+ WEBKIT_EXECUTABLE(LLIntOffsetsExtractor)
+ 
++if (EMSCRIPTEN)
++    # Optimized wasm links split data segments around runs of zero bytes, which
++    # cuts the tables offlineasm scans for.
++    target_link_options(LLIntSettingsExtractor PRIVATE -O0)
++    target_link_options(LLIntOffsetsExtractor PRIVATE -O0)
++endif ()
++
+ # The build system will execute asm.rb every time LLIntOffsetsExtractor's mtime is newer than
+ # LLIntAssembly.h's mtime. The problem we have here is: asm.rb has some built-in optimization
+ # that generates a checksum of the LLIntOffsetsExtractor binary, if the checksum of the new
+@@ -467,7 +485,7 @@ add_custom_command(
+     OUTPUT ${JavaScriptCore_DERIVED_SOURCES_DIR}/${LLIntOutput}
+     MAIN_DEPENDENCY ${JAVASCRIPTCORE_DIR}/offlineasm/asm.rb
+     DEPENDS LLIntOffsetsExtractor ${LLINT_ASM} ${OFFLINE_ASM} ${JavaScriptCore_DERIVED_SOURCES_DIR}/InitBytecodes.asm
+-    COMMAND ${CMAKE_COMMAND} -E env CMAKE_CXX_COMPILER_ID=${CMAKE_CXX_COMPILER_ID} GCC_OFFLINEASM_SOURCE_MAP=${GCC_OFFLINEASM_SOURCE_MAP} ${Ruby_EXECUTABLE} ${JAVASCRIPTCORE_DIR}/offlineasm/asm.rb -I${JavaScriptCore_DERIVED_SOURCES_DIR}/ ${JAVASCRIPTCORE_DIR}/llint/LowLevelInterpreter.asm $<TARGET_FILE:LLIntOffsetsExtractor> ${JavaScriptCore_DERIVED_SOURCES_DIR}/${LLIntOutput} ${BUILD_VARIANTS} ${OFFLINE_ASM_ARGS}
++    COMMAND ${CMAKE_COMMAND} -E env CMAKE_CXX_COMPILER_ID=${CMAKE_CXX_COMPILER_ID} GCC_OFFLINEASM_SOURCE_MAP=${GCC_OFFLINEASM_SOURCE_MAP} ${Ruby_EXECUTABLE} ${JAVASCRIPTCORE_DIR}/offlineasm/asm.rb -I${JavaScriptCore_DERIVED_SOURCES_DIR}/ ${JAVASCRIPTCORE_DIR}/llint/LowLevelInterpreter.asm ${LLINT_OFFSETS_EXTRACTOR_BINARY} ${JavaScriptCore_DERIVED_SOURCES_DIR}/${LLIntOutput} ${BUILD_VARIANTS} ${OFFLINE_ASM_ARGS}
+     COMMAND ${CMAKE_COMMAND} -E touch_nocreate ${JavaScriptCore_DERIVED_SOURCES_DIR}/${LLIntOutput}
+     WORKING_DIRECTORY ${JavaScriptCore_DERIVED_SOURCES_DIR}
+     VERBATIM)
+diff --git a/Source/JavaScriptCore/runtime/JSCBytecodeCacheVersion.cpp b/Source/JavaScriptCore/runtime/JSCBytecodeCacheVersion.cpp
+index 26e825a..a439962 100644
+--- a/Source/JavaScriptCore/runtime/JSCBytecodeCacheVersion.cpp
++++ b/Source/JavaScriptCore/runtime/JSCBytecodeCacheVersion.cpp
+@@ -68,7 +68,7 @@ uint32_t computeJSCBytecodeCacheVersion()
+         }
+         cacheVersion.construct(0);
+         dataLogLnIf(JSCBytecodeCacheVersionInternal::verbose, "Failed to get UUID for JavaScriptCore framework");
+-#elif OS(UNIX) && !PLATFORM(PLAYSTATION) && !OS(HAIKU) && !OS(QNX)
++#elif OS(UNIX) && !PLATFORM(PLAYSTATION) && !OS(HAIKU) && !OS(QNX) && !PLATFORM(EMSCRIPTEN)
+         auto result = ([&] -> std::optional<uint32_t> {
+             Dl_info info { };
+             if (!dladdr(jsFunctionAddr, &info))
+diff --git a/Source/JavaScriptCore/runtime/MathCommon.cpp b/Source/JavaScriptCore/runtime/MathCommon.cpp
+index 71b9262..3912e25 100644
+--- a/Source/JavaScriptCore/runtime/MathCommon.cpp
++++ b/Source/JavaScriptCore/runtime/MathCommon.cpp
+@@ -604,7 +604,7 @@ JSC_DEFINE_NOEXCEPT_JIT_OPERATION(f64_nearest, double, (double operand))
+     return std::nearbyint(operand);
+ }
+ 
+-#if (OS(LINUX) && !defined(__GLIBC__)) || OS(HAIKU)
++#if (OS(LINUX) && !defined(__GLIBC__)) || OS(HAIKU) || PLATFORM(EMSCRIPTEN)
+ static inline float roundevenf(float operand)
+ {
+     float rounded = roundf(operand);
+diff --git a/Source/JavaScriptCore/runtime/Options.cpp b/Source/JavaScriptCore/runtime/Options.cpp
+index 964e9a4..a16bffc 100644
+--- a/Source/JavaScriptCore/runtime/Options.cpp
++++ b/Source/JavaScriptCore/runtime/Options.cpp
+@@ -233,7 +233,8 @@ std::optional<OptionsStorage::Unsigned> parse(const char* string)
+     return std::nullopt;
+ }
+ 
+-#if CPU(ADDRESS64) || OS(DARWIN) || OS(HAIKU)
++// On wasm32 size_t is unsigned long, a type distinct from unsigned int.
++#if CPU(ADDRESS64) || OS(DARWIN) || OS(HAIKU) || PLATFORM(EMSCRIPTEN)
+ template<>
+ std::optional<OptionsStorage::Size> parse(const char* string)
+ {
+@@ -242,7 +243,7 @@ std::optional<OptionsStorage::Size> parse(const char* string)
+         return value;
+     return std::nullopt;
+ }
+-#endif // CPU(ADDRESS64) || OS(DARWIN) || OS(HAIKU)
++#endif // CPU(ADDRESS64) || OS(DARWIN) || OS(HAIKU) || PLATFORM(EMSCRIPTEN)
+ 
+ template<>
+ std::optional<OptionsStorage::Double> parse(const char* string)
+diff --git a/Source/WTF/wtf/FileHandle.h b/Source/WTF/wtf/FileHandle.h
+index fd0e22c..a7957b6 100644
+--- a/Source/WTF/wtf/FileHandle.h
++++ b/Source/WTF/wtf/FileHandle.h
+@@ -33,7 +33,7 @@
+ 
+ #if OS(WINDOWS)
+ #include <wtf/win/Win32Handle.h>
+-#elif OS(LINUX)
++#elif OS(LINUX) || PLATFORM(EMSCRIPTEN)
+ #include <sys/types.h>
+ #endif
+ 
+diff --git a/Source/WTF/wtf/RawHex.h b/Source/WTF/wtf/RawHex.h
+index 2e37596..b7d6e25 100644
+--- a/Source/WTF/wtf/RawHex.h
++++ b/Source/WTF/wtf/RawHex.h
+@@ -52,7 +52,8 @@ public:
+         : RawHex(static_cast<uintptr_t>(value))
+     { }
+ 
+-#if CPU(ADDRESS64) || OS(DARWIN) || OS(HAIKU)
++#if CPU(ADDRESS64) || OS(DARWIN) || OS(HAIKU) || PLATFORM(EMSCRIPTEN)
++    // On wasm32, intptr_t is long and int32_t is int, so these overloads are distinct.
+     // These causes build errors for CPU(ADDRESS32) on some ports because int32_t
+     // is already handled by intptr_t, and uint32_t is handled by uintptr_t.
+     explicit RawHex(int32_t value)
+diff --git a/Source/WebCore/platform/WebCorePersistentCoders.cpp b/Source/WebCore/platform/WebCorePersistentCoders.cpp
+index bc608e0..24d78bb 100644
+--- a/Source/WebCore/platform/WebCorePersistentCoders.cpp
++++ b/Source/WebCore/platform/WebCorePersistentCoders.cpp
+@@ -405,7 +405,7 @@ void Coder<WebCore::CertificateInfo>::encodeForPersistence(Encoder& encoder, con
+     auto& certificateChain = certificateInfo.certificateChain();
+ 
+     encoder << certificateInfo.verificationError();
+-    encoder << certificateChain.size();
++    encoder << static_cast<uint64_t>(certificateChain.size()); // fixed width across ABIs
+     for (auto& certificate : certificateChain)
+         encoder << certificate;
+ }
+@@ -417,9 +417,9 @@ std::optional<WebCore::CertificateInfo> Coder<WebCore::CertificateInfo>::decodeF
+     if (!verificationError)
+         return std::nullopt;
+ 
+-    std::optional<size_t> numOfCerts;
++    std::optional<uint64_t> numOfCerts;
+     decoder >> numOfCerts;
+-    if (!numOfCerts)
++    if (!numOfCerts || *numOfCerts > std::numeric_limits<size_t>::max())
+         return std::nullopt;
+ 
+     WebCore::CertificateInfo::CertificateChain certificateChain;
+diff --git a/Source/WebCore/platform/generic/KeyedDecoderGeneric.cpp b/Source/WebCore/platform/generic/KeyedDecoderGeneric.cpp
+index e4484b4..9458d68 100644
+--- a/Source/WebCore/platform/generic/KeyedDecoderGeneric.cpp
++++ b/Source/WebCore/platform/generic/KeyedDecoderGeneric.cpp
+@@ -27,6 +27,7 @@
+ #include "KeyedDecoderGeneric.h"
+ 
+ #include "KeyedEncoderGeneric.h"
++#include <limits>
+ #include <wtf/HashMap.h>
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/Vector.h>
+@@ -49,10 +50,20 @@ private:
+     HashMap<String, std::unique_ptr<Node>> m_map;
+ };
+ 
+-static std::optional<String> readString(WTF::Persistence::Decoder& decoder)
++// Sizes are written as 64-bit values (see KeyedEncoderGeneric); size_t may be
++// narrower, as on wasm32.
++static std::optional<size_t> readSize(WTF::Persistence::Decoder& decoder)
+ {
+-    std::optional<size_t> size;
++    std::optional<uint64_t> size;
+     decoder >> size;
++    if (!size || *size > std::numeric_limits<size_t>::max())
++        return std::nullopt;
++    return static_cast<size_t>(*size);
++}
++
++static std::optional<String> readString(WTF::Persistence::Decoder& decoder)
++{
++    auto size = readSize(decoder);
+     if (!size)
+         return std::nullopt;
+     if (!size.value())
+@@ -110,8 +121,7 @@ KeyedDecoderGeneric::KeyedDecoderGeneric(std::span<const uint8_t> data)
+                 ok = false;
+             if (!ok)
+                 break;
+-            std::optional<size_t> size;
+-            decoder >> size;
++            auto size = readSize(decoder);
+             if (!size)
+                 ok = false;
+             if (!ok)
+diff --git a/Source/WebCore/platform/generic/KeyedEncoderGeneric.cpp b/Source/WebCore/platform/generic/KeyedEncoderGeneric.cpp
+index 9e58feb..f3330ae 100644
+--- a/Source/WebCore/platform/generic/KeyedEncoderGeneric.cpp
++++ b/Source/WebCore/platform/generic/KeyedEncoderGeneric.cpp
+@@ -40,7 +40,7 @@ std::unique_ptr<KeyedEncoder> KeyedEncoder::encoder()
+ void KeyedEncoderGeneric::encodeString(const String& key)
+ {
+     auto result = key.tryGetUTF8([&](std::span<const char8_t> span) -> bool {
+-        m_encoder << span.size();
++        m_encoder << static_cast<uint64_t>(span.size()); // fixed width: size_t is 32-bit on wasm32
+         m_encoder.encodeFixedLengthData(byteCast<uint8_t>(span));
+         return true;
+     });
+@@ -51,7 +51,7 @@ void KeyedEncoderGeneric::encodeBytes(const String& key, std::span<const uint8_t
+ {
+     m_encoder << Type::Bytes;
+     encodeString(key);
+-    m_encoder << bytes.size();
++    m_encoder << static_cast<uint64_t>(bytes.size());
+     m_encoder.encodeFixedLengthData(bytes);
+ }
+ 
