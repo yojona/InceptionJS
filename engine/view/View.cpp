@@ -16,6 +16,7 @@
 #include "bridge/Bridge.h"
 #include "gfx/Renderer.h"
 #include "net/Session.h"
+#include "storage/IndexedDB.h"
 #include "view/Clients.h"
 #include <emscripten/em_macros.h>
 #include <pal/SessionID.h>
@@ -49,6 +50,7 @@ View::View(IntSize cssSize, float deviceScaleFactor)
     auto configuration = pageConfigurationWithEmptyClients(std::nullopt, PAL::SessionID::defaultSessionID());
     configuration.chromeClient = makeUniqueRef<ChromeClientImpl>(*this);
     configuration.cookieJar = createCookieJar();
+    configuration.databaseProvider = createDatabaseProvider();
     configuration.mainFrameCreationParameters = PageConfiguration::LocalMainFrameCreationParameters {
         CompletionHandler<UniqueRef<LocalFrameLoaderClient>(LocalFrame&, FrameLoader&)> { [this](auto& frame, auto& frameLoader) {
             return makeUniqueRefWithoutRefCountedCheck<FrameLoaderClientImpl>(frameLoader, frame, *this);
