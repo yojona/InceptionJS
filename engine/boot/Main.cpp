@@ -24,6 +24,8 @@ void inception_loop_schedule(double delayMs);
 namespace Inception {
 using namespace WebCore;
 
+void registerDebugCommands();
+
 static IntSize sizeFrom(JSON::Object& args)
 {
     return { args.getInteger("width"_s).value_or(800), args.getInteger("height"_s).value_or(600) };
@@ -106,6 +108,7 @@ int main()
     Inception::registerCommands();
     Inception::registerInputCommands();
     Inception::Media::install();
+    Inception::registerDebugCommands();
 
     // The host listens on every worker it creates and recognizes the engine's
     // by this event; "hello" repeats it on request.
