@@ -63,7 +63,7 @@ static ASCIILiteral editingCommandForKey(const PlatformKeyboardEvent& event)
 {
     const String& key = event.key();
     bool shift = event.shiftKey();
-    bool command = event.metaKey() || event.ctrlKey();
+    bool command = event.metaKey() || event.controlKey();
     bool word = event.altKey();
 
     if (command && !word) {
@@ -133,7 +133,7 @@ void EditorClientImpl::handleKeyboardEvent(KeyboardEvent& event)
     }
     if (text.isEmpty() || (text.length() == 1 && text[0] < ' '))
         return;
-    if (platformEvent->metaKey() || (platformEvent->ctrlKey() && !platformEvent->altKey()))
+    if (platformEvent->metaKey() || (platformEvent->controlKey() && !platformEvent->altKey()))
         return;
     if (editor.insertText(text, &event))
         event.setDefaultHandled();
