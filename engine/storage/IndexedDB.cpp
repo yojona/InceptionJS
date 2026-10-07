@@ -32,6 +32,7 @@ using namespace WebCore::IDBClient;
 // Both directions are delivered as separate loop tasks, never inline: WebCore's
 // IDB client and server expect replies to arrive after the call returns.
 class LocalIDBServer final : public RefCounted<LocalIDBServer>, public IDBConnectionToServerDelegate, public IDBServer::IDBConnectionToClientDelegate {
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(LocalIDBServer);
     WTF_OVERRIDE_DELETE_FOR_CHECKED_PTR(LocalIDBServer);
 public:
     static Ref<LocalIDBServer> create() { return adoptRef(*new LocalIDBServer); }
