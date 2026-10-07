@@ -2,6 +2,9 @@
 #include "media/MediaBridge.h"
 
 #include "ContentType.h"
+#include "MediaCapabilitiesDecodingInfo.h"
+#include "MediaDecodingConfiguration.h"
+#include "MediaEngineConfigurationFactory.h"
 #include "MediaPlayer.h"
 #include "bridge/Bridge.h"
 #include "media/HostMediaPlayer.h"
@@ -19,6 +22,9 @@ struct Capabilities {
     // container MIME type -> codec families the host decodes
     HashMap<String, HashSet<String>> progressive;
     HashMap<String, HashSet<String>> mediaSource;
+    // families the host's MediaCapabilities rate smooth or power efficient
+    HashMap<String, HashSet<String>> smooth;
+    HashMap<String, HashSet<String>> efficient;
 };
 
 static Capabilities& capabilities()
@@ -38,6 +44,8 @@ void setCapabilities(JSON::Object& media)
     auto& caps = capabilities();
     caps.progressive.clear();
     caps.mediaSource.clear();
+    caps.smooth.clear();
+    caps.efficient.clear();
     for (auto& [container, value] : media) {
         auto entry = value->asObject();
         if (!entry)
@@ -52,6 +60,8 @@ void setCapabilities(JSON::Object& media)
         };
         read("progressive"_s, caps.progressive);
         read("mse"_s, caps.mediaSource);
+        read("smooth"_s, caps.smooth);
+        read("efficient"_s, caps.efficient);
     }
 }
 
@@ -91,6 +101,48 @@ static MediaPlayer::SupportsType supports(const ContentType& type, bool mediaSou
 bool hostSupports(const ContentType& type, bool mediaSource)
 {
     return supports(type, mediaSource) != MediaPlayer::SupportsType::IsNotSupported;
+}
+
+// Every codec of `type` is in the container's entry of `table`.
+static bool allCodecsIn(const HashMap<String, HashSet<String>>& table, const ContentType& type)
+{
+    auto it = table.find(type.containerType().convertToASCIILowercase());
+    if (it == table.end())
+        return false;
+    for (auto& codec : type.codecs()) {
+        if (!it->value.contains(codecFamily(codec)))
+            return false;
+    }
+    return true;
+}
+
+// navigator.mediaCapabilities.decodingInfo(), answered from the host's own
+// ratings of the families it decodes.
+static void decodingInfo(MediaDecodingConfiguration&& configuration, MediaEngineConfigurationFactory::DecodingConfigurationCallback&& callback)
+{
+    MediaCapabilitiesDecodingInfo info { { }, WTF::move(configuration) };
+    auto& config = info.configuration;
+    if (config.type == MediaDecodingType::WebRTC) {
+        callback(WTF::move(info));
+        return;
+    }
+    bool mediaSource = config.type == MediaDecodingType::MediaSource;
+    Vector<ContentType> types;
+    if (config.video)
+        types.append(ContentType { config.video->contentType });
+    if (config.audio)
+        types.append(ContentType { config.audio->contentType });
+    info.supported = !types.isEmpty();
+    info.smooth = info.supported;
+    info.powerEfficient = info.supported;
+    for (auto& type : types) {
+        info.supported &= supports(type, mediaSource) == MediaPlayer::SupportsType::IsSupported;
+        info.smooth &= allCodecsIn(capabilities().smooth, type);
+        info.powerEfficient &= allCodecsIn(capabilities().efficient, type);
+    }
+    if (!info.supported)
+        info.smooth = info.powerEfficient = false;
+    callback(WTF::move(info));
 }
 
 class HostMediaEngineFactory final : public MediaPlayerFactory {
@@ -134,6 +186,7 @@ void endFrame()
 void install()
 {
     EmbedderMediaPlayerSupport::setRegisterMediaEngines(registerEngines);
+    MediaEngineConfigurationFactory::installFactory({ decodingInfo, nullptr });
 
     // {id, currentTime, duration, paused, ended, seeking, readyState, ...}
     registerCommand("media.state"_s, [](JSON::Object& args) {

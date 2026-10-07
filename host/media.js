@@ -19,18 +19,36 @@ const PROBES = {
   'audio/mpeg': { mp3: '' },
 };
 
-export function probeMediaCapabilities() {
+const AUDIO_FAMILIES = new Set(['mp4a', 'opus', 'flac', 'vorbis', 'mp3']);
+
+// Per container: the families the host plays progressively and through Media
+// Source, and the video families its MediaCapabilities rate smooth and power
+// efficient at 1080p30. Audio decoding is cheap; supported audio counts as both.
+export async function probeMediaCapabilities() {
   const video = document.createElement('video');
   const result = {};
+  const ratings = [];
   for (const [container, families] of Object.entries(PROBES)) {
-    const entry = { progressive: [], mse: [] };
+    const entry = { progressive: [], mse: [], smooth: [], efficient: [] };
     for (const [family, codec] of Object.entries(families)) {
       const type = codec ? `${container}; codecs="${codec}"` : container;
       if (video.canPlayType(type) === 'probably' || (!codec && video.canPlayType(type))) entry.progressive.push(family);
-      if (globalThis.MediaSource?.isTypeSupported(type)) entry.mse.push(family);
+      if (!globalThis.MediaSource?.isTypeSupported(type)) continue;
+      entry.mse.push(family);
+      if (AUDIO_FAMILIES.has(family) || container.startsWith('audio/')) {
+        entry.smooth.push(family);
+        entry.efficient.push(family);
+        continue;
+      }
+      const query = { type: 'media-source', video: { contentType: type, width: 1920, height: 1080, bitrate: 5_000_000, framerate: 30 } };
+      ratings.push(navigator.mediaCapabilities?.decodingInfo(query).then((info) => {
+        if (info.smooth) entry.smooth.push(family);
+        if (info.powerEfficient) entry.efficient.push(family);
+      }, () => {}));
     }
     result[container] = entry;
   }
+  await Promise.all(ratings);
   return result;
 }
 
