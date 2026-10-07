@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Forms</title>
+<style>body { font: 16px sans-serif; margin: 20px; } select, input { font-size: 16px; display: block; margin: 0 0 20px; }</style>
+<select id="fruit">
+  <option>Apple</option>
+  <optgroup label="Citrus"><option>Lemon</option><option>Orange</option></optgroup>
+  <option disabled>Banana</option>
+  <option>Cherry</option>
+</select>
+<input id="text">
+<input id="file" type="file" multiple>
+<script>
+  window.events = [];
+  document.getElementById('fruit').addEventListener('change', (e) => events.push('change:' + e.target.value));
+  document.getElementById('file').addEventListener('change', async (e) => {
+    const files = [...e.target.files];
+    events.push('files:' + files.map((f) => f.name + '=' + f.size).join(','));
+    if (files[0]) events.push('content:' + await files[0].text());
+  });
+  document.getElementById('text').addEventListener('compositionstart', () => events.push('compositionstart'));
+  document.getElementById('text').addEventListener('compositionend', (e) => events.push('compositionend:' + e.data));
+</script>
