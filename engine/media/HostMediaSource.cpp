@@ -6,7 +6,9 @@
 #include "SharedBuffer.h"
 #include "SourceBufferPrivateClient.h"
 #include "media/HostMediaPlayer.h"
+#include "bridge/Bridge.h"
 #include "media/MediaBridge.h"
+#include <wtf/text/MakeString.h>
 #include <wtf/NeverDestroyed.h>
 
 extern "C" {
@@ -69,6 +71,7 @@ void HostMediaSource::removeSourceBuffer(SourceBufferPrivate& buffer)
 
 void HostMediaSource::durationChanged(const MediaTime& duration)
 {
+    report("debug"_s, makeString("mse duration "_s, duration.toDouble()));
     MediaSourcePrivate::durationChanged(duration);
     if (!m_player)
         return;
@@ -82,6 +85,7 @@ void HostMediaSource::durationChanged(const MediaTime& duration)
 
 void HostMediaSource::markEndOfStream(EndOfStreamStatus status)
 {
+    report("debug"_s, makeString("mse endOfStream "_s, static_cast<int>(status)));
     MediaSourcePrivate::markEndOfStream(status);
     if (!m_player)
         return;
@@ -121,6 +125,7 @@ Ref<MediaPromise> HostSourceBuffer::append(Ref<SharedBuffer>&& data)
         return MediaPromise::createAndReject(PlatformMediaError::SourceRemoved);
     unsigned seq = m_nextSeq++;
     auto span = data->span();
+    report("debug"_s, makeString("mse sb"_s, m_id, " append #"_s, seq, ' ', span.size(), 'B'));
     inception_media_append(source->hostPlayer()->id(), m_id, seq, span.data(), span.size());
     return track(seq);
 }
@@ -149,6 +154,7 @@ Ref<MediaPromise> HostSourceBuffer::removeCodedFrames(const MediaTime& start, co
         data->setValue("end"_s, JSON::Value::null());
     else
         data->setDouble("end"_s, end.toDouble());
+    report("debug"_s, makeString("mse sb"_s, m_id, " remove #"_s, seq, ' ', start.toDouble(), '-', end.toDouble()));
     send("media.remove"_s, WTF::move(data));
     return track(seq);
 }
@@ -159,6 +165,7 @@ void HostSourceBuffer::operationDone(unsigned seq, const PlatformTimeRanges& buf
         client->sourceBufferPrivateBufferedChanged({ buffered });
     if (RefPtr source = m_mediaSource.get())
         source->trackBufferedChanged(*this, { buffered });
+    report("debug"_s, makeString("mse sb"_s, m_id, " done #"_s, seq, failed ? " FAILED"_s : ""_s, " buffered "_s, buffered.length() ? buffered.minimumBufferedTime().toDouble() : 0, '-', buffered.length() ? buffered.maximumBufferedTime().toDouble() : 0));
     auto it = m_pending.find(seq);
     if (it == m_pending.end())
         return;
@@ -173,6 +180,7 @@ void HostSourceBuffer::operationDone(unsigned seq, const PlatformTimeRanges& buf
 // Pending appends are abandoned on both sides; the host reports none of them.
 void HostSourceBuffer::abort()
 {
+    report("debug"_s, makeString("mse sb"_s, m_id, " abort ("_s, m_pending.size(), " pending)"_s));
     auto pending = std::exchange(m_pending, { });
     for (auto& producer : pending.values())
         producer->reject(PlatformMediaError::Cancelled);

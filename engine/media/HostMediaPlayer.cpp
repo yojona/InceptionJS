@@ -106,6 +106,7 @@ void HostMediaPlayer::pause()
 
 void HostMediaPlayer::seekToTarget(const SeekTarget& target)
 {
+    report("debug"_s, makeString("media "_s, m_id, " seek "_s, target.time.toDouble()));
     m_seeking = true;
     m_currentTime = target.time.toDouble();
     m_currentTimeUpdatedAt = MonotonicTime::now();
@@ -303,6 +304,8 @@ void HostMediaPlayer::update(JSON::Object& state)
         player->sizeChanged();
     if (durationChanged)
         player->durationChanged();
+    if (networkState != m_networkState || readyState != m_readyState)
+        report("debug"_s, makeString("media "_s, m_id, " network "_s, static_cast<int>(networkState), " ready "_s, static_cast<int>(readyState)));
     if (networkState != m_networkState) {
         m_networkState = networkState;
         player->networkStateChanged();
