@@ -6,6 +6,7 @@
 #include "gfx/Renderer.h"
 #include "input/Input.h"
 #include "media/MediaBridge.h"
+#include "wasm/GuestWasm.h"
 #include "platform/Strategies.h"
 #include "view/View.h"
 #include "CurlContext.h"
@@ -50,6 +51,7 @@ static void registerCommands()
         bool preferGPU = args.getBoolean("gpu"_s).value_or(true);
         if (auto media = args.getObject("media"_s))
             Media::setCapabilities(*media);
+        GuestWasm::setPolyfill(args.getString("wasmPolyfill"_s));
         auto mode = Renderer::singleton().initialize(expandedIntSize(FloatSize(cssSize) * scale), preferGPU);
         View::create(cssSize, scale);
 

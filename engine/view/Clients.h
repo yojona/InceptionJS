@@ -62,6 +62,8 @@ private:
     void dispatchDidFailLoad(const WebCore::ResourceError&) final;
     void dispatchDidFinishLoad() final;
 
+    void dispatchDidClearWindowObjectInWorld(WebCore::DOMWrapperWorld&) final;
+
     bool isMainFrame() const;
 
     WeakRef<WebCore::LocalFrame> m_frame;

@@ -14,6 +14,7 @@
 #include "UserAgent.h"
 #include "bridge/Bridge.h"
 #include "view/View.h"
+#include "wasm/GuestWasm.h"
 #include <JavaScriptCore/ConsoleTypes.h>
 
 namespace Inception {
@@ -87,6 +88,11 @@ FrameLoaderClientImpl::FrameLoaderClientImpl(FrameLoader& loader, LocalFrame& fr
     , m_frame(frame)
     , m_view(view)
 {
+}
+
+void FrameLoaderClientImpl::dispatchDidClearWindowObjectInWorld(DOMWrapperWorld& world)
+{
+    GuestWasm::installInWindow(m_frame.get(), world);
 }
 
 bool FrameLoaderClientImpl::isMainFrame() const
