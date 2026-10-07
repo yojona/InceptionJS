@@ -54,10 +54,15 @@ private:
     void setCursor(const WebCore::Cursor&) final;
     void setCursorHiddenUntilMouseMoves(bool) final { }
 
+    // Tells the host when a password or payment field takes focus, so it can
+    // warn the person that the page is shown inside another site.
+    void focusedElementChanged(WebCore::Element*, WebCore::LocalFrame*, WebCore::FocusOptions, WebCore::BroadcastFocusedElement) final;
+
     bool isEmptyChromeClient() const final { return false; }
 
     RefPtr<WebCore::FileChooser> m_fileChooser;
     String m_cursor;
+    String m_sensitiveField;
     CompletionHandler<void(WebCore::ExceptionOr<void>)> m_willEnterFullscreen;
     CompletionHandler<bool(bool)> m_didEnterFullscreen;
     bool m_hostFullscreen { false };

@@ -7,6 +7,7 @@
 #include "DocumentFullscreen.h"
 #include "DocumentPage.h"
 #include "Element.h"
+#include "ElementInlines.h"
 #include "NodeDocument.h"
 #include "Exception.h"
 #include "FileChooser.h"
@@ -14,6 +15,9 @@
 #include "DocumentLoader.h"
 #include "FrameLoader.h"
 #include "FrameTreeSyncData.h"
+#include "HTMLInputElement.h"
+#include "HTMLNames.h"
+#include "SecurityOrigin.h"
 #include "HTMLFrameOwnerElement.h"
 #include "LocalFrameInlines.h"
 #include "LocalFrameView.h"
@@ -287,6 +291,33 @@ void ChromeClientImpl::setCursor(const Cursor& cursor)
     auto data = JSON::Object::create();
     data->setString("cursor"_s, css);
     emitEvent("cursor"_s, WTF::move(data));
+}
+
+static ASCIILiteral sensitiveFieldKind(const Element* element)
+{
+    RefPtr input = dynamicDowncast<HTMLInputElement>(element);
+    if (!input)
+        return ""_s;
+    if (input->isPasswordField())
+        return "password"_s;
+    if (input->attributeWithoutSynchronization(HTMLNames::autocompleteAttr).contains("cc-"_s))
+        return "payment"_s;
+    return ""_s;
+}
+
+// "field.focus" {kind: "password"|"payment"|"", origin}: sent when the kind
+// changes, including back to "" when such a field loses focus.
+void ChromeClientImpl::focusedElementChanged(Element* element, LocalFrame* frame, FocusOptions, BroadcastFocusedElement)
+{
+    String kind = sensitiveFieldKind(element);
+    if (kind == m_sensitiveField)
+        return;
+    m_sensitiveField = kind;
+    auto data = JSON::Object::create();
+    data->setString("kind"_s, kind);
+    if (frame && frame->document())
+        data->setString("origin"_s, frame->document()->securityOrigin().toString());
+    emitEvent("field.focus"_s, WTF::move(data));
 }
 
 static ASCIILiteral levelName(JSC::MessageLevel level)
