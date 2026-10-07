@@ -1,3 +1,4 @@
+import { attachInput } from './input.js';
 import { EngineRuntime } from './runtime.js';
 import { ProtocolClient, ProtocolServer, createInPagePair } from './protocol.js';
 
@@ -31,10 +32,11 @@ export class InceptionView extends HTMLElement {
     super();
     const shadow = this.attachShadow({ mode: 'open' });
     shadow.innerHTML = `<style>
-      :host { display: block; position: relative; overflow: hidden; contain: strict; width: 800px; height: 600px; }
+      :host { display: block; position: relative; overflow: hidden; contain: strict; width: 800px; height: 600px; outline: none; }
       canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
     </style><canvas part="screen"></canvas>`;
     this.#canvas = shadow.querySelector('canvas');
+    if (!this.hasAttribute('tabindex')) this.tabIndex = 0;
   }
 
   get url() { return this.#state.url; }
@@ -81,6 +83,8 @@ export class InceptionView extends HTMLElement {
     const ready = await engineReady;
     if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');
     this.dataset.renderer = ready.renderer;
+    attachInput(this, this.#canvas, (command, args) => this.#runtime.send(command, args));
+    if (document.activeElement === this) this.#runtime.send('focus', { focused: true });
 
     new ResizeObserver(() => {
       const size = this.#cssSize();
