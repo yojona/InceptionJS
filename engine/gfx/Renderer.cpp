@@ -137,7 +137,12 @@ void Renderer::paintGPU(const Function<void(GraphicsContext&)>& paint)
         if (!m_surface) {
             report("error"_s, makeString("Skia could not create a "_s, m_size.width(), 'x', m_size.height(), " render target (RGBA8 surface "_s,
                 grContext->colorTypeSupportedAsSurface(kRGBA_8888_SkColorType) ? "supported"_s : "unsupported"_s, ", max target "_s, grContext->maxRenderTargetSize(),
-                ", max texture "_s, grContext->maxTextureSize(), ", abandoned "_s, grContext->abandoned() ? "yes"_s : "no"_s, ')'));
+                ", max texture "_s, grContext->maxTextureSize(), ", abandoned "_s, grContext->abandoned() ? "yes"_s : "no"_s,
+                ", renderable format "_s, grContext->defaultBackendFormat(kRGBA_8888_SkColorType, GrRenderable::kYes).isValid() ? "yes"_s : "no"_s,
+                ", texture format "_s, grContext->defaultBackendFormat(kRGBA_8888_SkColorType, GrRenderable::kNo).isValid() ? "yes"_s : "no"_s,
+                ", as image "_s, grContext->colorTypeSupportedAsImage(kRGBA_8888_SkColorType) ? "yes"_s : "no"_s,
+                ", max samples "_s, grContext->maxSurfaceSampleCountForColorType(kRGBA_8888_SkColorType),
+                ", GL "_s, String::fromLatin1(reinterpret_cast<const char*>(glGetString(GL_VERSION))), ')'));
             return;
         }
     }
