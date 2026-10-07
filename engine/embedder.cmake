@@ -45,18 +45,35 @@ target_link_options(inception-engine PRIVATE
     -sMAX_WEBGL_VERSION=2
     -sGL_ENABLE_GET_PROC_ADDRESS=1
 
-    # Sockets are SOCKFS WebSockets tagged with this subprotocol; the host routes
-    # them to its relay instead of opening real WebSockets.
-    -sWEBSOCKET_SUBPROTOCOL=inception-tcp
+    # WasmFS: file system calls run on the calling thread. Sockets are the
+    # engine's own (net/Sockets.cpp): it wraps the socket calls WasmFS answers
+    # with ENOSYS, and descriptor calls that must also accept sockets.
+    -sWASMFS=1
+    -Wl,--wrap=__syscall_socket
+    -Wl,--wrap=__syscall_connect
+    -Wl,--wrap=__syscall_getsockopt
+    -Wl,--wrap=__syscall_getsockname
+    -Wl,--wrap=__syscall_getpeername
+    -Wl,--wrap=__syscall_sendto
+    -Wl,--wrap=__syscall_recvfrom
+    -Wl,--wrap=__syscall_sendmsg
+    -Wl,--wrap=__syscall_recvmsg
+    -Wl,--wrap=__syscall_bind
+    -Wl,--wrap=__syscall_listen
+    -Wl,--wrap=__syscall_accept4
+    -Wl,--wrap=__syscall_poll
+    -Wl,--wrap=__syscall_fcntl64
+    -Wl,--wrap=__syscall_ioctl
+    -Wl,--wrap=__wasi_fd_close
 
     -sMODULARIZE=1
     -sEXPORT_ES6=1
     -sEXPORT_NAME=createInceptionEngine
     -sENVIRONMENT=web,worker
     -sEXIT_RUNTIME=0
-    -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,stringToUTF8,lengthBytesUTF8,HEAPU8,HEAP32,FS,PThread,wasmMemory
+    -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,stringToUTF8,lengthBytesUTF8,HEAPU8,HEAP32,PThread,wasmMemory
     -sEXPORTED_FUNCTIONS=_main,_malloc,_free
-    "-sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=$inceptionBridgeInstall,$inceptionWisp,$inceptionGfxInstall"
+    "-sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=$inceptionBridgeInstall,$inceptionGfxInstall"
 
     "--preload-file=${INCEPTION_FS_DIR}@/"
 )

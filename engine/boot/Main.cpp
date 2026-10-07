@@ -6,6 +6,7 @@
 #include "gfx/Renderer.h"
 #include "input/Input.h"
 #include "media/MediaBridge.h"
+#include "net/Sockets.h"
 #include "storage/Profile.h"
 #include "wasm/GuestWasm.h"
 #include "platform/Strategies.h"
@@ -53,6 +54,7 @@ static void registerCommands()
         if (auto media = args.getObject("media"_s))
             Media::setCapabilities(*media);
         GuestWasm::setPolyfill(args.getString("wasmPolyfill"_s));
+        Sockets::configure(args.getString("wispUrl"_s));
         // Before the page exists: storage opens its files on first use.
         Profile::select(args.getString("profile"_s), args.getBoolean("freshProfile"_s).value_or(false));
         auto mode = Renderer::singleton().initialize(expandedIntSize(FloatSize(cssSize) * scale), preferGPU);
@@ -82,7 +84,7 @@ static void registerCommands()
 
 } // namespace Inception
 
-// Socket data arrived (posted by js/wisp.js from the page's main thread).
+// Socket activity (js/tcp.js): run the network schedulers now.
 extern "C" EMSCRIPTEN_KEEPALIVE void inception_net_pump()
 {
     auto& context = WebCore::CurlContext::singleton();

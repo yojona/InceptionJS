@@ -38,7 +38,6 @@ export class EngineRuntime extends EventTarget {
     try {
       this.#module = await createEngine({
         locateFile: (path) => new URL(path, this.engineUrl).href,
-        inceptionWispUrl: this.wispUrl,
         print: (text) => console.log('[engine]', text),
         printErr: (text) => console.warn('[engine]', text),
       });
