@@ -16,7 +16,7 @@
 #include "Settings.h"
 #include "bridge/Bridge.h"
 #include "gfx/Renderer.h"
-#include "input/EditorClient.h"
+#include "input/EditingClient.h"
 #include "net/Session.h"
 #include "storage/IndexedDB.h"
 #include "view/Clients.h"

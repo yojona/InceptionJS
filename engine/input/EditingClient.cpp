@@ -1,5 +1,5 @@
 #include "config.h"
-#include "input/EditorClient.h"
+#include "input/EditingClient.h"
 
 #include "Document.h"
 #include "Editor.h"

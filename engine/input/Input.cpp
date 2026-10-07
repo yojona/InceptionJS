@@ -2,6 +2,7 @@
 #include "input/Input.h"
 
 #include "EventHandler.h"
+#include "HandleUserInputEventResult.h"
 #include "FocusController.h"
 #include "LocalFrame.h"
 #include "Page.h"
