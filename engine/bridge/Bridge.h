@@ -18,4 +18,7 @@ void registerCommand(const String& name, CommandHandler&&);
 void emitEvent(const String& name, Ref<JSON::Object>&& data);
 void emitEvent(const String& name);
 
+// Engine diagnostics, delivered as console events from source "engine".
+void report(ASCIILiteral level, const String& message);
+
 } // namespace Inception

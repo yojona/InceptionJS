@@ -13,11 +13,13 @@
 #include "PageConfiguration.h"
 #include "ResourceRequest.h"
 #include "Settings.h"
+#include "bridge/Bridge.h"
 #include "gfx/Renderer.h"
 #include "net/Session.h"
 #include "view/Clients.h"
 #include <emscripten/em_macros.h>
 #include <pal/SessionID.h>
+#include <wtf/text/MakeString.h>
 
 extern "C" {
 void inception_gfx_request_frame();
@@ -123,6 +125,9 @@ void View::frame()
     RefPtr frameView = frame ? frame->view() : nullptr;
     if (!frameView)
         return;
+
+    if (!m_paintedFrames++)
+        report("info"_s, makeString("first frame "_s, m_cssSize.width(), 'x', m_cssSize.height(), " @"_s, m_deviceScaleFactor));
 
     Renderer::singleton().paintFrame([&](GraphicsContext& context) {
         context.scale(m_deviceScaleFactor);

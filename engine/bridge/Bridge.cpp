@@ -3,6 +3,7 @@
 
 #include <wtf/HashMap.h>
 #include <wtf/NeverDestroyed.h>
+#include <wtf/text/MakeString.h>
 #include <wtf/text/StringHash.h>
 #include <emscripten/em_macros.h>
 
@@ -34,6 +35,17 @@ void emitEvent(const String& name, Ref<JSON::Object>&& data)
 void emitEvent(const String& name)
 {
     emitEvent(name, JSON::Object::create());
+}
+
+void report(ASCIILiteral level, const String& message)
+{
+    auto data = JSON::Object::create();
+    data->setString("level"_s, level);
+    data->setString("message"_s, makeString("[engine] "_s, message));
+    data->setString("source"_s, "engine"_s);
+    data->setInteger("line"_s, 0);
+    data->setInteger("column"_s, 0);
+    emitEvent("console"_s, WTF::move(data));
 }
 
 } // namespace Inception

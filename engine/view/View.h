@@ -39,6 +39,7 @@ private:
     WebCore::IntSize m_cssSize;
     float m_deviceScaleFactor { 1 };
     bool m_needsPaint { true };
+    unsigned m_paintedFrames { 0 };
 };
 
 } // namespace Inception

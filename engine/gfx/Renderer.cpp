@@ -7,8 +7,10 @@
 #include "PlatformDisplay.h"
 #include "PlatformDisplayEmscripten.h"
 #include "WebGLContextEmscripten.h"
+#include "bridge/Bridge.h"
 #include <GLES3/gl3.h>
 #include <wtf/NeverDestroyed.h>
+#include <wtf/text/MakeString.h>
 
 WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
 #include <skia/core/SkCanvas.h>
@@ -49,8 +51,10 @@ bool Renderer::initializeGPU()
     if (!handle)
         return false;
     setSharedWebGLContext(handle);
-    if (emscripten_webgl_make_context_current(handle) != EMSCRIPTEN_RESULT_SUCCESS)
+    if (emscripten_webgl_make_context_current(handle) != EMSCRIPTEN_RESULT_SUCCESS) {
+        report("warn"_s, "could not make the WebGL2 context current"_s);
         return false;
+    }
 
     if (!PlatformDisplay::sharedDisplayIfExists()) {
         auto display = PlatformDisplayEmscripten::create();
@@ -59,7 +63,11 @@ bool Renderer::initializeGPU()
         PlatformDisplay::setSharedDisplay(WTF::move(display));
     }
     auto& display = PlatformDisplay::sharedDisplay();
-    return display.skiaGLContext() && display.skiaGrContext();
+    if (!display.skiaGLContext() || !display.skiaGrContext()) {
+        report("warn"_s, makeString("Skia could not use WebGL2 ("_s, String::fromLatin1(reinterpret_cast<const char*>(glGetString(GL_VERSION))), "); painting on the CPU"_s));
+        return false;
+    }
+    return true;
 }
 
 void Renderer::resize(IntSize pixelSize)

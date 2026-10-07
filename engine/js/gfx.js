@@ -3,14 +3,22 @@
 addToLibrary({
   $inceptionGfx: { canvas: null, frameRequested: false },
 
-  inception_gfx_create_context__deps: ['$GL', '$inceptionGfx'],
+  // Engine diagnostics reach the host as console events, since worker consoles
+  // are easy to miss.
+  $inceptionReport: (level, message) => {
+    postMessage({ inception: JSON.stringify({ event: 'console', data: { level, message: `[engine] ${message}`, source: 'engine', line: 0, column: 0 } }) });
+  },
+
+  inception_gfx_create_context__deps: ['$GL', '$inceptionGfx', '$inceptionReport'],
   inception_gfx_create_context: (width, height) => {
     if (typeof OffscreenCanvas === 'undefined') {
-      err('gfx: no OffscreenCanvas in this worker; painting on the CPU');
+      inceptionReport('warn', 'no OffscreenCanvas in the engine worker; painting on the CPU');
       return 0;
     }
     const canvas = new OffscreenCanvas(width, height);
-    const handle = GL.createContext(canvas, {
+    let handle = 0;
+    try {
+      handle = GL.createContext(canvas, {
       majorVersion: 2,
       minorVersion: 0,
       alpha: true,
@@ -20,9 +28,12 @@ addToLibrary({
       stencil: true,
       preserveDrawingBuffer: false,
       powerPreference: 'high-performance',
-    });
+      });
+    } catch (e) {
+      inceptionReport('warn', `WebGL2 context creation threw: ${e}`);
+    }
     if (!handle) {
-      err('gfx: WebGL2 is unavailable in this worker; painting on the CPU');
+      inceptionReport('warn', 'WebGL2 is unavailable in the engine worker; painting on the CPU');
       return 0;
     }
     inceptionGfx.canvas = canvas;
