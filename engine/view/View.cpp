@@ -17,6 +17,7 @@
 #include "bridge/Bridge.h"
 #include "gfx/Renderer.h"
 #include "input/EditingClient.h"
+#include "media/MediaBridge.h"
 #include "net/Session.h"
 #include "storage/IndexedDB.h"
 #include "view/Clients.h"
@@ -138,6 +139,7 @@ void View::frame()
         context.scale(m_deviceScaleFactor);
         frameView->paint(context, IntRect({ }, m_cssSize));
     });
+    Media::endFrame();
 }
 
 } // namespace Inception

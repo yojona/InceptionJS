@@ -5,6 +5,7 @@
 #include "bridge/Bridge.h"
 #include "gfx/Renderer.h"
 #include "input/Input.h"
+#include "media/MediaBridge.h"
 #include "platform/Strategies.h"
 #include "view/View.h"
 #include "CurlContext.h"
@@ -45,6 +46,8 @@ static void registerCommands()
         auto cssSize = sizeFrom(args);
         float scale = args.getDouble("deviceScaleFactor"_s).value_or(1);
         bool preferGPU = args.getBoolean("gpu"_s).value_or(true);
+        if (auto media = args.getObject("media"_s))
+            Media::setCapabilities(*media);
         auto mode = Renderer::singleton().initialize(expandedIntSize(FloatSize(cssSize) * scale), preferGPU);
         View::create(cssSize, scale);
 
@@ -102,6 +105,7 @@ int main()
 
     Inception::registerCommands();
     Inception::registerInputCommands();
+    Inception::Media::install();
 
     // The host listens on every worker it creates and recognizes the engine's
     // by this event; "hello" repeats it on request.
