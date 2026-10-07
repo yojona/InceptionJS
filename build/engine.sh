@@ -41,7 +41,7 @@ fi
 targets=(${TARGETS:-inception-engine})
 step "building ${targets[*]} ($variant)"
 started=$(date +%s)
-logged "engine-build-$variant" ninja -C "$BUILD" -j"$JOBS" "${targets[@]}"
+logged "engine-build-$variant" ninja -C "$BUILD" -j"$JOBS" -k 0 "${targets[@]}"
 echo "built in $(( $(date +%s) - started )) s"
 
 shopt -s nullglob
