@@ -11,6 +11,7 @@
 #include "storage/Profile.h"
 #include "wasm/GuestWasm.h"
 #include "platform/Strategies.h"
+#include "view/Preferences.h"
 #include "view/View.h"
 #include "CurlContext.h"
 #include "CurlRequestScheduler.h"
@@ -136,6 +137,7 @@ int main()
 
     Inception::registerCommands();
     Inception::registerInputCommands();
+    Inception::registerPreferenceCommands();
     Inception::Media::install();
     Inception::registerDebugCommands();
 

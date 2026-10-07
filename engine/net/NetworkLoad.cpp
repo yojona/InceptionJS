@@ -12,6 +12,7 @@
 #include "SharedBuffer.h"
 #include "bridge/Bridge.h"
 #include "net/Session.h"
+#include "view/Preferences.h"
 #include <wtf/text/MakeString.h>
 
 namespace Inception {
@@ -41,6 +42,8 @@ void NetworkLoad::start(const ResourceRequest& request)
 {
     m_request = request;
     addCookieHeader(m_request);
+    if (!acceptLanguage().isEmpty() && !m_request.hasHTTPHeaderField(HTTPHeaderName::AcceptLanguage))
+        m_request.setHTTPHeaderField(HTTPHeaderName::AcceptLanguage, acceptLanguage());
     if (s_logging)
         report("debug"_s, makeString("net "_s, m_request.httpMethod(), ' ', m_request.url().string().left(4000)));
     m_curl = CurlRequest::create(m_request, *this);
