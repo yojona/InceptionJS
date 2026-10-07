@@ -1,0 +1,115 @@
+Build Skia's WebGL backend for the Emscripten port.
+
+WebKit builds Skia for GLES only (SK_ASSUME_GL_ES, WebGL interface disabled).
+Under those rules WebGL2's version string reads as GLES 2.0 and no format is
+renderable. The port now builds Skia for WebGL (SK_ASSUME_WEBGL, with its
+WebGL interface) and drops the GLES string rewriting and the sample-count
+shim, which the WebGL backend does not need. Other ports are unchanged.
+
+diff --git a/Source/ThirdParty/skia/CMakeLists.txt b/Source/ThirdParty/skia/CMakeLists.txt
+index f2a2259..62a2b23 100644
+--- a/Source/ThirdParty/skia/CMakeLists.txt
++++ b/Source/ThirdParty/skia/CMakeLists.txt
+@@ -1030,7 +1030,6 @@ target_compile_definitions(Skia PUBLIC
+     SK_DISABLE_LEGACY_INIT_DECODERS
+     SK_DISABLE_LEGACY_PNG_WRITEBUFFER
+     SK_DISABLE_TRACING
+-    SK_DISABLE_WEBGL_INTERFACE
+ 
+     SK_ENABLE_PRECOMPILE
+ 
+@@ -1064,11 +1063,22 @@ target_compile_definitions(Skia PRIVATE
+ #       used. Note that SK_DISABLE_WEBGL_INTERFACE is set anyway so WebGL
+ #       support is not built regardless of the value for SK_ASSUME_WEBGL.
+ #
+-target_compile_definitions(Skia PUBLIC
+-    SK_ASSUME_GL=0
+-    SK_ASSUME_GL_ES=1
+-    SK_ASSUME_WEBGL=0
+-)
++if (PORT STREQUAL "Emscripten")
++    # The Emscripten port draws through WebGL2 and builds Skia's WebGL backend.
++    target_compile_definitions(Skia PUBLIC
++        SK_ASSUME_GL=0
++        SK_ASSUME_GL_ES=0
++        SK_ASSUME_WEBGL=1
++    )
++    target_sources(Skia PRIVATE src/gpu/ganesh/gl/GrGLAssembleWebGLInterfaceAutogen.cpp)
++else ()
++    target_compile_definitions(Skia PUBLIC
++        SK_ASSUME_GL=0
++        SK_ASSUME_GL_ES=1
++        SK_ASSUME_WEBGL=0
++        SK_DISABLE_WEBGL_INTERFACE
++    )
++endif ()
+ 
+ if (WIN32)
+     target_compile_definitions(Skia PRIVATE SK_TYPEFACE_FACTORY_DIRECTWRITE)
+diff --git a/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.cpp b/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.cpp
+index b0a8057..ea9fa10 100644
+--- a/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.cpp
++++ b/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.cpp
+@@ -27,60 +27,18 @@
+ 
+ #if USE(SKIA)
+ 
+-#include <GLES3/gl3.h>
+-#include <cstdio>
+-#include <cstring>
+-#include <emscripten/em_js.h>
+ #include <emscripten/html5_webgl.h>
+ 
+ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+ #include <skia/gpu/ganesh/gl/GrGLAssembleInterface.h>
+ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
+ 
+-// WebGL2's getInternalformatParameter answers only SAMPLES; asked for
+-// NUM_SAMPLE_COUNTS, the toolchain's glGetInternalformativ writes nothing and
+-// Skia reads garbage, deciding no format can be rendered to. Both queries are
+-// answered from the SAMPLES list.
+-EM_JS(void, inceptionGetInternalformativ, (GLenum target, GLenum internalformat, GLenum pname, GLsizei bufSize, GLint* params), {
+-    const samples = GLctx.getInternalformatParameter(target, internalformat, 0x80A9 /* SAMPLES */) || [];
+-    if (pname == 0x9380 /* NUM_SAMPLE_COUNTS */) {
+-        if (bufSize > 0)
+-            HEAP32[params >> 2] = samples.length;
+-        return;
+-    }
+-    if (pname == 0x80A9) {
+-        for (let i = 0; i < Math.min(bufSize, samples.length); i++)
+-            HEAP32[(params >> 2) + i] = samples[i];
+-    }
+-});
+-
+ namespace WebCore {
+ 
+-// WebKit builds Skia for GLES only (SK_ASSUME_GL_ES). WebGL2 reports
+-// "OpenGL ES 3.0 (WebGL 2.0 ...)", which Skia parses as version 2.0, and
+-// under GLES rules a 2.0 context cannot render to RGBA8. Reporting the GLES
+-// version WebGL2 actually implements, "OpenGL ES 3.0", fixes that.
+-static const GLubyte* GL_APIENTRY getStringForSkia(GLenum name)
+-{
+-    const GLubyte* value = glGetString(name);
+-    if (name != GL_VERSION || !value)
+-        return value;
+-    static char version[32];
+-    if (!version[0]) {
+-        const char* source = reinterpret_cast<const char*>(value);
+-        const char* cut = strstr(source, " (");
+-        size_t length = cut ? static_cast<size_t>(cut - source) : strlen(source);
+-        snprintf(version, sizeof(version), "%.*s", static_cast<int>(length), source);
+-    }
+-    return reinterpret_cast<const GLubyte*>(version);
+-}
+-
++// Skia is built with its WebGL backend for this port; the interface binds the
++// toolchain's WebGL entry points directly and only needs glGetString here.
+ static GrGLFuncPtr getProc(void*, const char* name)
+ {
+-    if (!strcmp(name, "glGetString"))
+-        return reinterpret_cast<GrGLFuncPtr>(getStringForSkia);
+-    if (!strcmp(name, "glGetInternalformativ"))
+-        return reinterpret_cast<GrGLFuncPtr>(inceptionGetInternalformativ);
+     return reinterpret_cast<GrGLFuncPtr>(emscripten_webgl_get_proc_address(name));
+ }
+ 
