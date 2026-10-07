@@ -159,6 +159,7 @@ void HostMediaPlayer::setVolumeDouble(double volume)
 
 void HostMediaPlayer::setMuted(bool muted)
 {
+    m_muted = muted;
     auto data = JSON::Object::create();
     data->setBoolean("muted"_s, muted);
     sendToHost("media.muted"_s, WTF::move(data));
@@ -315,11 +316,27 @@ void HostMediaPlayer::update(JSON::Object& state)
         player->seeked(MediaTime::createWithDouble(m_currentTime));
         player->timeChanged();
     }
-    // A pause the page did not ask for (the end, a host-side stall) is the
-    // host's to report; a play request in flight keeps the page's view.
-    if (paused != m_paused && (paused || ended)) {
-        m_paused = paused;
+    // Playback state follows the host's playing and pause events, as the
+    // element's own events would; play() and pause() flip it optimistically.
+    bool sawPlaying = false;
+    bool sawPause = false;
+    if (auto reasons = state.getArray("reasons"_s)) {
+        for (auto& reason : *reasons) {
+            auto name = reason->asString();
+            sawPlaying |= name == "playing"_s;
+            sawPause |= name == "pause"_s;
+        }
+    }
+    if (sawPlaying && !paused && m_paused) {
+        m_paused = false;
         player->playbackStateChanged();
+    } else if ((sawPause || ended) && !m_paused && paused) {
+        m_paused = true;
+        player->playbackStateChanged();
+    }
+    if (auto muted = state.getBoolean("muted"_s); muted && *muted != m_muted) {
+        m_muted = *muted;
+        player->muteChanged(m_muted);
     }
     if (rate != m_rate) {
         m_rate = rate;
@@ -329,9 +346,6 @@ void HostMediaPlayer::update(JSON::Object& state)
         m_ended = ended;
         player->timeChanged();
     }
-    auto reason = state.getString("reason"_s);
-    if (reason == "playing"_s || reason == "pause"_s)
-        player->timeChanged();
 }
 
 } // namespace Inception::Media

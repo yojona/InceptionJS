@@ -90,6 +90,7 @@ private:
     bool m_paused { true };
     bool m_seeking { false };
     bool m_ended { false };
+    bool m_muted { false };
 
     std::optional<WebCore::FloatRect> m_paintedRect;
     std::optional<WebCore::FloatRect> m_reportedRect;
