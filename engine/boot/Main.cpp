@@ -68,14 +68,15 @@ static void registerCommands()
     });
 }
 
-static void pumpNetwork(int, void*)
+} // namespace Inception
+
+// Socket data arrived (posted by js/wisp.js from the page's main thread).
+extern "C" EMSCRIPTEN_KEEPALIVE void inception_net_pump()
 {
-    auto& context = CurlContext::singleton();
+    auto& context = WebCore::CurlContext::singleton();
     context.scheduler().pumpNow();
     context.streamScheduler().pumpNow();
 }
-
-} // namespace Inception
 
 extern "C" EMSCRIPTEN_KEEPALIVE void inception_loop_iterate()
 {
@@ -97,10 +98,6 @@ int main()
     WTF::RunLoop::setNextTimerCallback([](Seconds delay) {
         inception_loop_schedule(delay.milliseconds());
     });
-
-    emscripten_set_socket_open_callback(nullptr, Inception::pumpNetwork);
-    emscripten_set_socket_message_callback(nullptr, Inception::pumpNetwork);
-    emscripten_set_socket_close_callback(nullptr, Inception::pumpNetwork);
 
     Inception::registerCommands();
 

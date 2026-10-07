@@ -12,6 +12,10 @@ addToLibrary({
   $inceptionBridgeInstall: () => {
     if (!ENVIRONMENT_IS_PTHREAD) return;
     self.addEventListener('message', (e) => {
+      if (e.data?.inceptionPump) {
+        Module._inception_net_pump();
+        return;
+      }
       const json = e.data?.inception;
       if (typeof json !== 'string') return;
       const ptr = stringToNewUTF8(json);

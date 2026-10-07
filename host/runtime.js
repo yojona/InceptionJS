@@ -38,6 +38,7 @@ export class EngineRuntime extends EventTarget {
     try {
       this.#module = await createEngine({
         locateFile: (path) => new URL(path, this.engineUrl).href,
+        inceptionWispUrl: this.wispUrl,
         print: (text) => console.log('[engine]', text),
         printErr: (text) => console.warn('[engine]', text),
       });
@@ -64,7 +65,6 @@ export class EngineRuntime extends EventTarget {
       if (payload.version !== BRIDGE_VERSION)
         throw new Error(`engine speaks bridge v${payload.version}, host speaks v${BRIDGE_VERSION}`);
       this.#worker = worker;
-      worker.postMessage({ inceptionConfig: { wispUrl: this.wispUrl } });
       for (const message of this.#pending.splice(0)) worker.postMessage(message);
     }
     this.dispatchEvent(new CustomEvent(event, { detail: payload }));

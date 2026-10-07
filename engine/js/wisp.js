@@ -1,9 +1,12 @@
 // TCP for the engine. curl opens sockets through emscripten's SOCKFS, which
 // models each TCP connection as a WebSocket tagged with the "inception-tcp"
-// subprotocol. In the engine worker those are not real WebSockets: they are
-// streams multiplexed over one WebSocket to a Wisp relay, which does the actual
-// TCP. TLS is end to end, inside the engine; the relay only sees ciphertext.
+// subprotocol. Socket calls are proxied to the page's main thread, so that is
+// where these "WebSockets" are made: streams multiplexed over one WebSocket to
+// a Wisp relay, which does the actual TCP. TLS is end to end, inside the
+// engine; the relay only sees ciphertext. Whenever a stream changes state the
+// engine thread is poked so its network schedulers run at once.
 addToLibrary({
+  $inceptionWisp__deps: ['$PThread'],
   $inceptionWisp__postset: 'inceptionWisp.install();',
   $inceptionWisp: {
     url: null,
@@ -11,12 +14,9 @@ addToLibrary({
     NativeWebSocket: null,
 
     install() {
-      if (!ENVIRONMENT_IS_PTHREAD || inceptionWisp.NativeWebSocket) return;
+      if (ENVIRONMENT_IS_PTHREAD || inceptionWisp.NativeWebSocket) return;
+      inceptionWisp.url = Module['inceptionWispUrl'] ?? null;
       inceptionWisp.NativeWebSocket = self.WebSocket;
-      self.addEventListener('message', (e) => {
-        const config = e.data?.inceptionConfig;
-        if (config?.wispUrl) inceptionWisp.url = config.wispUrl;
-      });
       const Native = inceptionWisp.NativeWebSocket;
       self.WebSocket = function (url, protocols) {
         const list = Array.isArray(protocols) ? protocols : [protocols];
@@ -25,6 +25,11 @@ addToLibrary({
         return inceptionWisp.connect(target.hostname, Number(target.port) || 443);
       };
       Object.assign(self.WebSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+    },
+
+    // Runs after SOCKFS has queued the event, so the engine sees it.
+    poke() {
+      PThread.runningWorkers[0]?.postMessage({ inceptionPump: 1 });
     },
 
     connect(host, port) {
@@ -130,6 +135,7 @@ addToLibrary({
         if (this.readyState !== 0) return;
         this.readyState = 1;
         this.onopen?.();
+        inceptionWisp.poke();
       }
 
       send(data) {
@@ -154,6 +160,7 @@ addToLibrary({
       deliver(payload) {
         if (this.readyState !== 1) return;
         this.onmessage?.({ data: payload.slice().buffer });
+        inceptionWisp.poke();
       }
 
       close() {
@@ -170,6 +177,7 @@ addToLibrary({
         this.connection.streams.delete(this.id);
         if (!wasOpen) this.onerror?.(new Event('error'));
         this.onclose?.();
+        inceptionWisp.poke();
       }
     },
   },
