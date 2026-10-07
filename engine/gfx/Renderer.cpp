@@ -129,12 +129,16 @@ void Renderer::paintGPU(const Function<void(GraphicsContext&)>& paint)
     // The default framebuffer of the OffscreenCanvas; WebGL flips it on present,
     // hence the bottom-left origin.
     GrGLFramebufferInfo framebuffer { 0, GL_RGBA8 };
-    auto target = GrBackendRenderTargets::MakeGL(m_size.width(), m_size.height(), 0, 8, framebuffer);
+    // Stencil bits must match the framebuffer's actual stencil format, or Skia
+    // refuses to wrap it.
+    GLint stencilBits = 0;
+    glGetIntegerv(GL_STENCIL_BITS, &stencilBits);
+    auto target = GrBackendRenderTargets::MakeGL(m_size.width(), m_size.height(), 0, stencilBits, framebuffer);
     auto properties = FontRenderOptions::singleton().createSurfaceProps();
     auto surface = SkSurfaces::WrapBackendRenderTarget(grContext, target, kBottomLeft_GrSurfaceOrigin,
         kRGBA_8888_SkColorType, SkColorSpace::MakeSRGB(), &properties);
     if (!surface) {
-        report("error"_s, makeString("Skia could not wrap the WebGL2 framebuffer at "_s, m_size.width(), 'x', m_size.height()));
+        report("error"_s, makeString("Skia could not wrap the WebGL2 framebuffer at "_s, m_size.width(), 'x', m_size.height(), " (stencil "_s, stencilBits, ", target "_s, target.isValid() ? "valid"_s : "invalid"_s, ')'));
         return;
     }
 
