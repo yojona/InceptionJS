@@ -1,0 +1,71 @@
+Read a TLS stream until it runs dry.
+
+TLS can decrypt more than one receive returns; what is left is no longer
+visible as socket readiness, so the last message of a burst sat in the TLS
+buffer until more data arrived.
+
+diff --git a/Source/WebCore/platform/network/curl/CurlStream.cpp b/Source/WebCore/platform/network/curl/CurlStream.cpp
+index 1b82cd2..fda4596 100644
+--- a/Source/WebCore/platform/network/curl/CurlStream.cpp
++++ b/Source/WebCore/platform/network/curl/CurlStream.cpp
+@@ -209,7 +209,40 @@ void CurlStream::tryToTransfer(const fd_set& readfds, const fd_set& writefds, co
+ }
+ 
+ void CurlStream::tryToReceive()
++{
++#if PLATFORM(EMSCRIPTEN)
++    // TLS may have decrypted more than one read returns, and that data is no
++    // longer visible as socket readiness: read until the stream runs dry.
++    for (unsigned reads = 0; reads < 64 && m_curlHandle; ++reads) {
++        if (!receiveOnce())
++            return;
++    }
++}
++
++bool CurlStream::receiveOnce()
+ {
++    if (!m_curlHandle)
++        return false;
++
++    Vector<uint8_t> receiveBuffer(kReceiveBufferSize);
++    size_t bytesReceived = 0;
++
++    auto errorCode = m_curlHandle->receive(receiveBuffer.mutableSpan().data(), kReceiveBufferSize, bytesReceived);
++    if (errorCode != CURLE_OK) {
++        if (errorCode != CURLE_AGAIN)
++            notifyFailure(errorCode);
++        return false;
++    }
++
++    if (!bytesReceived)
++        destroyHandle();
++
++    receiveBuffer.resize(bytesReceived);
++    m_scheduler.callClientOnMainThread(m_streamID, [streamID = m_streamID, buffer = SharedBuffer::create(WTF::move(receiveBuffer))](Client& client) {
++        client.didReceiveData(streamID, buffer);
++    });
++    return bytesReceived;
++#else
+     if (!m_curlHandle)
+         return;
+ 
+@@ -231,6 +264,7 @@ void CurlStream::tryToReceive()
+     m_scheduler.callClientOnMainThread(m_streamID, [streamID = m_streamID, buffer = SharedBuffer::create(WTF::move(receiveBuffer))](Client& client) {
+         client.didReceiveData(streamID, buffer);
+     });
++#endif
+ }
+ 
+ void CurlStream::tryToSend()
+diff --git a/Source/WebCore/platform/network/curl/CurlStream.h b/Source/WebCore/platform/network/curl/CurlStream.h
+index c187115..e8ca4fd 100644
+--- a/Source/WebCore/platform/network/curl/CurlStream.h
++++ b/Source/WebCore/platform/network/curl/CurlStream.h
+@@ -79,6 +79,7 @@ private:
+ 
+ #if PLATFORM(EMSCRIPTEN)
+     void continueConnecting();
++    bool receiveOnce();
+     Expected<curl_socket_t, CURLcode> usableSocket();
+ 
+     // Connecting blocks inside curl_easy_perform, and nothing may block the
