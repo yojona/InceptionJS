@@ -1,0 +1,33 @@
+Includes needed when WebGL is off and unified sources group files differently.
+
+GLContextWrapper only needs the ANGLE context type when WebGL is on, and
+DocumentLoader uses EventLoopTaskGroup without including its definition.
+
+diff --git a/Source/WebCore/loader/DocumentLoader.cpp b/Source/WebCore/loader/DocumentLoader.cpp
+index 2c9b359..fbbaf97 100644
+--- a/Source/WebCore/loader/DocumentLoader.cpp
++++ b/Source/WebCore/loader/DocumentLoader.cpp
+@@ -30,6 +30,8 @@
+ #include "config.h"
+ #include "DocumentLoader.h"
+ 
++#include "EventLoop.h"
++
+ #include "Archive.h"
+ #include "ArchiveResourceCollection.h"
+ #include "CachedPage.h"
+diff --git a/Source/WebCore/platform/graphics/egl/GLContextWrapper.cpp b/Source/WebCore/platform/graphics/egl/GLContextWrapper.cpp
+index c33e4ef..2c52f65 100644
+--- a/Source/WebCore/platform/graphics/egl/GLContextWrapper.cpp
++++ b/Source/WebCore/platform/graphics/egl/GLContextWrapper.cpp
+@@ -21,7 +21,10 @@
+ #include "GLContextWrapper.h"
+ 
+ #include "GLContext.h"
++
++#if ENABLE(WEBGL)
+ #include "GraphicsContextGLTextureMapperANGLE.h"
++#endif
+ 
+ namespace WebCore {
+ 
