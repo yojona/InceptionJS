@@ -32,7 +32,7 @@ static ResourceError makeError(const URL& url, int code, ASCIILiteral descriptio
 // Every subresource and main resource load passes through here. data: and blob:
 // are served by WebCore itself (ResourceLoader::start); everything else goes to
 // a NetworkLoad over curl.
-class Loader final : public LoaderStrategy {
+class LoaderStrategyImpl final : public LoaderStrategy {
 public:
     void loadResource(LocalFrame& frame, CachedResource& resource, ResourceRequest&& request, const ResourceLoaderOptions& options, CompletionHandler<void(RefPtr<SubresourceLoader>&&)>&& completionHandler) final
     {
@@ -120,7 +120,7 @@ private:
 
 // The engine-wide clipboard. The host mirrors it to the system clipboard when
 // the user allows; WebCore only ever sees this copy.
-class Clipboard final : public PasteboardStrategy {
+class ClipboardStrategy final : public PasteboardStrategy {
 public:
     String readStringFromPasteboard(size_t, const String& type, const String&, const PasteboardContext*) final { return m_items.get(type); }
     RefPtr<SharedBuffer> readBufferFromPasteboard(std::optional<size_t>, const String& type, const String&, const PasteboardContext*) final
@@ -156,10 +156,10 @@ private:
     int64_t m_changeCount { 0 };
 };
 
-class Media final : public MediaStrategy {
+class MediaStrategyImpl final : public MediaStrategy {
 };
 
-class Blobs final : public BlobRegistry {
+class BlobRegistryBridge final : public BlobRegistry {
 public:
     void registerInternalFileBlobURL(const URL& url, Ref<BlobDataFileReference>&& file, const String&, const String& contentType) final { m_impl.registerInternalFileBlobURL(url, WTF::move(file), contentType); }
     void registerInternalBlobURL(const URL& url, Vector<BlobPart>&& parts, const String& contentType) final { m_impl.registerInternalBlobURL(url, WTF::move(parts), contentType); }
@@ -178,17 +178,17 @@ private:
     BlobRegistryImpl m_impl;
 };
 
-class Strategies final : public PlatformStrategies {
+class PlatformStrategiesImpl final : public PlatformStrategies {
 private:
-    LoaderStrategy* createLoaderStrategy() final { return new Loader; }
-    PasteboardStrategy* createPasteboardStrategy() final { return new Clipboard; }
-    MediaStrategy* createMediaStrategy() final { return new Media; }
-    BlobRegistry* createBlobRegistry() final { return new Blobs; }
+    LoaderStrategy* createLoaderStrategy() final { return new LoaderStrategyImpl; }
+    PasteboardStrategy* createPasteboardStrategy() final { return new ClipboardStrategy; }
+    MediaStrategy* createMediaStrategy() final { return new MediaStrategyImpl; }
+    BlobRegistry* createBlobRegistry() final { return new BlobRegistryBridge; }
 };
 
 void installPlatformStrategies()
 {
-    static Strategies* strategies = new Strategies;
+    static PlatformStrategiesImpl* strategies = new PlatformStrategiesImpl;
     setPlatformStrategies(strategies);
 }
 

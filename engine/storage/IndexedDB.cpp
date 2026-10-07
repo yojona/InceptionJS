@@ -153,7 +153,7 @@ private:
     Ref<IDBServer::IDBConnectionToClient> m_connectionToClient;
 };
 
-class Provider final : public DatabaseProvider {
+class IDBDatabaseProvider final : public DatabaseProvider {
 public:
     IDBConnectionToServer& idbConnectionToServerForSession(PAL::SessionID) final { return m_server->connectionToServer(); }
 
@@ -163,7 +163,7 @@ private:
 
 Ref<DatabaseProvider> createDatabaseProvider()
 {
-    return adoptRef(*new Provider);
+    return adoptRef(*new IDBDatabaseProvider);
 }
 
 } // namespace Inception

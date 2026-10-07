@@ -31,9 +31,9 @@ using namespace WebCore;
 static constexpr unsigned quotaBytes = 5 * 1024 * 1024;
 
 // One origin's items, written through to SQLite for localStorage.
-class Area final : public StorageArea {
+class WebStorageArea final : public StorageArea {
 public:
-    static Ref<Area> create(StorageType type, const SecurityOriginData& origin) { return adoptRef(*new Area(type, origin)); }
+    static Ref<WebStorageArea> create(StorageType type, const SecurityOriginData& origin) { return adoptRef(*new WebStorageArea(type, origin)); }
 
     unsigned length() final { return m_map.length(); }
     String key(unsigned index) final { return m_map.key(index); }
@@ -82,7 +82,7 @@ public:
     }
 
 private:
-    Area(StorageType type, const SecurityOriginData& origin)
+    WebStorageArea(StorageType type, const SecurityOriginData& origin)
         : m_type(type)
         , m_origin(origin)
         , m_map(quotaBytes)
@@ -131,14 +131,14 @@ private:
     SQLiteDatabase m_database;
 };
 
-class Namespace final : public StorageNamespace {
+class WebStorageNamespace final : public StorageNamespace {
 public:
-    static Ref<Namespace> create(StorageType type, PAL::SessionID sessionID) { return adoptRef(*new Namespace(type, sessionID)); }
+    static Ref<WebStorageNamespace> create(StorageType type, PAL::SessionID sessionID) { return adoptRef(*new WebStorageNamespace(type, sessionID)); }
 
     Ref<StorageArea> storageArea(const SecurityOrigin& origin) final
     {
         auto data = origin.data();
-        return m_areas.ensure(data, [&] { return Area::create(m_type, data); }).iterator->value;
+        return m_areas.ensure(data, [&] { return WebStorageArea::create(m_type, data); }).iterator->value;
     }
 
     const SecurityOrigin* topLevelOrigin() const final { return nullptr; }
@@ -149,7 +149,7 @@ public:
     void setSessionIDForTesting(PAL::SessionID sessionID) final { m_sessionID = sessionID; }
 
 private:
-    Namespace(StorageType type, PAL::SessionID sessionID)
+    WebStorageNamespace(StorageType type, PAL::SessionID sessionID)
         : m_type(type)
         , m_sessionID(sessionID)
     {
@@ -157,37 +157,37 @@ private:
 
     StorageType m_type;
     PAL::SessionID m_sessionID;
-    HashMap<SecurityOriginData, Ref<Area>> m_areas;
+    HashMap<SecurityOriginData, Ref<WebStorageArea>> m_areas;
 };
 
-class Provider final : public StorageNamespaceProvider {
+class WebStorageNamespaceProvider final : public StorageNamespaceProvider {
     RefPtr<StorageNamespace> sessionStorageNamespace(const SecurityOrigin&, Page& page, ShouldCreateNamespace shouldCreate) final
     {
         if (auto it = m_sessionNamespaces.find(page); it != m_sessionNamespaces.end())
             return it->value.ptr();
         if (shouldCreate == ShouldCreateNamespace::No)
             return nullptr;
-        auto storage = Namespace::create(StorageType::Session, page.sessionID());
+        auto storage = WebStorageNamespace::create(StorageType::Session, page.sessionID());
         m_sessionNamespaces.set(page, storage.copyRef());
         return storage;
     }
 
     Ref<StorageNamespace> createLocalStorageNamespace(unsigned, PAL::SessionID sessionID) final
     {
-        return Namespace::create(StorageType::Local, sessionID);
+        return WebStorageNamespace::create(StorageType::Local, sessionID);
     }
 
     Ref<StorageNamespace> createTransientLocalStorageNamespace(SecurityOrigin&, unsigned, PAL::SessionID sessionID) final
     {
-        return Namespace::create(StorageType::TransientLocal, sessionID);
+        return WebStorageNamespace::create(StorageType::TransientLocal, sessionID);
     }
 
-    WeakHashMap<Page, Ref<Namespace>> m_sessionNamespaces;
+    WeakHashMap<Page, Ref<WebStorageNamespace>> m_sessionNamespaces;
 };
 
 Ref<StorageNamespaceProvider> createStorageNamespaceProvider()
 {
-    return adoptRef(*new Provider);
+    return adoptRef(*new WebStorageNamespaceProvider);
 }
 
 } // namespace Inception
