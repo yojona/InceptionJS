@@ -102,7 +102,7 @@ the host's GPU.
  
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.h
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,94 @@
 +/*
 + * Copyright (C) 2026 InceptionJS contributors
 + *
@@ -166,6 +166,7 @@ the host's GPU.
 +    void prepareForDisplay() final;
 +
 +    bool isWebGL2() const { return m_isForWebGL2; }
++    bool isEnabledCapability(GCGLenum) const;
 +    const char* glString(GCGLenum) const;
 +    void requestExtension(const char* glName);
 +
@@ -175,6 +176,8 @@ the host's GPU.
 +    explicit GraphicsContextGLEmscripten(GraphicsContextGLAttributes&&);
 +
 +    bool platformInitializeContext() final;
++    void forceContextLost() final;
++    void releaseHostContext();
 +
 +    // GLContextWrapper
 +    GLContextWrapper::Type type() const final { return GLContextWrapper::Type::Angle; }
@@ -196,7 +199,7 @@ the host's GPU.
 +#endif // ENABLE(WEBGL)
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.cpp
-@@ -0,0 +1,496 @@
+@@ -0,0 +1,559 @@
 +/*
 + * Copyright (C) 2026 InceptionJS contributors
 + *
@@ -257,6 +260,12 @@ the host's GPU.
 +    }
 +});
 +
++// Frees the host context now: dropping the handle alone leaves it alive until
++// the host's garbage collector runs, and browsers cap live contexts per page.
++EM_JS(void, inception_webgl_lose_guest_context, (int handle), {
++    GL.getContext(handle)?.GLctx?.getExtension('WEBGL_lose_context')?.loseContext();
++});
++
 +// The real GPU names: pages read them through WEBGL_debug_renderer_info.
 +EM_JS(char*, inception_webgl_unmasked_string, (int renderer), {
 +    const info = GLctx.getExtension('WEBGL_debug_renderer_info');
@@ -290,6 +299,18 @@ the host's GPU.
 +WTF_MAKE_TZONE_ALLOCATED_IMPL(GraphicsContextGLEmscripten);
 +
 +static GraphicsContextGLEmscripten* s_current;
++
++// Browsers cap live WebGL contexts and lose the oldest past the cap, which
++// would be the engine's own. The cap varies: sixteen on a desktop GPU, four in
++// a headless or software-rendered browser. Pages get few enough to stay under
++// the smallest; past that their oldest context is lost, as a browser would do.
++static constexpr size_t maxPageContexts = 3;
++
++static Vector<GraphicsContextGLEmscripten*>& liveContexts()
++{
++    static NeverDestroyed<Vector<GraphicsContextGLEmscripten*>> contexts;
++    return contexts;
++}
 +
 +enum WebGLVersions : uint8_t { WebGL1 = 1, WebGL2 = 2, BothVersions = 3 };
 +
@@ -383,21 +404,38 @@ the host's GPU.
 +
 +GraphicsContextGLEmscripten::~GraphicsContextGLEmscripten()
 +{
++    // The objects die with the host context; the base destructor then finds no
++    // context to make current.
++    releaseHostContext();
++}
++
++void GraphicsContextGLEmscripten::releaseHostContext()
++{
++    liveContexts().removeFirst(this);
 +    if (!m_handle)
 +        return;
-+    // The objects die with the host context; only the context itself needs
-+    // releasing. The base destructor then finds no context to make current.
 +    if (s_current == this)
 +        s_current = nullptr;
 +    if (isCurrent())
 +        didUnmakeContextCurrent();
++    inception_webgl_lose_guest_context(m_handle);
++    if (emscripten_webgl_get_current_context() == m_handle)
++        emscripten_webgl_make_context_current(0);
 +    emscripten_webgl_destroy_context(m_handle);
 +    m_handle = 0;
++}
++
++void GraphicsContextGLEmscripten::forceContextLost()
++{
++    releaseHostContext();
++    GraphicsContextGLANGLE::forceContextLost();
 +}
 +
 +bool GraphicsContextGLEmscripten::platformInitializeContext()
 +{
 +    m_isForWebGL2 = contextAttributes().isWebGL2;
++    if (liveContexts().size() >= maxPageContexts)
++        liveContexts().first()->forceContextLost();
 +    m_handle = inception_webgl_create_guest_context(m_isForWebGL2 ? 2 : 1);
 +    if (!m_handle || !makeContextCurrent())
 +        return false;
@@ -445,6 +483,7 @@ the host's GPU.
 +    };
 +    m_renderer = unmasked(true);
 +    m_vendor = unmasked(false);
++    liveContexts().append(this);
 +    return true;
 +}
 +
@@ -579,22 +618,49 @@ the host's GPU.
 +        context->requestExtension(name);
 +}
 +
-+// Debug output does not exist in WebGL, and WebGL2 always restarts primitives
-+// at the fixed index; enabling either is an error there.
-+static bool isImplicitCapability(GLenum capability)
++// Only capabilities WebGL accepts reach the host; the shared code also
++// toggles driver ones (debug output, the fixed restart index WebGL2 always
++// uses), which are errors there.
++bool GraphicsContextGLEmscripten::isEnabledCapability(GCGLenum capability) const
 +{
-+    return capability == GL_DEBUG_OUTPUT_KHR || capability == GL_DEBUG_OUTPUT_SYNCHRONOUS_KHR || capability == GL_PRIMITIVE_RESTART_FIXED_INDEX;
++    switch (capability) {
++    case GL_BLEND:
++    case GL_CULL_FACE:
++    case GL_DEPTH_TEST:
++    case GL_DITHER:
++    case GL_POLYGON_OFFSET_FILL:
++    case GL_SAMPLE_ALPHA_TO_COVERAGE:
++    case GL_SAMPLE_COVERAGE:
++    case GL_SCISSOR_TEST:
++    case GL_STENCIL_TEST:
++        return true;
++    case GL_RASTERIZER_DISCARD:
++        return m_isForWebGL2;
++    case 0x864F: // DEPTH_CLAMP_EXT
++    case 0x2A02: // POLYGON_OFFSET_LINE_ANGLE
++    case 0x3000: case 0x3001: case 0x3002: case 0x3003: // CLIP_DISTANCE0-7_WEBGL
++    case 0x3004: case 0x3005: case 0x3006: case 0x3007:
++        return m_isForWebGL2 || capability == 0x864F || capability == 0x2A02;
++    default:
++        return false;
++    }
++}
++
++static bool passesToHost(GLenum capability)
++{
++    auto* context = GraphicsContextGLEmscripten::current();
++    return context && context->isEnabledCapability(capability);
 +}
 +
 +void GL_Enable(GLenum capability)
 +{
-+    if (!isImplicitCapability(capability))
++    if (passesToHost(capability))
 +        glEnable(capability);
 +}
 +
 +void GL_Disable(GLenum capability)
 +{
-+    if (!isImplicitCapability(capability))
++    if (passesToHost(capability))
 +        glDisable(capability);
 +}
 +
@@ -604,7 +670,7 @@ the host's GPU.
 +        auto* context = GraphicsContextGLEmscripten::current();
 +        return context && context->isWebGL2();
 +    }
-+    if (isImplicitCapability(capability))
++    if (!passesToHost(capability))
 +        return GL_FALSE;
 +    return glIsEnabled(capability);
 +}

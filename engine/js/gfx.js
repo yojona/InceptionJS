@@ -37,6 +37,14 @@ addToLibrary({
       return 0;
     }
     inceptionGfx.canvas = canvas;
+    // Skia asks for the GPU's name; without the extension that is an error.
+    GL.getContext(handle).GLctx.getExtension('WEBGL_debug_renderer_info');
+    // Pages' WebGL contexts are capped so the browser never reclaims this one;
+    // if it is lost anyway (GPU reset), say so instead of going blank quietly.
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      inceptionReport('error', 'the engine lost its WebGL context; reload to restore painting');
+    });
     return handle;
   },
 
