@@ -38,7 +38,9 @@ export function attachInput(element, canvas, send) {
     send('mouse', { type: 'up', ...position(event), button: event.button, clickCount: event.detail || 1, modifiers: modifiersOf(event) });
   });
   window.addEventListener('mousemove', (event) => {
-    if (pressedButton === null && event.target !== canvas) return;
+    // Listeners on window see the shadow host as the target; the composed
+    // path says whether the pointer is over the canvas.
+    if (pressedButton === null && !event.composedPath().includes(canvas)) return;
     send('mouse', { type: 'move', ...position(event), button: pressedButton ?? 0, pressed: pressedButton !== null, modifiers: modifiersOf(event) });
   });
   canvas.addEventListener('contextmenu', (event) => event.preventDefault());
