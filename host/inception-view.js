@@ -1,4 +1,5 @@
 import { attachInput } from './input.js';
+import { MediaHost, probeMediaCapabilities } from './media.js';
 import { EngineRuntime } from './runtime.js';
 import { ProtocolClient, ProtocolServer, createInPagePair } from './protocol.js';
 
@@ -25,6 +26,8 @@ export class InceptionView extends HTMLElement {
   #server = null;
   #client = null;
   #canvas;
+  #mediaLayer;
+  #media = null;
   #ready = null;
   #state = { url: '', title: '', loading: false };
 
@@ -33,9 +36,11 @@ export class InceptionView extends HTMLElement {
     const shadow = this.attachShadow({ mode: 'open' });
     shadow.innerHTML = `<style>
       :host { display: block; position: relative; overflow: hidden; contain: strict; width: 800px; height: 600px; outline: none; }
-      canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-    </style><canvas part="screen"></canvas>`;
+      canvas, .media { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+      .media { overflow: hidden; }
+    </style><div class="media" part="media"></div><canvas part="screen"></canvas>`;
     this.#canvas = shadow.querySelector('canvas');
+    this.#mediaLayer = shadow.querySelector('.media');
     if (!this.hasAttribute('tabindex')) this.tabIndex = 0;
   }
 
@@ -73,13 +78,26 @@ export class InceptionView extends HTMLElement {
     for (const name of VIEW_EVENTS)
       this.#client.addEventListener(name, (e) => this.dispatchEvent(new CustomEvent(name, { detail: e.detail })));
 
+    // Videos play in the host page, under the canvas (host/media.js).
+    // `autoplay-sound`: the embedder knows playback with sound is allowed here.
+    const soundAllowed = this.hasAttribute('autoplay-sound') || config.policy?.autoplaySound === true;
+    this.#media = new MediaHost(this.#mediaLayer, (command, args) => this.#runtime.send(command, args), { soundAllowed });
+    this.#runtime.onEngineEvent = (name, data) => {
+      if (name.startsWith('media.')) this.#media.handleEvent(name, data);
+    };
+    this.#runtime.onMediaAppend = ({ id, sb, bytes }) => this.#media.append(id, sb, bytes);
+    // Activation is sticky for the host page's lifetime: the first gesture
+    // anywhere in it lets every later video play with sound.
+    const gesture = () => this.#media.userGesture();
+    for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, gesture, { capture: true });
+
     const engineReady = new Promise((resolve) => this.#runtime.addEventListener('ready', (e) => resolve(e.detail), { once: true }));
     await this.#runtime.start();
     await this.#client.hello();
 
     const { width, height } = this.#cssSize();
     const gpu = this.getAttribute('gpu') ?? 'auto';
-    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', url: this.getAttribute('src') ?? '' });
+    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: probeMediaCapabilities(), url: this.getAttribute('src') ?? '' });
     const ready = await engineReady;
     if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');
     this.dataset.renderer = ready.renderer;

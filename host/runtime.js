@@ -58,6 +58,7 @@ export class EngineRuntime extends EventTarget {
     if (!data || typeof data !== 'object') return;
     if (data.inceptionWantsFrame) return requestAnimationFrame(() => worker.postMessage({ inceptionFrameTick: 1 }));
     if (data.inceptionFrame) return this.#presentBitmap(data.inceptionFrame);
+    if (data.inceptionMediaAppend) return this.onMediaAppend?.(data.inceptionMediaAppend);
     if (data.inceptionPixels) return this.#presentPixels(data.inceptionPixels);
     if (typeof data.inception !== 'string') return;
     const { event, data: payload } = JSON.parse(data.inception);
@@ -68,6 +69,7 @@ export class EngineRuntime extends EventTarget {
       this.#worker = worker;
       for (const message of this.#pending.splice(0)) worker.postMessage(message);
     }
+    this.onEngineEvent?.(event, payload);
     this.dispatchEvent(new CustomEvent(event, { detail: payload }));
   }
 
