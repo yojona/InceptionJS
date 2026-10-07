@@ -40,6 +40,9 @@ use_toolchain() {
   # The engine runs on a pthread, so every library shares its threading ABI.
   export CFLAGS="-O2 -pthread" CXXFLAGS="-O2 -pthread"
   export PKG_CONFIG_LIBDIR="$SYSROOT/lib/pkgconfig"
+  # emconfigure replaces PKG_CONFIG_LIBDIR with the toolchain's own sysroot and
+  # takes extra search paths from this variable instead.
+  export EM_PKG_CONFIG_PATH="$SYSROOT/lib/pkgconfig"
 }
 
 sha256_of() {
