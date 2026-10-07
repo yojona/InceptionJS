@@ -5,5 +5,6 @@ set -euo pipefail
 here="$(dirname "$0")"
 bash "$here/toolchain.sh"
 bash "$here/deps.sh"
+bash "$here/webkit.sh" >/dev/null
 bash "$here/fs.sh"
 bash "$here/engine.sh"

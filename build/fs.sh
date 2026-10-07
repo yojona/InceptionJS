@@ -5,6 +5,7 @@
 #   /usr/share/fonts     fallback fonts for when pages bring none
 #   /usr/share/icu       ICU data archive (ICU_DATA points here)
 #   /etc/ssl/cacert.pem  trust store for TLS, which terminates in the engine
+#   /usr/share/inception/resources  WebKit's built-in images (broken image...)
 source "$(dirname "$0")/lib.sh"
 
 FS="$WORK/fs"
@@ -27,6 +28,10 @@ cp "$SYSROOT/share/icu/$ICU_DATA_VERSION/$dat" "$FS/usr/share/icu/$dat"
 fonts=/usr/share/fonts/truetype/dejavu
 [ -d "$fonts" ] || fail "no DejaVu fonts at $fonts (the build image installs them)"
 cp "$fonts"/*.ttf "$FS/usr/share/fonts/"
+resources="$WORK/webkit/Source/WebCore/Resources"
+[ -d "$resources" ] || fail "no WebKit checkout at $WORK/webkit; run build/webkit.sh first"
+mkdir -p "$FS/usr/share/inception/resources"
+cp "$resources"/missingImage*.png "$resources"/panIcon.png "$FS/usr/share/inception/resources/"
 
 bundle=/etc/ssl/certs/ca-certificates.crt
 [ -f "$bundle" ] || fail "no CA bundle at $bundle"

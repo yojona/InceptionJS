@@ -1,0 +1,38 @@
+Load built-in images (the broken image icon) from the engine file system.
+
+--- a/Source/WebCore/platform/graphics/ImageAdapter.cpp
++++ b/Source/WebCore/platform/graphics/ImageAdapter.cpp
+@@ -27,15 +27,32 @@
+ #include "ImageAdapter.h"
+ 
+ #include "BitmapImage.h"
++#if PLATFORM(EMSCRIPTEN)
++#include "SharedBuffer.h"
++#include <wtf/text/MakeString.h>
++#endif
+ #include <wtf/TZoneMallocInlines.h>
+ 
+ namespace WebCore {
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(ImageAdapter);
+ 
+-#if !PLATFORM(COCOA) && !PLATFORM(GTK) && !PLATFORM(WIN) && !PLATFORM(WPE)
++#if PLATFORM(EMSCRIPTEN)
++// The engine's file system carries WebKit's resource images.
+ Ref<Image> ImageAdapter::loadPlatformResource(const char* resource)
+ {
++    auto image = BitmapImage::create();
++    if (auto buffer = SharedBuffer::createWithContentsOfFile(makeString("/usr/share/inception/resources/"_s, unsafeSpan(resource), ".png"_s)))
++        image->setData(WTF::move(buffer), true);
++    return image;
++}
++
++void ImageAdapter::invalidate()
++{
++}
++#elif !PLATFORM(COCOA) && !PLATFORM(GTK) && !PLATFORM(WIN) && !PLATFORM(WPE)
++Ref<Image> ImageAdapter::loadPlatformResource(const char* resource)
++{
+     WTFLogAlways("WARNING: trying to load platform resource '%s'", resource);
+     return BitmapImage::create();
+ }
