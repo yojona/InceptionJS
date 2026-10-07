@@ -1,0 +1,178 @@
+Engine run loop: WebKit runs on one thread whose loop the host drives one iteration
+at a time. Work queues are tasks on that loop, the loop reports its next timer
+deadline to the host, and signal-based thread suspension is unavailable.
+
+diff --git a/Source/WTF/wtf/RunLoop.h b/Source/WTF/wtf/RunLoop.h
+index f646bce..9c25e2f 100644
+--- a/Source/WTF/wtf/RunLoop.h
++++ b/Source/WTF/wtf/RunLoop.h
+@@ -144,6 +144,12 @@ public:
+ #if USE(GENERIC_EVENT_LOOP) || USE(WINDOWS_EVENT_LOOP)
+     WTF_EXPORT_PRIVATE static void setWakeUpCallback(WTF::Function<void()>&&);
+ #endif
++#if PLATFORM(EMSCRIPTEN)
++    // The engine's loop is driven by the host's event loop, one iteration at a time,
++    // and never sleeps. After each iteration this reports how long until the next
++    // timer is due, so the host can schedule the next iteration.
++    WTF_EXPORT_PRIVATE static void setNextTimerCallback(WTF::Function<void(Seconds)>&&);
++#endif
+ 
+ #if USE(WINDOWS_EVENT_LOOP)
+     static void registerRunLoopMessageWindowClass();
+@@ -388,6 +394,10 @@ private:
+ #if USE(GENERIC_EVENT_LOOP) || USE(WINDOWS_EVENT_LOOP)
+     Function<void()> m_wakeUpCallback;
+ #endif
++#if PLATFORM(EMSCRIPTEN)
++    void reportNextTimer();
++    Function<void(Seconds)> m_nextTimerCallback;
++#endif
+ };
+ 
+ inline void assertIsCurrent(const RunLoop& runLoop) WTF_ASSERTS_ACQUIRED_CAPABILITY(runLoop)
+diff --git a/Source/WTF/wtf/WorkQueue.cpp b/Source/WTF/wtf/WorkQueue.cpp
+index 887b24c..720ede6 100644
+--- a/Source/WTF/wtf/WorkQueue.cpp
++++ b/Source/WTF/wtf/WorkQueue.cpp
+@@ -63,12 +63,17 @@ void ConcurrentWorkQueue::dispatch(Function<void()>&& function)
+ #if !PLATFORM(COCOA)
+ void WorkQueueBase::dispatchSync(Function<void()>&& function)
+ {
++#if PLATFORM(EMSCRIPTEN)
++    // Queues run on the caller's own thread, which waiting would block forever.
++    function();
++#else
+     BinarySemaphore semaphore;
+     dispatch([&semaphore, function = WTF::move(function)]() mutable {
+         function();
+         semaphore.signal();
+     });
+     semaphore.wait();
++#endif
+ }
+ 
+ void WorkQueueBase::dispatchWithQOS(Function<void()>&& function, QOS)
+@@ -86,6 +91,12 @@ void ConcurrentWorkQueue::apply(size_t iterations, WTF::Function<void(size_t ind
+         return;
+     }
+ 
++#if PLATFORM(EMSCRIPTEN)
++    for (size_t i = 0; i < iterations; ++i)
++        function(i);
++    return;
++#endif
++
+     class ThreadPool {
+     public:
+         ThreadPool()
+diff --git a/Source/WTF/wtf/generic/RunLoopGeneric.cpp b/Source/WTF/wtf/generic/RunLoopGeneric.cpp
+index 203d383..81e46f7 100644
+--- a/Source/WTF/wtf/generic/RunLoopGeneric.cpp
++++ b/Source/WTF/wtf/generic/RunLoopGeneric.cpp
+@@ -213,8 +213,13 @@ void RunLoop::runImpl(RunMode runMode)
+ 
+     Deque<Ref<TimerBase::ScheduledTask>> firedTimers;
+     while (true) {
+-        if (!populateTasks(runMode, statusOfThisLoop, firedTimers))
++        if (!populateTasks(runMode, statusOfThisLoop, firedTimers)) {
++#if PLATFORM(EMSCRIPTEN)
++            if (runMode == RunMode::Iterate)
++                reportNextTimer();
++#endif
+             return;
++        }
+ 
+         // Dispatch scheduled timers.
+         while (!firedTimers.isEmpty()) {
+@@ -239,6 +244,25 @@ void RunLoop::run()
+     RunLoop::currentSingleton().runImpl(RunMode::Drain);
+ }
+ 
++#if PLATFORM(EMSCRIPTEN)
++void RunLoop::setNextTimerCallback(WTF::Function<void(Seconds)>&& function)
++{
++    RunLoop::currentSingleton().m_nextTimerCallback = WTF::move(function);
++}
++
++void RunLoop::reportNextTimer()
++{
++    std::optional<Seconds> delay;
++    {
++        Locker locker { m_loopLock };
++        if (!m_schedules.isEmpty())
++            delay = std::max(0_s, m_schedules.first()->scheduledTimePoint() - MonotonicTime::now());
++    }
++    if (delay && m_nextTimerCallback)
++        m_nextTimerCallback(*delay);
++}
++#endif
++
+ void RunLoop::setWakeUpCallback(WTF::Function<void()>&& function)
+ {
+     RunLoop::currentSingleton().m_wakeUpCallback = WTF::move(function);
+diff --git a/Source/WTF/wtf/generic/WorkQueueGeneric.cpp b/Source/WTF/wtf/generic/WorkQueueGeneric.cpp
+index 97c8e9d..8c2c03a 100644
+--- a/Source/WTF/wtf/generic/WorkQueueGeneric.cpp
++++ b/Source/WTF/wtf/generic/WorkQueueGeneric.cpp
+@@ -42,6 +42,14 @@ WorkQueueBase::WorkQueueBase(RunLoop& runLoop)
+ 
+ void WorkQueueBase::platformInitialize(ASCIILiteral name, Type, QOS qos)
+ {
++#if PLATFORM(EMSCRIPTEN)
++    // The engine runs WebKit on a single thread, the one that also services its
++    // sockets, so every queue is a series of tasks on that thread's loop.
++    UNUSED_PARAM(name);
++    UNUSED_PARAM(qos);
++    m_runLoop = &RunLoop::mainSingleton();
++    m_threadID = mainThreadID;
++#else
+     m_runLoop = RunLoop::create(name, ThreadType::Unknown, qos);
+     BinarySemaphore semaphore;
+     m_runLoop->dispatch([&] {
+@@ -49,10 +57,16 @@ void WorkQueueBase::platformInitialize(ASCIILiteral name, Type, QOS qos)
+         semaphore.signal();
+     });
+     semaphore.wait();
++#endif
+ }
+ 
+ void WorkQueueBase::platformInvalidate()
+ {
++#if PLATFORM(EMSCRIPTEN)
++    // The loop is shared; it must keep running.
++    m_runLoop = nullptr;
++    return;
++#endif
+     if (m_runLoop) {
+         Ref<RunLoop> protector = m_runLoop.releaseNonNull();
+         protector->stop();
+diff --git a/Source/WTF/wtf/posix/ThreadingPOSIX.cpp b/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
+index a3e0d45..7881ff5 100644
+--- a/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
++++ b/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
+@@ -163,10 +163,14 @@ void Thread::signalHandlerSuspendResume(int, siginfo_t*, void* ucontext)
+ 
+     // Reaching here, sigThreadSuspendResume is blocked in this handler (this is configured by sigaction's sa_mask).
+     // So before calling sigsuspend, sigThreadSuspendResume to this thread is deferred. This ensures that the handler is not executed recursively.
++#if PLATFORM(EMSCRIPTEN)
++    RELEASE_ASSERT_NOT_REACHED();
++#else
+     sigset_t blockedSignalSet;
+     sigfillset(&blockedSignalSet);
+     sigdelset(&blockedSignalSet, g_wtfConfig.sigThreadSuspendResume);
+     sigsuspend(&blockedSignalSet);
++#endif
+ 
+     thread->m_platformRegisters = nullptr;
+ 
+@@ -457,6 +461,10 @@ bool Thread::signal(int signalNumber)
+ auto Thread::suspend(const ThreadSuspendLocker&) -> Expected<void, PlatformSuspendError>
+ {
+     RELEASE_ASSERT_WITH_MESSAGE(this != &Thread::currentSingleton(), "We do not support suspending the current thread itself.");
++#if PLATFORM(EMSCRIPTEN)
++    // Signals cannot interrupt a wasm thread; nothing in this port may suspend one.
++    RELEASE_ASSERT_WITH_MESSAGE(false, "Thread::suspend is not available on Emscripten");
++#endif
+ #if OS(DARWIN)
+     kern_return_t result = thread_suspend(m_platformThread);
+     if (result != KERN_SUCCESS)
