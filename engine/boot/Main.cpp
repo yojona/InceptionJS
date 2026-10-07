@@ -15,7 +15,11 @@
 #include "CurlContext.h"
 #include "CurlRequestScheduler.h"
 #include "CurlStreamScheduler.h"
+#include "CommonVM.h"
 #include <JavaScriptCore/InitializeThreading.h>
+#include <JavaScriptCore/JSLock.h>
+#include <JavaScriptCore/Options.h>
+#include <JavaScriptCore/VM.h>
 #include <cstdlib>
 #include <emscripten.h>
 #include <wtf/MainThread.h>
@@ -98,6 +102,11 @@ extern "C" EMSCRIPTEN_KEEPALIVE void inception_net_pump()
 extern "C" EMSCRIPTEN_KEEPALIVE void inception_loop_iterate()
 {
     WTF::RunLoop::cycle();
+    // Called from the worker's event loop, so no native frame below holds cells.
+    if (auto* vm = WebCore::commonVMOrNull(); vm && vm->heap.hasDeferredCollections()) {
+        JSC::JSLockHolder lock(*vm);
+        vm->heap.runDeferredCollections();
+    }
 }
 
 int main()
@@ -105,9 +114,18 @@ int main()
     // ICU reads its data archive from the engine file system.
     setenv("ICU_DATA", "/usr/share/icu", 1);
 
+    // Collections must finish within one top-level turn (see
+    // inception_loop_iterate); a concurrent one would resume mid-stack.
+    setenv("JSC_useConcurrentGC", "false", 1);
+
     JSC::initialize();
     WTF::initializeMainThread();
     Inception::installPlatformStrategies();
+    if (JSC::Options::useConcurrentGC())
+        Inception::report("error"_s, "concurrent GC is on; collections may resume mid-stack"_s);
+    WebCore::commonVM().heap.deferCollectionsToTopLevel([] {
+        inception_loop_schedule(0);
+    });
 
     WTF::RunLoop::setWakeUpCallback([] {
         inception_loop_schedule(0);
