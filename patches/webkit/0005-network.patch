@@ -1,0 +1,766 @@
+Networking without network threads.
+
+The request and stream schedulers advance their transfers in passes on the
+engine RunLoop instead of on worker threads. A pass is queued when work is
+added, when the host reports socket data (pumpNow), and on curl's own timeout.
+Stream connects run on a per-stream multi handle so they never block. Client
+callbacks are always posted, never made from inside curl. TLS trusts the CA
+bundle staged in the engine file system; network state reports online.
+
+diff --git a/Source/WebCore/PlatformEmscripten.cmake b/Source/WebCore/PlatformEmscripten.cmake
+index bb56d6f..9a0751f 100644
+--- a/Source/WebCore/PlatformEmscripten.cmake
++++ b/Source/WebCore/PlatformEmscripten.cmake
+@@ -35,6 +35,9 @@ list(APPEND WebCore_SOURCES
+     platform/generic/KeyedDecoderGeneric.cpp
+     platform/generic/KeyedEncoderGeneric.cpp
+ 
++    platform/network/emscripten/CurlSSLHandleEmscripten.cpp
++    platform/network/emscripten/NetworkStateNotifierEmscripten.cpp
++
+     platform/text/Hyphenation.cpp
+     platform/text/LocaleICU.cpp
+ 
+diff --git a/Source/WebCore/platform/network/curl/CurlContext.cpp b/Source/WebCore/platform/network/curl/CurlContext.cpp
+index 145c3e2..d5a3621 100644
+--- a/Source/WebCore/platform/network/curl/CurlContext.cpp
++++ b/Source/WebCore/platform/network/curl/CurlContext.cpp
+@@ -289,6 +289,13 @@ CURLMsg* CurlMultiHandle::readInfo(int& messagesInQueue)
+     return curl_multi_info_read(m_multiHandle, &messagesInQueue);
+ }
+ 
++#if PLATFORM(EMSCRIPTEN)
++CURLMcode CurlMultiHandle::timeout(long& timeoutMS)
++{
++    return curl_multi_timeout(m_multiHandle, &timeoutMS);
++}
++#endif
++
+ // CurlHandle -------------------------------------------------
+ 
+ CurlHandle::CurlHandle()
+diff --git a/Source/WebCore/platform/network/curl/CurlContext.h b/Source/WebCore/platform/network/curl/CurlContext.h
+index e673140..e01d7b3 100644
+--- a/Source/WebCore/platform/network/curl/CurlContext.h
++++ b/Source/WebCore/platform/network/curl/CurlContext.h
+@@ -183,6 +183,9 @@ public:
+     CURLMcode wakeUp();
+     CURLMcode perform(int&);
+     CURLMsg* readInfo(int&);
++#if PLATFORM(EMSCRIPTEN)
++    CURLMcode timeout(long& timeoutMS);
++#endif
+ 
+ private:
+     CURLM* m_multiHandle { nullptr };
+diff --git a/Source/WebCore/platform/network/curl/CurlRequest.cpp b/Source/WebCore/platform/network/curl/CurlRequest.cpp
+index d867e52..f5cdbf6 100644
+--- a/Source/WebCore/platform/network/curl/CurlRequest.cpp
++++ b/Source/WebCore/platform/network/curl/CurlRequest.cpp
+@@ -173,7 +173,13 @@ void CurlRequest::callClient(Function<void(CurlRequest&, CurlRequestClient&)>&&
+ 
+ void CurlRequest::runOnMainThread(Function<void()>&& task)
+ {
++#if PLATFORM(EMSCRIPTEN)
++    // Transfers run on the main thread too; calling the client inline would
++    // re-enter curl from its own callbacks (a client may cancel or restart).
++    callOnMainThread(WTF::move(task));
++#else
+     ensureOnMainThread(WTF::move(task));
++#endif
+ }
+ 
+ void CurlRequest::runOnWorkerThreadIfRequired(Function<void()>&& task)
+diff --git a/Source/WebCore/platform/network/curl/CurlRequestScheduler.cpp b/Source/WebCore/platform/network/curl/CurlRequestScheduler.cpp
+index 43dce2f..ad5eb0d 100644
+--- a/Source/WebCore/platform/network/curl/CurlRequestScheduler.cpp
++++ b/Source/WebCore/platform/network/curl/CurlRequestScheduler.cpp
+@@ -33,6 +33,10 @@
+ 
+ #include "CurlRequestSchedulerClient.h"
+ 
++#if PLATFORM(EMSCRIPTEN)
++#include <wtf/RunLoop.h>
++#endif
++
+ namespace WebCore {
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(CurlRequestScheduler);
+@@ -65,6 +69,10 @@ void CurlRequestScheduler::cancel(CurlRequestSchedulerClient* client)
+         return;
+ 
+     cancelTransfer(client);
++#if PLATFORM(EMSCRIPTEN)
++    // The finalize task only runs inside a pass.
++    schedulePass(0_s);
++#endif
+ }
+ 
+ void CurlRequestScheduler::callOnWorkerThread(Function<void()>&& task)
+@@ -77,6 +85,120 @@ void CurlRequestScheduler::callOnWorkerThread(Function<void()>&& task)
+     startOrWakeUpThread();
+ }
+ 
++#if PLATFORM(EMSCRIPTEN)
++
++// There are no network threads here: transfers advance in passes that run on the
++// engine's RunLoop. A pass is queued when work is added, when the host reports
++// socket data, and on curl's own timeout while transfers are in flight.
++
++void CurlRequestScheduler::startOrWakeUpThread()
++{
++    ensureMultiHandle();
++    schedulePass(0_s);
++}
++
++void CurlRequestScheduler::wakeUpThreadIfPossible()
++{
++    schedulePass(0_s);
++}
++
++void CurlRequestScheduler::stopThreadIfNoMoreJobRunning()
++{
++}
++
++void CurlRequestScheduler::stopThread()
++{
++    m_curlMultiHandle.reset();
++}
++
++void CurlRequestScheduler::pumpNow()
++{
++    if (!m_curlMultiHandle)
++        return;
++    m_immediatePasses = 0;
++    schedulePass(0_s);
++}
++
++void CurlRequestScheduler::ensureMultiHandle()
++{
++    if (m_curlMultiHandle)
++        return;
++    m_curlMultiHandle.emplace();
++    m_curlMultiHandle->setMaxConnects(m_maxConnects);
++    m_curlMultiHandle->setMaxTotalConnections(m_maxTotalConnections);
++    m_curlMultiHandle->setMaxHostConnections(m_maxHostConnections);
++}
++
++void CurlRequestScheduler::schedulePass(Seconds delay)
++{
++    if (!delay) {
++        if (m_passQueued)
++            return;
++        m_passQueued = true;
++        RunLoop::mainSingleton().dispatch([this] {
++            m_passQueued = false;
++            runPass();
++        });
++        return;
++    }
++    if (m_passTimerArmed)
++        return;
++    m_passTimerArmed = true;
++    RunLoop::mainSingleton().dispatchAfter(delay, [this] {
++        m_passTimerArmed = false;
++        runPass();
++    });
++}
++
++void CurlRequestScheduler::runPass()
++{
++    if (!m_curlMultiHandle)
++        return;
++
++    executeTasks();
++
++    int activeCount = 0;
++    while (m_curlMultiHandle->perform(activeCount) == CURLM_CALL_MULTI_PERFORM) { }
++
++    while (true) {
++        int messagesInQueue = 0;
++        CURLMsg* msg = m_curlMultiHandle->readInfo(messagesInQueue);
++        if (!msg)
++            break;
++        ASSERT(msg->msg == CURLMSG_DONE);
++        if (auto client = m_clientMaps.inlineGet(msg->easy_handle))
++            completeTransfer(client, msg->data.result);
++    }
++
++    bool hasWork;
++    {
++        Locker locker { m_mutex };
++        hasWork = !m_taskQueue.isEmpty() || !m_activeJobs.isEmpty();
++    }
++    if (!hasWork) {
++        m_immediatePasses = 0;
++        return;
++    }
++
++    // Socket readiness arrives through pumpNow(); the timer only covers curl's
++    // internal deadlines (TLS, HTTP/2 pings, retries). Cap how often a zero
++    // timeout re-queues so a busy transfer cannot starve rendering.
++    long timeoutMS = -1;
++    m_curlMultiHandle->timeout(timeoutMS);
++    constexpr unsigned maxImmediatePasses = 16;
++    if (!timeoutMS && m_immediatePasses < maxImmediatePasses) {
++        ++m_immediatePasses;
++        schedulePass(0_s);
++        return;
++    }
++    m_immediatePasses = 0;
++    constexpr long pollIntervalMS = 8;
++    long delayMS = timeoutMS < 0 ? pollIntervalMS : std::clamp(timeoutMS, 1L, pollIntervalMS);
++    schedulePass(Seconds::fromMilliseconds(delayMS));
++}
++
++#else
++
+ void CurlRequestScheduler::startOrWakeUpThread()
+ {
+     ASSERT(isMainThread());
+@@ -136,9 +258,13 @@ void CurlRequestScheduler::stopThread()
+     }
+ }
+ 
++#endif // PLATFORM(EMSCRIPTEN)
++
+ void CurlRequestScheduler::executeTasks()
+ {
++#if !PLATFORM(EMSCRIPTEN)
+     ASSERT(!isMainThread());
++#endif
+ 
+     Vector<Function<void()>> taskQueue;
+ 
+@@ -151,6 +277,7 @@ void CurlRequestScheduler::executeTasks()
+         task();
+ }
+ 
++#if !PLATFORM(EMSCRIPTEN)
+ void CurlRequestScheduler::workerThread()
+ {
+     ASSERT(!isMainThread());
+@@ -199,6 +326,7 @@ void CurlRequestScheduler::workerThread()
+         m_curlMultiHandle.reset();
+     }
+ }
++#endif
+ 
+ void CurlRequestScheduler::startTransfer(CurlRequestSchedulerClient* client)
+ {
+diff --git a/Source/WebCore/platform/network/curl/CurlRequestScheduler.h b/Source/WebCore/platform/network/curl/CurlRequestScheduler.h
+index fc5b225..b977ac2 100644
+--- a/Source/WebCore/platform/network/curl/CurlRequestScheduler.h
++++ b/Source/WebCore/platform/network/curl/CurlRequestScheduler.h
+@@ -32,6 +32,7 @@
+ #include <wtf/Lock.h>
+ #include <wtf/Noncopyable.h>
+ #include <wtf/TZoneMalloc.h>
++#include <wtf/Seconds.h>
+ #include <wtf/Threading.h>
+ 
+ namespace WebCore {
+@@ -51,6 +52,11 @@ public:
+ 
+     void callOnWorkerThread(Function<void()>&&);
+ 
++#if PLATFORM(EMSCRIPTEN)
++    // Socket data arrived; run a transfer pass now instead of at the next poll.
++    void pumpNow();
++#endif
++
+ private:
+     void startOrWakeUpThread();
+     void wakeUpThreadIfPossible();
+@@ -61,6 +67,12 @@ private:
+ 
+     void workerThread();
+ 
++#if PLATFORM(EMSCRIPTEN)
++    void ensureMultiHandle();
++    void schedulePass(Seconds delay);
++    void runPass();
++#endif
++
+     void startTransfer(CurlRequestSchedulerClient*);
+     void completeTransfer(CurlRequestSchedulerClient*, CURLcode);
+     void cancelTransfer(CurlRequestSchedulerClient*);
+@@ -80,6 +92,12 @@ private:
+     long m_maxConnects;
+     long m_maxTotalConnections;
+     long m_maxHostConnections;
++
++#if PLATFORM(EMSCRIPTEN)
++    bool m_passQueued { false };
++    bool m_passTimerArmed { false };
++    unsigned m_immediatePasses { 0 };
++#endif
+ };
+ 
+ } // namespace WebCore
+diff --git a/Source/WebCore/platform/network/curl/CurlStream.cpp b/Source/WebCore/platform/network/curl/CurlStream.cpp
+index e7708fd..1b82cd2 100644
+--- a/Source/WebCore/platform/network/curl/CurlStream.cpp
++++ b/Source/WebCore/platform/network/curl/CurlStream.cpp
+@@ -41,7 +41,9 @@ CurlStream::CurlStream(CurlStreamScheduler& scheduler, CurlStreamID streamID, UR
+     : m_scheduler(scheduler)
+     , m_streamID(streamID)
+ {
++#if !PLATFORM(EMSCRIPTEN)
+     ASSERT(!isMainThread());
++#endif
+ 
+     m_curlHandle = makeUnique<CurlHandle>();
+ 
+@@ -53,6 +55,17 @@ CurlStream::CurlStream(CurlStreamScheduler& scheduler, CurlStreamID streamID, UR
+ 
+     m_curlHandle->enableConnectionOnly();
+ 
++#if PLATFORM(EMSCRIPTEN)
++    m_connectMulti = makeUnique<CurlMultiHandle>();
++    if (m_connectMulti->addHandle(m_curlHandle->handle()) != CURLM_OK) {
++        notifyFailure(CURLE_FAILED_INIT);
++        return;
++    }
++    m_connecting = true;
++    continueConnecting();
++    return;
++#endif
++
+     auto errorCode = m_curlHandle->perform();
+     if (errorCode != CURLE_OK) {
+         notifyFailure(errorCode);
+@@ -66,7 +79,9 @@ CurlStream::CurlStream(CurlStreamScheduler& scheduler, CurlStreamID streamID, UR
+ 
+ CurlStream::~CurlStream()
+ {
++#if !PLATFORM(EMSCRIPTEN)
+     ASSERT(!isMainThread());
++#endif
+     destroyHandle();
+ }
+ 
+@@ -75,12 +90,55 @@ void CurlStream::destroyHandle()
+     if (!m_curlHandle)
+         return;
+ 
++#if PLATFORM(EMSCRIPTEN)
++    if (m_connectMulti) {
++        m_connectMulti->removeHandle(m_curlHandle->handle());
++        m_connectMulti = nullptr;
++    }
++    m_connecting = false;
++#endif
+     m_curlHandle = nullptr;
+ }
+ 
++#if PLATFORM(EMSCRIPTEN)
++void CurlStream::continueConnecting()
++{
++    int running = 0;
++    while (m_connectMulti->perform(running) == CURLM_CALL_MULTI_PERFORM) { }
++
++    int messagesInQueue = 0;
++    CURLMsg* msg = m_connectMulti->readInfo(messagesInQueue);
++    if (!msg || msg->msg != CURLMSG_DONE)
++        return;
++
++    if (msg->data.result != CURLE_OK) {
++        notifyFailure(msg->data.result);
++        return;
++    }
++
++    m_connecting = false;
++    m_scheduler.callClientOnMainThread(m_streamID, [streamID = m_streamID](Client& client) {
++        client.didOpen(streamID);
++    });
++}
++
++Expected<curl_socket_t, CURLcode> CurlStream::usableSocket()
++{
++    auto socket = m_curlHandle->getActiveSocket();
++    if (!socket.has_value())
++        return socket;
++    // fd_set is a fixed bitmap; a descriptor past it would corrupt the stack.
++    if (*socket == CURL_SOCKET_BAD || *socket >= FD_SETSIZE)
++        return makeUnexpected(CURLE_COULDNT_CONNECT);
++    return socket;
++}
++#endif
++
+ void CurlStream::send(UniqueArray<uint8_t>&& buffer, size_t length)
+ {
++#if !PLATFORM(EMSCRIPTEN)
+     ASSERT(!isMainThread());
++#endif
+ 
+     if (!m_curlHandle)
+         return;
+@@ -90,12 +148,19 @@ void CurlStream::send(UniqueArray<uint8_t>&& buffer, size_t length)
+ 
+ void CurlStream::appendMonitoringFd(fd_set& readfds, fd_set& writefds, fd_set& exceptfds, int& maxfd)
+ {
++#if PLATFORM(EMSCRIPTEN)
++    if (!m_curlHandle || m_connecting)
++        return;
++
++    auto socket = usableSocket();
++#else
+     ASSERT(!isMainThread());
+ 
+     if (!m_curlHandle)
+         return;
+ 
+     auto socket = m_curlHandle->getActiveSocket();
++#endif
+     if (!socket.has_value()) {
+         notifyFailure(socket.error());
+         return;
+@@ -113,12 +178,24 @@ void CurlStream::appendMonitoringFd(fd_set& readfds, fd_set& writefds, fd_set& e
+ 
+ void CurlStream::tryToTransfer(const fd_set& readfds, const fd_set& writefds, const fd_set& exceptfds)
+ {
++#if PLATFORM(EMSCRIPTEN)
++    if (!m_curlHandle)
++        return;
++
++    if (m_connecting) {
++        continueConnecting();
++        return;
++    }
++
++    auto socket = usableSocket();
++#else
+     ASSERT(!isMainThread());
+ 
+     if (!m_curlHandle)
+         return;
+ 
+     auto socket = m_curlHandle->getActiveSocket();
++#endif
+     if (!socket.has_value()) {
+         notifyFailure(socket.error());
+         return;
+@@ -186,8 +263,10 @@ void CurlStream::tryToSend()
+ void CurlStream::notifyFailure(CURLcode errorCode)
+ {
+     CertificateInfo certificateInfo;
+-    if (auto info = m_curlHandle->certificateInfo())
+-        certificateInfo = WTF::move(*info);
++    if (m_curlHandle) {
++        if (auto info = m_curlHandle->certificateInfo())
++            certificateInfo = WTF::move(*info);
++    }
+ 
+     destroyHandle();
+ 
+diff --git a/Source/WebCore/platform/network/curl/CurlStream.h b/Source/WebCore/platform/network/curl/CurlStream.h
+index af04c9f..c187115 100644
+--- a/Source/WebCore/platform/network/curl/CurlStream.h
++++ b/Source/WebCore/platform/network/curl/CurlStream.h
+@@ -77,6 +77,17 @@ private:
+ 
+     void notifyFailure(CURLcode);
+ 
++#if PLATFORM(EMSCRIPTEN)
++    void continueConnecting();
++    Expected<curl_socket_t, CURLcode> usableSocket();
++
++    // Connecting blocks inside curl_easy_perform, and nothing may block the
++    // engine thread: the connect runs as a transfer on a multi handle owned by
++    // this stream, which keeps the easy handle for its whole lifetime.
++    std::unique_ptr<CurlMultiHandle> m_connectMulti;
++    bool m_connecting { false };
++#endif
++
+     static const size_t kReceiveBufferSize = 16 * 1024;
+ 
+     CurlStreamScheduler& m_scheduler;
+diff --git a/Source/WebCore/platform/network/curl/CurlStreamScheduler.cpp b/Source/WebCore/platform/network/curl/CurlStreamScheduler.cpp
+index 0fdc759..393c845 100644
+--- a/Source/WebCore/platform/network/curl/CurlStreamScheduler.cpp
++++ b/Source/WebCore/platform/network/curl/CurlStreamScheduler.cpp
+@@ -25,6 +25,10 @@
+ 
+ #include "config.h"
+ #include "CurlStreamScheduler.h"
++
++#if PLATFORM(EMSCRIPTEN)
++#include <wtf/RunLoop.h>
++#endif
+ #include <wtf/TZoneMallocInlines.h>
+ 
+ #if USE(CURL)
+@@ -98,7 +102,9 @@ void CurlStreamScheduler::callOnWorkerThread(Function<void()>&& task)
+ 
+ void CurlStreamScheduler::callClientOnMainThread(CurlStreamID streamID, Function<void(CurlStream::Client&)>&& task)
+ {
++#if !PLATFORM(EMSCRIPTEN)
+     ASSERT(!isMainThread());
++#endif
+ 
+     callOnMainThread([this, streamID, task = WTF::move(task)]() {
+         if (auto client = m_clientList.get(streamID))
+@@ -106,6 +112,101 @@ void CurlStreamScheduler::callClientOnMainThread(CurlStreamID streamID, Function
+     });
+ }
+ 
++#if PLATFORM(EMSCRIPTEN)
++
++// Same model as the request scheduler: no thread, passes on the engine RunLoop.
++
++void CurlStreamScheduler::startThreadIfNeeded()
++{
++    schedulePass(0_s);
++}
++
++void CurlStreamScheduler::stopThreadIfNoMoreJobRunning()
++{
++}
++
++void CurlStreamScheduler::pumpNow()
++{
++    if (m_streamList.isEmpty())
++        return;
++    m_immediatePasses = 0;
++    schedulePass(0_s);
++}
++
++void CurlStreamScheduler::schedulePass(Seconds delay)
++{
++    if (!delay) {
++        if (m_passQueued)
++            return;
++        m_passQueued = true;
++        RunLoop::mainSingleton().dispatch([this] {
++            m_passQueued = false;
++            runPass();
++        });
++        return;
++    }
++    if (m_passTimerArmed)
++        return;
++    m_passTimerArmed = true;
++    RunLoop::mainSingleton().dispatchAfter(delay, [this] {
++        m_passTimerArmed = false;
++        runPass();
++    });
++}
++
++void CurlStreamScheduler::runPass()
++{
++    bool ranTasks;
++    {
++        Locker locker { m_mutex };
++        ranTasks = !m_taskQueue.isEmpty();
++    }
++    executeTasks();
++
++    fd_set readfds;
++    fd_set writefds;
++    fd_set exceptfds;
++    FD_ZERO(&readfds);
++    FD_ZERO(&writefds);
++    FD_ZERO(&exceptfds);
++
++    int maxfd = -1;
++    for (auto& stream : m_streamList.values())
++        stream->appendMonitoringFd(readfds, writefds, exceptfds, maxfd);
++
++    int ready = 0;
++    if (maxfd >= 0) {
++        struct timeval noWait { 0, 0 };
++        ready = ::select(maxfd + 1, &readfds, &writefds, &exceptfds, &noWait);
++        if (ready < 0) {
++            FD_ZERO(&readfds);
++            FD_ZERO(&writefds);
++            FD_ZERO(&exceptfds);
++        }
++    }
++
++    // Streams may be destroyed by their own failure callbacks' tasks later, never
++    // during this loop: client calls are always posted, not made inline.
++    for (auto& stream : m_streamList.values())
++        stream->tryToTransfer(readfds, writefds, exceptfds);
++
++    if (m_streamList.isEmpty()) {
++        m_immediatePasses = 0;
++        return;
++    }
++
++    constexpr unsigned maxImmediatePasses = 16;
++    if ((ranTasks || ready > 0) && m_immediatePasses < maxImmediatePasses) {
++        ++m_immediatePasses;
++        schedulePass(0_s);
++        return;
++    }
++    m_immediatePasses = 0;
++    schedulePass(8_ms);
++}
++
++#else
++
+ void CurlStreamScheduler::startThreadIfNeeded()
+ {
+     {
+@@ -138,9 +239,13 @@ void CurlStreamScheduler::stopThreadIfNoMoreJobRunning()
+     m_runThread = false;
+ }
+ 
++#endif // PLATFORM(EMSCRIPTEN)
++
+ void CurlStreamScheduler::executeTasks()
+ {
++#if !PLATFORM(EMSCRIPTEN)
+     ASSERT(!isMainThread());
++#endif
+ 
+     Vector<Function<void()>> taskQueue;
+ 
+@@ -153,6 +258,7 @@ void CurlStreamScheduler::executeTasks()
+         task();
+ }
+ 
++#if !PLATFORM(EMSCRIPTEN)
+ void CurlStreamScheduler::workerThread()
+ {
+     ASSERT(!isMainThread());
+@@ -187,6 +293,7 @@ void CurlStreamScheduler::workerThread()
+         stopThreadIfNoMoreJobRunning();
+     }
+ }
++#endif
+ 
+ }
+ 
+diff --git a/Source/WebCore/platform/network/curl/CurlStreamScheduler.h b/Source/WebCore/platform/network/curl/CurlStreamScheduler.h
+index 2d7a77d..76cfba7 100644
+--- a/Source/WebCore/platform/network/curl/CurlStreamScheduler.h
++++ b/Source/WebCore/platform/network/curl/CurlStreamScheduler.h
+@@ -28,6 +28,7 @@
+ #include "CurlStream.h"
+ #include <wtf/Function.h>
+ #include <wtf/HashMap.h>
++#include <wtf/Seconds.h>
+ #include <wtf/TZoneMalloc.h>
+ 
+ namespace WebCore {
+@@ -46,6 +47,11 @@ public:
+     void callOnWorkerThread(Function<void()>&&);
+     void callClientOnMainThread(CurlStreamID, Function<void(CurlStream::Client&)>&&);
+ 
++#if PLATFORM(EMSCRIPTEN)
++    // Socket data arrived; run a transfer pass now instead of at the next poll.
++    void pumpNow();
++#endif
++
+ private:
+     void startThreadIfNeeded();
+     void stopThreadIfNoMoreJobRunning();
+@@ -54,6 +60,15 @@ private:
+ 
+     void workerThread();
+ 
++#if PLATFORM(EMSCRIPTEN)
++    void schedulePass(Seconds delay);
++    void runPass();
++
++    bool m_passQueued { false };
++    bool m_passTimerArmed { false };
++    unsigned m_immediatePasses { 0 };
++#endif
++
+     Lock m_mutex;
+     RefPtr<Thread> m_thread;
+     bool m_runThread { false };
+diff --git a/Source/WebCore/platform/network/emscripten/CurlSSLHandleEmscripten.cpp b/Source/WebCore/platform/network/emscripten/CurlSSLHandleEmscripten.cpp
+new file mode 100644
+index 0000000..c81c2ae
+--- /dev/null
++++ b/Source/WebCore/platform/network/emscripten/CurlSSLHandleEmscripten.cpp
+@@ -0,0 +1,37 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "CurlSSLHandle.h"
++
++namespace WebCore {
++
++// TLS terminates inside the engine, so it needs its own trust store: the build
++// stages a CA bundle into the engine's file system at this path.
++void CurlSSLHandle::platformInitialize()
++{
++    setCACertPath("/etc/ssl/cacert.pem"_s);
++}
++
++} // namespace WebCore
+diff --git a/Source/WebCore/platform/network/emscripten/NetworkStateNotifierEmscripten.cpp b/Source/WebCore/platform/network/emscripten/NetworkStateNotifierEmscripten.cpp
+new file mode 100644
+index 0000000..fc8ae3c
+--- /dev/null
++++ b/Source/WebCore/platform/network/emscripten/NetworkStateNotifierEmscripten.cpp
+@@ -0,0 +1,42 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "NetworkStateNotifier.h"
++
++namespace WebCore {
++
++// The engine cannot observe connectivity itself; it reports online, and the
++// embedder forwards the host page's online/offline changes.
++void NetworkStateNotifier::updateStateWithoutNotifying()
++{
++    if (!m_isOnLine)
++        m_isOnLine = true;
++}
++
++void NetworkStateNotifier::startObserving()
++{
++}
++
++} // namespace WebCore
