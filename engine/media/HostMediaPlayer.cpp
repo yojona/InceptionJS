@@ -12,6 +12,7 @@
 #include <wtf/HashMap.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/TZoneMallocInlines.h>
+#include <wtf/text/MakeString.h>
 
 namespace Inception::Media {
 using namespace WebCore;
@@ -85,6 +86,7 @@ void HostMediaPlayer::cancelLoad()
 
 void HostMediaPlayer::play()
 {
+    report("debug"_s, makeString("media "_s, m_id, " play"_s));
     m_paused = false;
     sendToHost("media.play"_s);
     if (RefPtr player = m_player.get())
@@ -93,6 +95,7 @@ void HostMediaPlayer::play()
 
 void HostMediaPlayer::pause()
 {
+    report("debug"_s, makeString("media "_s, m_id, " pause"_s));
     m_currentTime = currentTime().toDouble();
     m_currentTimeUpdatedAt = MonotonicTime::now();
     m_paused = true;
