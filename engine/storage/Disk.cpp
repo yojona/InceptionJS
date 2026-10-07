@@ -17,6 +17,11 @@ static bool s_persistent;
 
 bool mount()
 {
+    // Directories the libraries write to; empty directories are not part of
+    // the preloaded file system image.
+    for (auto* path : { "/tmp", "/var", "/var/cache", "/var/cache/fontconfig" })
+        mkdir(path, 0777);
+
     // SQLite: exclusive locking, so WAL needs no shared-memory mapping.
     if (auto* vfs = sqlite3_vfs_find("unix-excl"))
         sqlite3_vfs_register(vfs, 1);
