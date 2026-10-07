@@ -5,6 +5,7 @@
 #include "Cursor.h"
 #include "DocumentFullscreen.h"
 #include "Element.h"
+#include "NodeDocument.h"
 #include "Exception.h"
 #include "DocumentLoader.h"
 #include "FrameLoader.h"
