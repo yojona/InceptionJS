@@ -102,6 +102,8 @@ bool FrameLoaderClientImpl::isMainFrame() const
 
 String FrameLoaderClientImpl::userAgent(const URL& url) const
 {
+    if (!m_view.userAgent().isEmpty())
+        return m_view.userAgent();
     return standardUserAgentForURL(url);
 }
 

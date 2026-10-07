@@ -54,6 +54,7 @@ static void registerCommands()
         GuestWasm::setPolyfill(args.getString("wasmPolyfill"_s));
         auto mode = Renderer::singleton().initialize(expandedIntSize(FloatSize(cssSize) * scale), preferGPU);
         View::create(cssSize, scale);
+        View::singleton()->setUserAgent(args.getString("userAgent"_s));
 
         auto ready = JSON::Object::create();
         ready->setInteger("version"_s, bridgeVersion);

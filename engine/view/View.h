@@ -28,6 +28,10 @@ public:
     WebCore::Page& page() { return *m_page; }
     WebCore::LocalFrame* mainFrame() const;
 
+    // Empty: the engine's default.
+    void setUserAgent(const String& userAgent) { m_userAgent = userAgent; }
+    const String& userAgent() const { return m_userAgent; }
+
     void setNeedsPaint();
     void requestFrame();
     void frame();
@@ -40,6 +44,7 @@ private:
     float m_deviceScaleFactor { 1 };
     bool m_needsPaint { true };
     unsigned m_paintedFrames { 0 };
+    String m_userAgent;
 };
 
 } // namespace Inception
