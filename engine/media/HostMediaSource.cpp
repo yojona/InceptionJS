@@ -10,7 +10,7 @@
 #include <wtf/NeverDestroyed.h>
 
 extern "C" {
-void inception_media_append(unsigned player, unsigned sourceBuffer, const uint8_t*, size_t);
+void inception_media_append(unsigned player, unsigned sourceBuffer, unsigned seq, const uint8_t*, size_t);
 }
 
 namespace Inception::Media {
@@ -119,10 +119,18 @@ Ref<MediaPromise> HostSourceBuffer::append(Ref<SharedBuffer>&& data)
     RefPtr source = static_cast<HostMediaSource*>(m_mediaSource.get().get());
     if (!source || !source->hostPlayer())
         return MediaPromise::createAndReject(PlatformMediaError::SourceRemoved);
+    unsigned seq = m_nextSeq++;
     auto span = data->span();
-    inception_media_append(source->hostPlayer()->id(), m_id, span.data(), span.size());
-    m_pending.append(MediaPromise::Producer { });
-    return m_pending.last().promise();
+    inception_media_append(source->hostPlayer()->id(), m_id, seq, span.data(), span.size());
+    return track(seq);
+}
+
+Ref<MediaPromise> HostSourceBuffer::track(unsigned seq)
+{
+    MediaPromise::Producer producer;
+    Ref promise = producer.promise();
+    m_pending.add(seq, WTF::move(producer));
+    return promise;
 }
 
 Ref<MediaPromise> HostSourceBuffer::appendInternal(Ref<SharedBuffer>&&)
@@ -133,34 +141,41 @@ Ref<MediaPromise> HostSourceBuffer::appendInternal(Ref<SharedBuffer>&&)
 
 Ref<MediaPromise> HostSourceBuffer::removeCodedFrames(const MediaTime& start, const MediaTime& end, const MediaTime&)
 {
+    unsigned seq = m_nextSeq++;
     auto data = JSON::Object::create();
+    data->setInteger("seq"_s, seq);
     data->setDouble("start"_s, start.toDouble());
     if (end.isPositiveInfinite())
         data->setValue("end"_s, JSON::Value::null());
     else
         data->setDouble("end"_s, end.toDouble());
     send("media.remove"_s, WTF::move(data));
-    m_pending.append(MediaPromise::Producer { });
-    return m_pending.last().promise();
+    return track(seq);
 }
 
-void HostSourceBuffer::operationDone(const PlatformTimeRanges& buffered, bool failed)
+void HostSourceBuffer::operationDone(unsigned seq, const PlatformTimeRanges& buffered, bool failed)
 {
     if (RefPtr client = this->client())
         client->sourceBufferPrivateBufferedChanged({ buffered });
     if (RefPtr source = m_mediaSource.get())
         source->trackBufferedChanged(*this, { buffered });
-    if (m_pending.isEmpty())
+    auto it = m_pending.find(seq);
+    if (it == m_pending.end())
         return;
-    auto producer = m_pending.takeFirst();
+    auto producer = WTF::move(it->value);
+    m_pending.remove(it);
     if (failed)
         producer.reject(PlatformMediaError::AppendError);
     else
         producer.resolve();
 }
 
+// Pending appends are abandoned on both sides; the host reports none of them.
 void HostSourceBuffer::abort()
 {
+    auto pending = std::exchange(m_pending, { });
+    for (auto& producer : pending.values())
+        producer.reject(PlatformMediaError::Cancelled);
     send("media.abort"_s);
 }
 

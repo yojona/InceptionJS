@@ -101,7 +101,7 @@ export class InceptionView extends HTMLElement {
     this.#runtime.onEngineEvent = (name, data) => {
       if (name.startsWith('media.')) this.#media.handleEvent(name, data);
     };
-    this.#runtime.onMediaAppend = ({ id, sb, bytes }) => this.#media.append(id, sb, bytes);
+    this.#runtime.onMediaAppend = ({ id, sb, seq, bytes }) => this.#media.append(id, sb, seq, bytes);
     // Activation is sticky for the host page's lifetime: the first gesture
     // anywhere in it lets every later video play with sound.
     const gesture = () => this.#media.userGesture();

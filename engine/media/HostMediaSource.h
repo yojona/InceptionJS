@@ -2,7 +2,7 @@
 
 #include "MediaSourcePrivate.h"
 #include "SourceBufferPrivate.h"
-#include <wtf/Deque.h>
+#include <wtf/HashMap.h>
 
 namespace Inception::Media {
 
@@ -41,8 +41,8 @@ public:
     static Ref<HostSourceBuffer> create(HostMediaSource& source, unsigned id) { return adoptRef(*new HostSourceBuffer(source, id)); }
 
     unsigned id() const { return m_id; }
-    // The host finished the oldest pending append or removal.
-    void operationDone(const WebCore::PlatformTimeRanges& buffered, bool failed);
+    // The host finished the append or removal with this sequence number.
+    void operationDone(unsigned seq, const WebCore::PlatformTimeRanges& buffered, bool failed);
 
 private:
     HostSourceBuffer(HostMediaSource&, unsigned id);
@@ -66,7 +66,10 @@ private:
     void sendAppendWindow();
 
     unsigned m_id;
-    Deque<WebCore::MediaPromise::Producer> m_pending;
+    Ref<WebCore::MediaPromise> track(unsigned seq);
+
+    unsigned m_nextSeq { 1 };
+    HashMap<unsigned, WebCore::MediaPromise::Producer> m_pending;
     MediaTime m_appendWindowStart { MediaTime::zeroTime() };
     MediaTime m_appendWindowEnd { MediaTime::positiveInfiniteTime() };
 };

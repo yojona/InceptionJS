@@ -159,7 +159,7 @@ void install()
             }
         }
         auto error = args.getValue("error"_s);
-        buffer->operationDone(buffered, error && error->type() == JSON::Value::Type::String);
+        buffer->operationDone(args.getInteger("seq"_s).value_or(0), buffered, error && error->type() == JSON::Value::Type::String);
     });
 }
 
