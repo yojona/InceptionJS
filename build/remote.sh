@@ -61,8 +61,14 @@ remote 'cd /srv/inceptionjs && docker build -q -t inceptionjs-build build >/dev/
 
 started=$(date +%s)
 printf -v quoted '%q ' "${COMMAND[@]}"
-remote "docker run --rm -v /srv/inceptionjs:/work/inceptionjs inceptionjs-build env ${BUILD_ENV:-} bash -c $(printf %q "$quoted")"
-echo "remote command took $(( $(date +%s) - started )) s"
+status=0
+remote "docker run --rm -v /srv/inceptionjs:/work/inceptionjs inceptionjs-build env ${BUILD_ENV:-} bash -c $(printf %q "$quoted")" || status=$?
+echo "remote command took $(( $(date +%s) - started )) s (exit $status)"
+
+# Logs come back even when the command failed; that is when they matter.
+mkdir -p "$ROOT/.work/logs"
+rsync -a -e "ssh ${ssh_opts[*]}" "root@$IP:/srv/inceptionjs/.work/logs/" "$ROOT/.work/logs/" || true
+[ "$status" = 0 ] || exit "$status"
 
 mkdir -p "$ROOT/$FETCH"
 rsync -a -e "ssh ${ssh_opts[*]}" "root@$IP:/srv/inceptionjs/$FETCH/" "$ROOT/$FETCH/"
