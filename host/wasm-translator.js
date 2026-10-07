@@ -31,11 +31,13 @@ export class WasmTranslator {
     const cached = this.#cache.get(key);
     if (cached) return cached;
     let reply;
+    const started = performance.now();
     try {
       reply = 'ok:' + this.#translate(await this.#load(), bytes);
     } catch (error) {
       reply = 'error:' + String(error?.message ?? error);
     }
+    console.debug(`[wasm] ${bytes.length} bytes translated in ${Math.round(performance.now() - started)} ms${reply.startsWith('error:') ? `: ${reply.slice(6)}` : ''}`);
     this.#cache.set(key, reply);
     return reply;
   }
