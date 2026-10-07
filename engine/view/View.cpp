@@ -11,6 +11,7 @@
 #include "LocalFrameInlines.h"
 #include "LocalFrameView.h"
 #include "Page.h"
+#include "PageIdentifier.h"
 #include "PageConfiguration.h"
 #include "ResourceRequest.h"
 #include "Settings.h"
@@ -50,7 +51,9 @@ View::View(IntSize cssSize, float deviceScaleFactor)
     : m_cssSize(cssSize)
     , m_deviceScaleFactor(deviceScaleFactor)
 {
-    auto configuration = pageConfigurationWithEmptyClients(std::nullopt, PAL::SessionID::defaultSessionID());
+    // A page without an identifier gets no media session manager, and without
+    // one WebCore never lets a media element start playing.
+    auto configuration = pageConfigurationWithEmptyClients(PageIdentifier::generate(), PAL::SessionID::defaultSessionID());
     configuration.chromeClient = makeUniqueRef<ChromeClientImpl>(*this);
     configuration.cookieJar = createCookieJar();
     configuration.databaseProvider = createDatabaseProvider();
