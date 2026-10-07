@@ -32,6 +32,18 @@ test('a select opens a host menu that the keyboard drives', async ({ page }) => 
   await expect.poll(() => events(page)).toEqual(['change:Lemon']);
 });
 
+test('scrolling the page closes an open select list', async ({ page }) => {
+  const anchor = await center(page, '#fruit');
+  await clickAt(page, anchor);
+  const menu = view(page).locator('.menu');
+  await expect(menu).toBeVisible();
+  const box = await view(page).boundingBox();
+  await page.mouse.move(box.x + anchor.x + 300, box.y + anchor.y + 200);
+  await page.mouse.wheel(0, 200);
+  await expect(menu).toHaveCount(0);
+  expect(await events(page)).toEqual([]);
+});
+
 test('dialogs wait for the host answer', async ({ page }) => {
   await view(page).evaluate((el) => el.addEventListener('dialog', (e) => {
     e.preventDefault();

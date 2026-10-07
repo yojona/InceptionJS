@@ -121,12 +121,35 @@ export class SelectMenu {
     };
     // The press that opened the menu is still being delivered.
     setTimeout(() => document.addEventListener('mousedown', outside, true));
+    // Like a native list it does not follow the page: scrolling outside it,
+    // resizing or leaving the window closes it. The wheel inside scrolls the
+    // list alone.
+    const wheel = (event) => {
+      if (!event.composedPath().includes(list)) this.close(-1);
+    };
+    list.addEventListener('wheel', (event) => event.stopPropagation(), { passive: true });
     const blur = () => this.close(-1);
+    document.addEventListener('wheel', wheel, { capture: true, passive: true });
     window.addEventListener('blur', blur);
+    window.addEventListener('resize', blur);
+    const scroll = (event) => {
+      if (!event.composedPath().includes(list)) this.close(-1);
+    };
+    document.addEventListener('scroll', scroll, { capture: true, passive: true });
+    const resized = new ResizeObserver((entries, observer) => {
+      // The first callback reports the current size.
+      if (observer.seen) blur();
+      observer.seen = true;
+    });
+    resized.observe(host);
     list.focus({ preventScroll: true });
     this.#open = { id: menu.id, rect: menu.rect, list, host, cleanup: () => {
       document.removeEventListener('mousedown', outside, true);
+      document.removeEventListener('wheel', wheel, true);
+      document.removeEventListener('scroll', scroll, true);
       window.removeEventListener('blur', blur);
+      window.removeEventListener('resize', blur);
+      resized.disconnect();
     } };
   }
 
