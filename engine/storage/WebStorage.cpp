@@ -3,6 +3,7 @@
 
 #include "Document.h"
 #include "LocalFrame.h"
+#include "DocumentPage.h"
 #include "LocalFrameInlines.h"
 #include "Page.h"
 #include "SQLiteDatabase.h"
