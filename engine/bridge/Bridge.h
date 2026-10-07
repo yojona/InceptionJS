@@ -18,6 +18,10 @@ void registerCommand(const String& name, CommandHandler&&);
 void emitEvent(const String& name, Ref<JSON::Object>&& data);
 void emitEvent(const String& name);
 
+// Asks the host and blocks this thread until it answers; for what the page
+// itself waits on (dialogs). The reply is JSON, null if the host had none.
+RefPtr<JSON::Value> askHost(const String& question, Ref<JSON::Object>&& data);
+
 // Engine diagnostics, delivered as console events from source "engine".
 void report(ASCIILiteral level, const String& message);
 

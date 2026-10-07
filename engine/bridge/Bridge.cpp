@@ -5,9 +5,11 @@
 #include <wtf/NeverDestroyed.h>
 #include <wtf/text/MakeString.h>
 #include <wtf/text/StringHash.h>
+#include <cstdlib>
 #include <emscripten/em_macros.h>
 
 extern "C" {
+char* inception_host_ask(const char* json);
 void inception_bridge_post(const char* json);
 }
 
@@ -46,6 +48,17 @@ void report(ASCIILiteral level, const String& message)
     data->setInteger("line"_s, 0);
     data->setInteger("column"_s, 0);
     emitEvent("console"_s, WTF::move(data));
+}
+
+RefPtr<JSON::Value> askHost(const String& question, Ref<JSON::Object>&& data)
+{
+    data->setString("question"_s, question);
+    char* reply = inception_host_ask(data->toJSONString().utf8().data());
+    if (!reply)
+        return nullptr;
+    auto value = JSON::Value::parseJSON(String::fromUTF8(reply));
+    free(reply);
+    return value;
 }
 
 } // namespace Inception
