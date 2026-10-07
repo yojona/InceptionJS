@@ -16,6 +16,7 @@
 #include "PageConfiguration.h"
 #include "ResourceRequest.h"
 #include "Settings.h"
+#include "StorageNamespaceProvider.h"
 #include "bridge/Bridge.h"
 #include "gfx/Renderer.h"
 #include "input/EditingClient.h"

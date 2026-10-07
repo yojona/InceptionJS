@@ -19,6 +19,7 @@
 #include "storage/Profile.h"
 #include <pal/SessionID.h>
 #include <wtf/FileSystem.h>
+#include <wtf/Function.h>
 #include <wtf/HashMap.h>
 #include <wtf/WeakHashMap.h>
 
@@ -116,7 +117,7 @@ private:
         RefPtr page = frame.page();
         if (!document || !page)
             return;
-        auto isSource = [this](Storage& storage) { return &storage.area() == this; };
+        Function<bool(Storage&)> isSource = [this](Storage& storage) { return &storage.area() == static_cast<StorageArea*>(this); };
         if (m_type == StorageType::Session)
             StorageEventDispatcher::dispatchSessionStorageEvents(key, oldValue, newValue, *page, document->securityOrigin(), document->url().string(), isSource);
         else
