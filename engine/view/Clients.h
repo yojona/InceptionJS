@@ -31,7 +31,12 @@ private:
 
     void addMessageToConsole(JSC::MessageSource, JSC::MessageLevel, const String& message, unsigned lineNumber, unsigned columnNumber, const String& sourceID) final;
 
+    void setCursor(const WebCore::Cursor&) final;
+    void setCursorHiddenUntilMouseMoves(bool) final { }
+
     bool isEmptyChromeClient() const final { return false; }
+
+    String m_cursor;
 
     View& m_view;
 };

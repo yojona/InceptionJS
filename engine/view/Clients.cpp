@@ -2,6 +2,7 @@
 #include "view/Clients.h"
 
 #include "Color.h"
+#include "Cursor.h"
 #include "DocumentLoader.h"
 #include "FrameLoader.h"
 #include "LocalFrameInlines.h"
@@ -54,6 +55,72 @@ bool ChromeClientImpl::scheduleRenderingUpdate()
 void ChromeClientImpl::triggerRenderingUpdate()
 {
     m_view.requestFrame();
+}
+
+// The CSS cursor keyword for each WebCore cursor. Image cursors fall back to
+// the default until the engine can encode their images for the host.
+static ASCIILiteral cssCursor(Cursor::Type type)
+{
+    switch (type) {
+    case Cursor::Type::Pointer: return "default"_s;
+    case Cursor::Type::Cross: return "crosshair"_s;
+    case Cursor::Type::Hand: return "pointer"_s;
+    case Cursor::Type::IBeam: return "text"_s;
+    case Cursor::Type::Wait: return "wait"_s;
+    case Cursor::Type::Help: return "help"_s;
+    case Cursor::Type::EastResize: return "e-resize"_s;
+    case Cursor::Type::NorthResize: return "n-resize"_s;
+    case Cursor::Type::NorthEastResize: return "ne-resize"_s;
+    case Cursor::Type::NorthWestResize: return "nw-resize"_s;
+    case Cursor::Type::SouthResize: return "s-resize"_s;
+    case Cursor::Type::SouthEastResize: return "se-resize"_s;
+    case Cursor::Type::SouthWestResize: return "sw-resize"_s;
+    case Cursor::Type::WestResize: return "w-resize"_s;
+    case Cursor::Type::NorthSouthResize: return "ns-resize"_s;
+    case Cursor::Type::EastWestResize: return "ew-resize"_s;
+    case Cursor::Type::NorthEastSouthWestResize: return "nesw-resize"_s;
+    case Cursor::Type::NorthWestSouthEastResize: return "nwse-resize"_s;
+    case Cursor::Type::ColumnResize: return "col-resize"_s;
+    case Cursor::Type::RowResize: return "row-resize"_s;
+    case Cursor::Type::MiddlePanning:
+    case Cursor::Type::EastPanning:
+    case Cursor::Type::NorthPanning:
+    case Cursor::Type::NorthEastPanning:
+    case Cursor::Type::NorthWestPanning:
+    case Cursor::Type::SouthPanning:
+    case Cursor::Type::SouthEastPanning:
+    case Cursor::Type::SouthWestPanning:
+    case Cursor::Type::WestPanning:
+    case Cursor::Type::Move: return "move"_s;
+    case Cursor::Type::VerticalText: return "vertical-text"_s;
+    case Cursor::Type::Cell: return "cell"_s;
+    case Cursor::Type::ContextMenu: return "context-menu"_s;
+    case Cursor::Type::Alias: return "alias"_s;
+    case Cursor::Type::Progress: return "progress"_s;
+    case Cursor::Type::NoDrop: return "no-drop"_s;
+    case Cursor::Type::Copy: return "copy"_s;
+    case Cursor::Type::None: return "none"_s;
+    case Cursor::Type::NotAllowed: return "not-allowed"_s;
+    case Cursor::Type::ZoomIn: return "zoom-in"_s;
+    case Cursor::Type::ZoomOut: return "zoom-out"_s;
+    case Cursor::Type::Grab: return "grab"_s;
+    case Cursor::Type::Grabbing: return "grabbing"_s;
+    case Cursor::Type::Invalid:
+    case Cursor::Type::Custom:
+        break;
+    }
+    return "default"_s;
+}
+
+void ChromeClientImpl::setCursor(const Cursor& cursor)
+{
+    String css = cssCursor(cursor.type());
+    if (css == m_cursor)
+        return;
+    m_cursor = css;
+    auto data = JSON::Object::create();
+    data->setString("cursor"_s, css);
+    emitEvent("cursor"_s, WTF::move(data));
 }
 
 static ASCIILiteral levelName(JSC::MessageLevel level)
