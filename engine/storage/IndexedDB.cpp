@@ -21,6 +21,7 @@
 #include "IDBValue.h"
 #include "IndexKey.h"
 #include "UniqueIDBDatabaseConnection.h"
+#include "storage/Profile.h"
 #include <pal/SessionID.h>
 #include <wtf/Lock.h>
 #include <wtf/RunLoop.h>
@@ -44,7 +45,7 @@ public:
 
 private:
     LocalIDBServer()
-        : m_server(makeUnique<WebCore::IDBServer::IDBServer>(String { }, [](const ClientOrigin&, uint64_t) { return true; }, m_serverLock))
+        : m_server(makeUnique<WebCore::IDBServer::IDBServer>(Profile::file("indexeddb"_s), [](const ClientOrigin&, uint64_t) { return true; }, m_serverLock))
         , m_connectionToServer(IDBConnectionToServer::create(*this, PAL::SessionID::defaultSessionID()))
         , m_connectionToClient(IDBServer::IDBConnectionToClient::create(*this))
     {
