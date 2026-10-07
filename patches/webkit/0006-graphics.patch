@@ -1,0 +1,769 @@
+GPU painting through one WebGL2 context, CPU raster as fallback.
+
+GLContext is reimplemented over a single WebGL2 context that the embedder
+creates and registers (WebGL has no context sharing, so every GLContext is a
+view over it). With no context registered, GL paths fail and painting stays on
+the CPU. EGL is only used for the display object. Skia gets a GLES interface
+over WebGL2 entry points: the version string is cut before "(WebGL" so Skia
+picks GLES 3.0, and glGetInternalformativ is implemented over
+getInternalformatParameter. Accelerated ImageBuffers flush without fences,
+since producer and consumer share the one command stream. System font keywords
+resolve to fontconfig sans-serif. Scroll animation follows the page setting.
+
+diff --git a/Source/WebCore/PlatformEmscripten.cmake b/Source/WebCore/PlatformEmscripten.cmake
+index 9a0751f..640e5c8 100644
+--- a/Source/WebCore/PlatformEmscripten.cmake
++++ b/Source/WebCore/PlatformEmscripten.cmake
+@@ -32,6 +32,19 @@ list(APPEND WebCore_PRIVATE_INCLUDE_DIRECTORIES
+ )
+ 
+ list(APPEND WebCore_SOURCES
++    platform/graphics/PlatformDisplay.cpp
++
++    platform/graphics/egl/GLContextWrapper.cpp
++    platform/graphics/egl/GLDisplay.cpp
++    platform/graphics/egl/GLFence.cpp
++    platform/graphics/egl/GLFenceEGL.cpp
++    platform/graphics/egl/GLFenceGL.cpp
++
++    platform/graphics/emscripten/GLContextEmscripten.cpp
++    platform/graphics/emscripten/PlatformDisplayEmscripten.cpp
++    platform/graphics/emscripten/SkiaGLInterfaceEmscripten.cpp
++    platform/graphics/emscripten/SystemFontDatabaseEmscripten.cpp
++
+     platform/generic/KeyedDecoderGeneric.cpp
+     platform/generic/KeyedEncoderGeneric.cpp
+ 
+@@ -45,6 +58,11 @@ list(APPEND WebCore_SOURCES
+     platform/unix/SharedMemoryUnix.cpp
+ )
+ 
++list(APPEND WebCore_PRIVATE_FRAMEWORK_HEADERS
++    platform/graphics/emscripten/PlatformDisplayEmscripten.h
++    platform/graphics/emscripten/WebGLContextEmscripten.h
++)
++
+ # The embedder (the executable that owns the page) lives outside the WebKit tree.
+ # Its CMake file runs at the end of this directory, once the WebCore target and its
+ # include lists are final.
+diff --git a/Source/WebCore/platform/ScrollAnimator.cpp b/Source/WebCore/platform/ScrollAnimator.cpp
+index 618fea8..7656a4a 100644
+--- a/Source/WebCore/platform/ScrollAnimator.cpp
++++ b/Source/WebCore/platform/ScrollAnimator.cpp
+@@ -419,7 +419,8 @@ void ScrollAnimator::removeWheelEventTestCompletionDeferralForReason(ScrollingNo
+         monitor->removeDeferralForReason(identifier, reason);
+ }
+ 
+-#if USE(COORDINATED_GRAPHICS)
++// The embedder decides through the page's scroll animator setting.
++#if USE(COORDINATED_GRAPHICS) || PLATFORM(EMSCRIPTEN)
+ bool ScrollAnimator::scrollAnimationEnabled() const
+ {
+     return checkedScrollableArea()->scrollAnimatorEnabled();
+diff --git a/Source/WebCore/platform/ScrollAnimator.h b/Source/WebCore/platform/ScrollAnimator.h
+index 9ec21f0..fe9e27a 100644
+--- a/Source/WebCore/platform/ScrollAnimator.h
++++ b/Source/WebCore/platform/ScrollAnimator.h
+@@ -166,7 +166,7 @@ private:
+     void removeWheelEventTestCompletionDeferralForReason(ScrollingNodeID, WheelEventTestMonitor::DeferReason) const final;
+     ScrollingNodeID scrollingNodeIDForTesting() const final;
+ 
+-#if USE(COORDINATED_GRAPHICS)
++#if USE(COORDINATED_GRAPHICS) || PLATFORM(EMSCRIPTEN)
+     bool scrollAnimationEnabled() const final;
+ #endif
+ 
+diff --git a/Source/WebCore/platform/graphics/emscripten/GLContextEmscripten.cpp b/Source/WebCore/platform/graphics/emscripten/GLContextEmscripten.cpp
+new file mode 100644
+index 0000000..a3b3d7d
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/emscripten/GLContextEmscripten.cpp
+@@ -0,0 +1,261 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++// GLContext for the Emscripten port. It replaces the EGL implementation: every
++// GLContext is a view over the single WebGL2 context the embedder registered,
++// so creation never makes a new context and "sharing" is trivially true.
++
++#include "config.h"
++#include "GLContext.h"
++
++#include "GLDisplay.h"
++#include "PlatformDisplay.h"
++#include "WebGLContextEmscripten.h"
++#include <GLES3/gl3.h>
++#include <wtf/TZoneMallocInlines.h>
++#include <wtf/text/StringToIntegerConversion.h>
++#include <wtf/text/WTFString.h>
++
++namespace WebCore {
++
++WTF_MAKE_TZONE_ALLOCATED_IMPL(GLContext);
++
++static EMSCRIPTEN_WEBGL_CONTEXT_HANDLE s_sharedWebGLContext;
++
++void setSharedWebGLContext(EMSCRIPTEN_WEBGL_CONTEXT_HANDLE handle)
++{
++    s_sharedWebGLContext = handle;
++}
++
++EMSCRIPTEN_WEBGL_CONTEXT_HANDLE sharedWebGLContext()
++{
++    return s_sharedWebGLContext;
++}
++
++static EGLContext toEGLContext(EMSCRIPTEN_WEBGL_CONTEXT_HANDLE handle)
++{
++    return reinterpret_cast<EGLContext>(static_cast<intptr_t>(handle));
++}
++
++static EMSCRIPTEN_WEBGL_CONTEXT_HANDLE toWebGLHandle(EGLContext context)
++{
++    return static_cast<EMSCRIPTEN_WEBGL_CONTEXT_HANDLE>(reinterpret_cast<intptr_t>(context));
++}
++
++static std::unique_ptr<GLContext> createView(GLDisplay& display)
++{
++    if (!s_sharedWebGLContext)
++        return nullptr;
++    return makeUnique<GLContext>(display, toEGLContext(s_sharedWebGLContext), nullptr, nullptr);
++}
++
++const char* GLContext::errorString(int statusCode)
++{
++    switch (statusCode) {
++    case EMSCRIPTEN_RESULT_SUCCESS:
++        return "success";
++    case EMSCRIPTEN_RESULT_INVALID_TARGET:
++        return "invalid target";
++    case EMSCRIPTEN_RESULT_INVALID_PARAM:
++        return "invalid parameter";
++    default:
++        return "unknown error";
++    }
++}
++
++const char* GLContext::lastErrorString()
++{
++    return s_sharedWebGLContext ? "no error" : "no WebGL context registered";
++}
++
++std::unique_ptr<GLContext> GLContext::create(GLDisplay& display, Target, GLContext*, GLNativeWindowType)
++{
++    return createView(display);
++}
++
++std::unique_ptr<GLContext> GLContext::create(PlatformDisplay& platformDisplay, GLNativeWindowType)
++{
++    return createView(platformDisplay.glDisplay());
++}
++
++std::unique_ptr<GLContext> GLContext::createOffscreen(PlatformDisplay& platformDisplay)
++{
++    return createView(platformDisplay.glDisplay());
++}
++
++std::unique_ptr<GLContext> GLContext::createSharing(PlatformDisplay& platformDisplay)
++{
++    return createView(platformDisplay.glDisplay());
++}
++
++GLContext::GLContext(GLDisplay& display, EGLContext context, EGLSurface surface, EGLConfig config)
++    : m_display(display)
++    , m_context(context)
++    , m_surface(surface)
++    , m_config(config)
++{
++}
++
++// The WebGL context belongs to the embedder; a view never destroys it.
++GLContext::~GLContext() = default;
++
++RefPtr<GLDisplay> GLContext::display() const
++{
++    return m_display.get();
++}
++
++bool GLContext::makeCurrentImpl()
++{
++    return emscripten_webgl_make_context_current(toWebGLHandle(m_context)) == EMSCRIPTEN_RESULT_SUCCESS;
++}
++
++bool GLContext::unmakeCurrentImpl()
++{
++    return true;
++}
++
++unsigned GLContext::glVersion() const
++{
++    return version();
++}
++
++bool GLContext::makeContextCurrent()
++{
++    if (isCurrent())
++        return true;
++    if (!makeCurrentImpl())
++        return false;
++    didMakeContextCurrent();
++    return true;
++}
++
++// Views share one context, so leaving it bound is harmless and saves a round
++// trip; only the bookkeeping changes.
++bool GLContext::unmakeContextCurrent()
++{
++    if (isCurrent())
++        didUnmakeContextCurrent();
++    return true;
++}
++
++GLContext* GLContext::current()
++{
++    auto* context = currentContext();
++    if (context && context->type() == GLContextWrapper::Type::Native)
++        return static_cast<GLContext*>(context);
++    return nullptr;
++}
++
++// Frames are presented by the embedder (transferToImageBitmap), not swapped.
++void GLContext::swapBuffers()
++{
++}
++
++GCGLContext GLContext::platformContext() const
++{
++    return m_context;
++}
++
++bool GLContext::isExtensionSupported(const char* extensionList, const char* extension)
++{
++    if (!extensionList || !extension)
++        return false;
++    auto list = StringView::fromLatin1(extensionList);
++    auto name = StringView::fromLatin1(extension);
++    for (auto entry : list.split(' ')) {
++        if (entry == name)
++            return true;
++    }
++    return false;
++}
++
++// WebGL reports "WebGL 2.0 (OpenGL ES 3.0 Chromium)" and the like; read the
++// first "major.minor" token wherever it appears.
++unsigned GLContext::versionFromString(const char* versionString)
++{
++    if (!versionString)
++        return 0;
++    for (auto token : StringView::fromLatin1(versionString).split(' ')) {
++        auto dot = token.find('.');
++        if (dot == notFound)
++            continue;
++        auto major = parseIntegerAllowingTrailingJunk<unsigned>(token.left(dot));
++        auto minor = parseIntegerAllowingTrailingJunk<unsigned>(token.substring(dot + 1));
++        if (major && minor)
++            return *major * 100 + *minor * 10;
++    }
++    return 0;
++}
++
++unsigned GLContext::version() const
++{
++    if (!m_version)
++        m_version = versionFromString(reinterpret_cast<const char*>(glGetString(GL_VERSION)));
++    return m_version;
++}
++
++// None of these are WebGL extensions, and WebGL2 provides the behavior of the
++// first two in core.
++const GLContext::GLExtensions& GLContext::glExtensions() const
++{
++    m_glExtensions.OES_texture_npot = true;
++    m_glExtensions.EXT_unpack_subimage = true;
++    m_glExtensions.APPLE_sync = false;
++    m_glExtensions.OES_packed_depth_stencil = true;
++    return m_glExtensions;
++}
++
++GLContext::ScopedGLContext::ScopedGLContext(std::unique_ptr<GLContext>&& context)
++    : m_context(WTF::move(context))
++{
++    m_previous.glContext = GLContext::current();
++    if (m_context)
++        m_context->makeContextCurrent();
++}
++
++GLContext::ScopedGLContext::~ScopedGLContext()
++{
++    m_context = nullptr;
++    if (m_previous.glContext)
++        m_previous.glContext->makeContextCurrent();
++}
++
++GLContext::ScopedGLContextCurrent::ScopedGLContextCurrent(GLContext& context)
++    : m_context(context)
++{
++    m_previous.glContext = GLContext::current();
++    m_context.makeContextCurrent();
++}
++
++GLContext::ScopedGLContextCurrent::~ScopedGLContextCurrent()
++{
++    if (m_previous.glContext && m_previous.glContext != &m_context) {
++        m_previous.glContext->makeContextCurrent();
++        return;
++    }
++    if (!m_previous.glContext)
++        m_context.unmakeContextCurrent();
++}
++
++} // namespace WebCore
+diff --git a/Source/WebCore/platform/graphics/emscripten/PlatformDisplayEmscripten.cpp b/Source/WebCore/platform/graphics/emscripten/PlatformDisplayEmscripten.cpp
+new file mode 100644
+index 0000000..eda0d3f
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/emscripten/PlatformDisplayEmscripten.cpp
+@@ -0,0 +1,48 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "PlatformDisplayEmscripten.h"
++
++#include "GLDisplay.h"
++#include <EGL/egl.h>
++
++namespace WebCore {
++
++std::unique_ptr<PlatformDisplayEmscripten> PlatformDisplayEmscripten::create()
++{
++    auto glDisplay = GLDisplay::create(eglGetDisplay(EGL_DEFAULT_DISPLAY));
++    if (!glDisplay)
++        return nullptr;
++    return std::unique_ptr<PlatformDisplayEmscripten>(new PlatformDisplayEmscripten(glDisplay.releaseNonNull()));
++}
++
++PlatformDisplayEmscripten::PlatformDisplayEmscripten(Ref<GLDisplay>&& glDisplay)
++    : PlatformDisplay(WTF::move(glDisplay))
++{
++}
++
++PlatformDisplayEmscripten::~PlatformDisplayEmscripten() = default;
++
++} // namespace WebCore
+diff --git a/Source/WebCore/platform/graphics/emscripten/PlatformDisplayEmscripten.h b/Source/WebCore/platform/graphics/emscripten/PlatformDisplayEmscripten.h
+new file mode 100644
+index 0000000..83955d9
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/emscripten/PlatformDisplayEmscripten.h
+@@ -0,0 +1,44 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#include "PlatformDisplay.h"
++
++namespace WebCore {
++
++// EGL here is the toolchain's thin JavaScript layer: enough for a display and
++// version queries, no surfaces. Contexts come from WebGLContextEmscripten.h.
++class PlatformDisplayEmscripten final : public PlatformDisplay {
++public:
++    WEBCORE_EXPORT static std::unique_ptr<PlatformDisplayEmscripten> create();
++    virtual ~PlatformDisplayEmscripten();
++
++private:
++    explicit PlatformDisplayEmscripten(Ref<GLDisplay>&&);
++
++    Type type() const override { return Type::Surfaceless; }
++};
++
++} // namespace WebCore
+diff --git a/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.cpp b/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.cpp
+new file mode 100644
+index 0000000..62a9cb6
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.cpp
+@@ -0,0 +1,96 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "SkiaGLInterfaceEmscripten.h"
++
++#if USE(SKIA)
++
++#include <GLES3/gl3.h>
++#include <algorithm>
++#include <cstring>
++#include <emscripten/em_js.h>
++#include <emscripten/html5_webgl.h>
++
++WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
++#include <skia/gpu/ganesh/gl/GrGLAssembleInterface.h>
++WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
++
++// WebGL2 exposes only sample counts through getInternalformatParameter, and
++// the toolchain's GL layer has no entry point for it. Skia asks for nothing else.
++EM_JS(void, inceptionGetInternalformativ, (GLenum target, GLenum internalformat, GLenum pname, GLsizei bufSize, GLint* params), {
++    const samples = GLctx.getInternalformatParameter(target, internalformat, 0x80A9 /* SAMPLES */);
++    if (!samples)
++        return;
++    if (pname == 0x9380 /* NUM_SAMPLE_COUNTS */) {
++        if (bufSize > 0)
++            HEAP32[params >> 2] = samples.length;
++        return;
++    }
++    if (pname == 0x80A9) {
++        for (let i = 0; i < Math.min(bufSize, samples.length); i++)
++            HEAP32[(params >> 2) + i] = samples[i];
++    }
++});
++
++namespace WebCore {
++
++// Skia classifies "OpenGL ES 3.0 (WebGL 2.0 ...)" as the WebGL standard, whose
++// interface is compiled out of this Skia build. Under WebGL2 the GLES 3.0
++// interface is the right one, so the version string stops before "(WebGL".
++static const GLubyte* GL_APIENTRY getStringForSkia(GLenum name)
++{
++    const GLubyte* value = glGetString(name);
++    if (name != GL_VERSION || !value)
++        return value;
++
++    static char version[32];
++    if (!version[0]) {
++        const char* source = reinterpret_cast<const char*>(value);
++        const char* cut = strstr(source, " (");
++        size_t length = cut ? static_cast<size_t>(cut - source) : strlen(source);
++        length = std::min(length, sizeof(version) - 1);
++        memcpy(version, source, length);
++        version[length] = '\0';
++    }
++    return reinterpret_cast<const GLubyte*>(version);
++}
++
++static GrGLFuncPtr getProc(void*, const char* name)
++{
++    if (!strcmp(name, "glGetString"))
++        return reinterpret_cast<GrGLFuncPtr>(getStringForSkia);
++    if (!strcmp(name, "glGetInternalformativ"))
++        return reinterpret_cast<GrGLFuncPtr>(inceptionGetInternalformativ);
++    return reinterpret_cast<GrGLFuncPtr>(emscripten_webgl_get_proc_address(name));
++}
++
++sk_sp<const GrGLInterface> makeSkiaGLInterfaceForWebGL()
++{
++    return GrGLMakeAssembledInterface(nullptr, getProc);
++}
++
++} // namespace WebCore
++
++#endif // USE(SKIA)
+diff --git a/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.h b/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.h
+new file mode 100644
+index 0000000..e38b8d4
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.h
+@@ -0,0 +1,40 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if USE(SKIA)
++
++WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
++#include <skia/gpu/ganesh/gl/GrGLInterface.h>
++WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
++
++namespace WebCore {
++
++// Skia's GLES interface, assembled over WebGL2 entry points.
++sk_sp<const GrGLInterface> makeSkiaGLInterfaceForWebGL();
++
++} // namespace WebCore
++
++#endif // USE(SKIA)
+diff --git a/Source/WebCore/platform/graphics/emscripten/SystemFontDatabaseEmscripten.cpp b/Source/WebCore/platform/graphics/emscripten/SystemFontDatabaseEmscripten.cpp
+new file mode 100644
+index 0000000..7296978
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/emscripten/SystemFontDatabaseEmscripten.cpp
+@@ -0,0 +1,61 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "SystemFontDatabase.h"
++
++#include <wtf/NeverDestroyed.h>
++
++namespace WebCore {
++
++SystemFontDatabase& SystemFontDatabase::singleton()
++{
++    static NeverDestroyed<SystemFontDatabase> database = SystemFontDatabase();
++    return database.get();
++}
++
++// There is no desktop to ask: system font keywords resolve to the fontconfig
++// sans-serif family at the sizes desktop browsers use for form controls.
++auto SystemFontDatabase::platformSystemFontShorthandInfo(FontShorthand shorthand) -> SystemFontShorthandInfo
++{
++    static MainThreadNeverDestroyed<const AtomString> family("sans-serif"_s);
++    float size = 13;
++    switch (shorthand) {
++    case FontShorthand::WebkitMiniControl:
++        size = 9;
++        break;
++    case FontShorthand::WebkitSmallControl:
++        size = 11;
++        break;
++    default:
++        break;
++    }
++    return { family.get(), size, normalWeightValue() };
++}
++
++void SystemFontDatabase::platformInvalidate()
++{
++}
++
++} // namespace WebCore
+diff --git a/Source/WebCore/platform/graphics/emscripten/WebGLContextEmscripten.h b/Source/WebCore/platform/graphics/emscripten/WebGLContextEmscripten.h
+new file mode 100644
+index 0000000..b43a666
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/emscripten/WebGLContextEmscripten.h
+@@ -0,0 +1,38 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#include <emscripten/html5_webgl.h>
++
++namespace WebCore {
++
++// The engine draws through exactly one WebGL2 context. The embedder creates it
++// (it owns the canvas and presents its frames) and registers it here; WebCore's
++// GL contexts are all views over it, since WebGL has no context sharing. With no
++// context registered, every GL path reports failure and painting stays on the CPU.
++WEBCORE_EXPORT void setSharedWebGLContext(EMSCRIPTEN_WEBGL_CONTEXT_HANDLE);
++EMSCRIPTEN_WEBGL_CONTEXT_HANDLE sharedWebGLContext();
++
++} // namespace WebCore
+diff --git a/Source/WebCore/platform/graphics/skia/ImageBufferSkiaAcceleratedBackend.cpp b/Source/WebCore/platform/graphics/skia/ImageBufferSkiaAcceleratedBackend.cpp
+index 5731b7e..8318ef9 100644
+--- a/Source/WebCore/platform/graphics/skia/ImageBufferSkiaAcceleratedBackend.cpp
++++ b/Source/WebCore/platform/graphics/skia/ImageBufferSkiaAcceleratedBackend.cpp
+@@ -224,6 +224,13 @@ std::unique_ptr<GLFence> ImageBufferSkiaAcceleratedBackend::flushCanvasRecording
+     auto* recordingContext = m_surface->recordingContext();
+     auto* grContext = recordingContext ? recordingContext->asDirectContext() : nullptr;
+ 
++#if PLATFORM(EMSCRIPTEN)
++    // One GL context, one thread: whoever reads this surface next issues its
++    // commands after these on the same stream, so no fence and no CPU wait.
++    grContext->flushAndSubmit(m_surface.get(), GrSyncCpu::kNo);
++    return nullptr;
++#endif
++
+     auto& glDisplay = PlatformDisplay::sharedDisplay().glDisplay();
+     if (GLFence::isSupported(glDisplay)) {
+         grContext->flushAndSubmit(m_surface.get(), GrSyncCpu::kNo);
+diff --git a/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp b/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp
+index 134a1cf..bc99ad4 100644
+--- a/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp
++++ b/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp
+@@ -38,7 +38,9 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+ #include <skia/gpu/ganesh/gl/GrGLDirectContext.h>
+ #include <skia/gpu/ganesh/gl/GrGLInterface.h>
+ 
+-#if USE(LIBEPOXY)
++#if PLATFORM(EMSCRIPTEN)
++#include <EGL/egl.h>
++#elif USE(LIBEPOXY)
+ #include <epoxy/egl.h>
+ #include <skia/gpu/ganesh/gl/epoxy/GrGLMakeEpoxyEGLInterface.h>
+ #else
+@@ -48,6 +50,10 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+ #endif
+ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+ 
++#if PLATFORM(EMSCRIPTEN)
++#include "SkiaGLInterfaceEmscripten.h"
++#endif
++
+ #include <wtf/NeverDestroyed.h>
+ #include <wtf/ThreadSafeWeakPtr.h>
+ #include <wtf/text/StringToIntegerConversion.h>
+@@ -80,7 +86,9 @@ static const unsigned s_defaultSampleCount = 0;
+ static sk_sp<const GrGLInterface> skiaGLInterface()
+ {
+     static NeverDestroyed<sk_sp<const GrGLInterface>> grGLInterface {
+-#if USE(LIBEPOXY)
++#if PLATFORM(EMSCRIPTEN)
++        makeSkiaGLInterfaceForWebGL()
++#elif USE(LIBEPOXY)
+         GrGLInterfaces::MakeEpoxyEGL()
+ #else
+         GrGLInterfaces::MakeEGL()
+@@ -280,7 +288,7 @@ private:
+ 
+ GLContext* PlatformDisplay::skiaGLContext()
+ {
+-#if PLATFORM(GTK) || PLATFORM(WPE) || (PLATFORM(PLAYSTATION) && !USE(COORDINATED_GRAPHICS))
++#if PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(EMSCRIPTEN) || (PLATFORM(PLAYSTATION) && !USE(COORDINATED_GRAPHICS))
+     if (!s_skiaGLContext) {
+         s_skiaGLContext = SkiaGLContext::create(*this);
+         m_skiaGLContexts.add(*s_skiaGLContext);
