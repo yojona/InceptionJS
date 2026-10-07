@@ -6,6 +6,7 @@
 #include "GraphicsContextSkia.h"
 #include "PlatformDisplay.h"
 #include "PlatformDisplayEmscripten.h"
+#include "SkiaGLInterfaceEmscripten.h"
 #include "WebGLContextEmscripten.h"
 #include "bridge/Bridge.h"
 #include <GLES3/gl3.h>
@@ -22,6 +23,8 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
 #include <skia/gpu/ganesh/SkSurfaceGanesh.h>
 #include <skia/gpu/ganesh/gl/GrGLBackendSurface.h>
 #include <skia/gpu/ganesh/gl/GrGLAssembleInterface.h>
+#include <skia/gpu/ganesh/gl/GrGLDirectContext.h>
+#include <skia/gpu/ganesh/gl/GrGLInterface.h>
 WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
 
 extern "C" {
@@ -61,7 +64,16 @@ static void reportMissingGLFunctions()
         return proc;
     });
     missing = nullptr;
-    report("warn"_s, makeString("GL interface "_s, interface ? (interface->validate() ? "valid"_s : "invalid"_s) : "not assembled"_s, ", missing:"_s, names.toString()));
+
+    auto port = WebCore::makeSkiaGLInterfaceForWebGL();
+    String version, glsl, made;
+    if (port) {
+        version = String::fromLatin1(reinterpret_cast<const char*>(port->fFunctions.fGetString(GL_VERSION)));
+        glsl = String::fromLatin1(reinterpret_cast<const char*>(port->fFunctions.fGetString(GL_SHADING_LANGUAGE_VERSION)));
+        made = GrDirectContexts::MakeGL(port) ? "yes"_s : "no"_s;
+    }
+    report("warn"_s, makeString("GL interface "_s, interface ? (interface->validate() ? "valid"_s : "invalid"_s) : "not assembled"_s, ", missing:"_s, names.toString(),
+        "; port interface "_s, port ? (port->validate() ? "valid"_s : "invalid"_s) : "null"_s, " version '"_s, version, "' glsl '"_s, glsl, "' context "_s, made));
 }
 
 bool Renderer::initializeGPU()
