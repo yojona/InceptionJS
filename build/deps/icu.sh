@@ -20,12 +20,17 @@ rm -rf "$wasm"; mkdir -p "$wasm"
 (
   cd "$wasm"
   logged icu-configure emconfigure "$src/source/configure" \
-    --host=wasm32-unknown-emscripten --with-cross-build="$host" \
+    --build="$("$src/source/config.guess")" --host=wasm32-unknown-emscripten \
+    --with-cross-build="$host" \
     --enable-static --disable-shared --disable-tests --disable-samples \
     --disable-extras --disable-tools --disable-dyload \
     --with-data-packaging=archive --prefix="$SYSROOT"
   logged icu-build emmake make -j"$JOBS"
   logged icu-install emmake make install
 )
-[ -f "$SYSROOT/share/icu/$ICU_DATA_VERSION/icudt${ICU_DATA_VERSION%%.*}l.dat" ] \
-  || fail "icu data archive missing after install"
+# The release ships the common data archive prebuilt for little-endian ASCII
+# targets, which wasm is; install it directly instead of depending on whether
+# configure decided the data directory needs building.
+dat="icudt${ICU_DATA_VERSION%%.*}l.dat"
+mkdir -p "$SYSROOT/share/icu/$ICU_DATA_VERSION"
+cp -f "$src/source/data/in/$dat" "$SYSROOT/share/icu/$ICU_DATA_VERSION/$dat"
