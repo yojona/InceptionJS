@@ -29,7 +29,7 @@ addToLibrary({
 
     // Runs after SOCKFS has queued the event, so the engine sees it.
     poke() {
-      PThread.runningWorkers[0]?.postMessage({ inceptionPump: 1 });
+      for (const worker of Object.values(PThread.pthreads)) worker.postMessage({ inceptionPump: 1 });
     },
 
     connect(host, port) {
