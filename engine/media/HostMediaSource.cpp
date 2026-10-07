@@ -127,8 +127,8 @@ Ref<MediaPromise> HostSourceBuffer::append(Ref<SharedBuffer>&& data)
 
 Ref<MediaPromise> HostSourceBuffer::track(unsigned seq)
 {
-    MediaPromise::Producer producer;
-    Ref promise = producer.promise();
+    auto producer = makeUnique<MediaPromise::Producer>();
+    Ref promise = producer->promise();
     m_pending.add(seq, WTF::move(producer));
     return promise;
 }
@@ -165,9 +165,9 @@ void HostSourceBuffer::operationDone(unsigned seq, const PlatformTimeRanges& buf
     auto producer = WTF::move(it->value);
     m_pending.remove(it);
     if (failed)
-        producer.reject(PlatformMediaError::AppendError);
+        producer->reject(PlatformMediaError::AppendError);
     else
-        producer.resolve();
+        producer->resolve();
 }
 
 // Pending appends are abandoned on both sides; the host reports none of them.
@@ -175,7 +175,7 @@ void HostSourceBuffer::abort()
 {
     auto pending = std::exchange(m_pending, { });
     for (auto& producer : pending.values())
-        producer.reject(PlatformMediaError::Cancelled);
+        producer->reject(PlatformMediaError::Cancelled);
     send("media.abort"_s);
 }
 

@@ -69,7 +69,7 @@ private:
     Ref<WebCore::MediaPromise> track(unsigned seq);
 
     unsigned m_nextSeq { 1 };
-    HashMap<unsigned, WebCore::MediaPromise::Producer> m_pending;
+    HashMap<unsigned, std::unique_ptr<WebCore::MediaPromise::Producer>> m_pending;
     MediaTime m_appendWindowStart { MediaTime::zeroTime() };
     MediaTime m_appendWindowEnd { MediaTime::positiveInfiniteTime() };
 };
