@@ -12,7 +12,15 @@ step "staging engine file system"
 rm -rf "$FS"
 mkdir -p "$FS/etc" "$FS/usr/share/fonts" "$FS/usr/share/icu" "$FS/etc/ssl" "$FS/var/cache/fontconfig" "$FS/tmp"
 
-cp -a "$SYSROOT/etc/fonts" "$FS/etc/fonts"
+# conf.d holds symlinks into the install prefix; the image needs the files.
+mkdir -p "$FS/etc/fonts/conf.d"
+cp "$SYSROOT/etc/fonts/fonts.conf" "$FS/etc/fonts/"
+for link in "$SYSROOT"/etc/fonts/conf.d/*.conf; do
+  target="$SYSROOT/share/fontconfig/conf.avail/$(basename "$link")"
+  if [ -f "$link" ]; then cp -L "$link" "$FS/etc/fonts/conf.d/"
+  elif [ -f "$target" ]; then cp "$target" "$FS/etc/fonts/conf.d/"
+  fi
+done
 dat="icudt${ICU_DATA_VERSION%%.*}l.dat"
 cp "$SYSROOT/share/icu/$ICU_DATA_VERSION/$dat" "$FS/usr/share/icu/$dat"
 
