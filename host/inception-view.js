@@ -1,5 +1,6 @@
 import { attachInput, writeClipboard } from './input.js';
 import { SelectMenu, answerDialog, chooseFiles } from './ui.js';
+import { Preferences } from './preferences.js';
 import { MediaHost, probeMediaCapabilities } from './media.js';
 import { EngineRuntime } from './runtime.js';
 import { WasmTranslator } from './wasm-translator.js';
@@ -34,6 +35,7 @@ export class InceptionView extends HTMLElement {
   #textInput;
   #shadow;
   #selectMenu = null;
+  #preferences = new Preferences((changed) => this.#runtime?.send('preferences', changed));
   #media = null;
   #debugRequests = 0;
   #ready = null;
@@ -59,6 +61,11 @@ export class InceptionView extends HTMLElement {
   get title() { return this.#state.title; }
   get loading() { return this.#state.loading; }
   get ready() { return this.#ready ??= this.#start(); }
+
+  // See host/preferences.js. Setting merges: {colorScheme: 'dark'} keeps the
+  // other fields; a field set to 'auto' follows the host again.
+  get preferences() { return this.#preferences.settings; }
+  set preferences(values) { this.#preferences.set(values); }
 
   connectedCallback() {
     // Deferred so a page can define the element and configure it in the same
@@ -163,7 +170,7 @@ export class InceptionView extends HTMLElement {
 
     const { width, height } = this.#cssSize();
     const gpu = this.getAttribute('gpu') ?? 'auto';
-    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: await probeMediaCapabilities(), wasmPolyfill, wispUrl: config.wispUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? '', url: this.getAttribute('src') ?? '' });
+    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: await probeMediaCapabilities(), wasmPolyfill, wispUrl: config.wispUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? '', preferences: this.#preferences.resolved(), url: this.getAttribute('src') ?? '' });
     const ready = await engineReady;
     this.#runtime.addEventListener('crash', (e) => this.dispatchEvent(new CustomEvent('crash', { detail: { reason: e.detail.message, stack: e.detail.stack } })));
     if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');

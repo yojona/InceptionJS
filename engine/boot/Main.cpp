@@ -67,6 +67,8 @@ static void registerCommands()
         auto mode = Renderer::singleton().initialize(expandedIntSize(FloatSize(cssSize) * scale), preferGPU);
         View::create(cssSize, scale);
         View::singleton()->setUserAgent(args.getString("userAgent"_s));
+        if (auto preferences = args.getObject("preferences"_s))
+            applyPreferences(*preferences);
 
         auto ready = JSON::Object::create();
         ready->setInteger("version"_s, bridgeVersion);

@@ -50,7 +50,7 @@ static ForcedAccessibilityValue forced(std::optional<bool> value)
 
 // {colorScheme: "light"|"dark", reducedMotion, contrast: "more"|"no-preference",
 // languages: [...], timeZone}. Absent fields keep their value.
-static void applyPreferences(JSON::Object& args)
+void applyPreferences(JSON::Object& args)
 {
     auto* view = View::singleton();
     if (!view)
