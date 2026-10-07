@@ -1,0 +1,44 @@
+Skia's WebGL interface with the current toolchain's sync functions.
+
+Skia declares ClientWaitSync/WaitSync for Emscripten with the 64-bit timeout
+split in two; the toolchain now takes one GLuint64. The WebGL interface binds
+adapters that join the halves.
+
+diff --git a/Source/ThirdParty/skia/src/gpu/ganesh/gl/GrGLAssembleWebGLInterfaceAutogen.cpp b/Source/ThirdParty/skia/src/gpu/ganesh/gl/GrGLAssembleWebGLInterfaceAutogen.cpp
+index a46b65f..6a24903 100644
+--- a/Source/ThirdParty/skia/src/gpu/ganesh/gl/GrGLAssembleWebGLInterfaceAutogen.cpp
++++ b/Source/ThirdParty/skia/src/gpu/ganesh/gl/GrGLAssembleWebGLInterfaceAutogen.cpp
+@@ -28,6 +28,19 @@ sk_sp<const GrGLInterface> GrGLMakeAssembledWebGLInterface(void *ctx, GrGLGetPro
+ #include <webgl/webgl2_ext.h>
+ 
+ #define GET_PROC(F) functions->f##F = emscripten_gl##F
++
++// Skia's Emscripten function types split the 64-bit sync timeout into two
++// 32-bit halves (an older toolchain ABI); the toolchain now takes GLuint64.
++static GrGLenum clientWaitSyncSplitTimeout(GrGLsync sync, GrGLbitfield flags, GrGLint timeoutLo, GrGLint timeoutHi)
++{
++    return emscripten_glClientWaitSync(static_cast<GLsync>(sync), flags,
++        (static_cast<GLuint64>(static_cast<GrGLuint>(timeoutHi)) << 32) | static_cast<GrGLuint>(timeoutLo));
++}
++
++static GrGLvoid waitSyncSplitTimeout(GrGLsync sync, GrGLbitfield flags, GrGLuint timeoutLo, GrGLuint timeoutHi)
++{
++    emscripten_glWaitSync(static_cast<GLsync>(sync), flags, (static_cast<GLuint64>(timeoutHi) << 32) | timeoutLo);
++}
+ #define GET_PROC_SUFFIX(F, S) functions->f##F = emscripten_gl##F##S
+ 
+ sk_sp<const GrGLInterface> GrGLMakeAssembledWebGLInterface(void *ctx, GrGLGetProc get) {
+@@ -220,11 +233,11 @@ sk_sp<const GrGLInterface> GrGLMakeAssembledWebGLInterface(void *ctx, GrGLGetPro
+     }
+ 
+     if (glVer >= GR_GL_VER(2,0)) {
+-        GET_PROC(ClientWaitSync);
++        functions->fClientWaitSync = clientWaitSyncSplitTimeout;
+         GET_PROC(DeleteSync);
+         GET_PROC(FenceSync);
+         GET_PROC(IsSync);
+-        GET_PROC(WaitSync);
++        functions->fWaitSync = waitSyncSplitTimeout;
+     }
+ 
+     if (glVer >= GR_GL_VER(2,0)) {
