@@ -13,6 +13,7 @@
 #   FETCH      directory under the repo to copy back (.work/out)
 #   BUILD_ENV  extra "NAME=value ..." passed to the command
 #   KEEP=1     leave the server running
+#   SERVER     reuse this running server (left running; delete it when done)
 #   SSH_KEY    private key (~/.ssh/inceptionjs-build); its public half is registered
 set -euo pipefail
 
@@ -23,7 +24,7 @@ IMAGE="${IMAGE:-ubuntu-24.04}"
 FETCH="${FETCH:-.work/out}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/inceptionjs-build}"
 KEY_NAME="inceptionjs-build"
-NAME="inceptionjs-build-$(date +%Y%m%d-%H%M%S)"
+NAME="${SERVER:-inceptionjs-build-$(date +%Y%m%d-%H%M%S)}"
 COMMAND=("$@")
 [ ${#COMMAND[@]} -gt 0 ] || COMMAND=(build/all.sh)
 
@@ -47,9 +48,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "creating $NAME ($TYPE, $LOC, $IMAGE)"
-hcloud server create --name "$NAME" --type "$TYPE" --location "$LOC" --image "$IMAGE" --ssh-key "$KEY_NAME" >/dev/null
-created=1
+if [ -n "${SERVER:-}" ]; then
+  echo "reusing $NAME (still billing; delete it with: hcloud server delete $NAME)"
+else
+  echo "creating $NAME ($TYPE, $LOC, $IMAGE)"
+  hcloud server create --name "$NAME" --type "$TYPE" --location "$LOC" --image "$IMAGE" --ssh-key "$KEY_NAME" >/dev/null
+  created=1
+fi
 IP="$(hcloud server ip "$NAME")"
 for _ in $(seq 1 60); do remote -o ConnectTimeout=5 true 2>/dev/null && break; sleep 5; done
 
@@ -68,14 +73,15 @@ echo "remote command took $(( $(date +%s) - started )) s (exit $status)"
 # Logs come back even when the command failed; that is when they matter.
 mkdir -p "$ROOT/.work/logs"
 rsync -a -e "ssh ${ssh_opts[*]}" "root@$IP:/srv/inceptionjs/.work/logs/" "$ROOT/.work/logs/" || true
-[ "$status" = 0 ] || exit "$status"
 
-mkdir -p "$ROOT/$FETCH"
-rsync -a -e "ssh ${ssh_opts[*]}" "root@$IP:/srv/inceptionjs/$FETCH/" "$ROOT/$FETCH/"
-echo "fetched $FETCH"
-
+# A failed build still leaves a warm build tree and compiler cache worth keeping.
 if [ "${SNAPSHOT:-0}" = 1 ]; then
   echo "saving snapshot"
   hcloud server create-image "$NAME" --type snapshot --description "inceptionjs build $(date +%F)" >/dev/null
   hcloud image list --type snapshot -o noheader -o columns=id,description | grep inceptionjs | tail -1
 fi
+[ "$status" = 0 ] || exit "$status"
+
+mkdir -p "$ROOT/$FETCH"
+rsync -a -e "ssh ${ssh_opts[*]}" "root@$IP:/srv/inceptionjs/$FETCH/" "$ROOT/$FETCH/"
+echo "fetched $FETCH"
