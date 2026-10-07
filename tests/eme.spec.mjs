@@ -41,3 +41,39 @@ test('an unknown key system is rejected cleanly', async ({ page }) => {
   await evaluate(page, `navigator.requestMediaKeySystemAccess('com.example.nothing', [{ videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.42E01E"' }] }]).then(() => { window.emeReject = 'resolved'; }, (e) => { window.emeReject = e.name; }), 'started'`);
   await expect.poll(() => evaluate(page, 'String(window.emeReject)'), { timeout: 20_000 }).toBe('NotSupportedError');
 });
+
+// A player moving on to its next track loads a new source on the same element
+// with the same MediaKeys; each load is a new host video, and the keys must
+// follow it there instead of staying with the previous one.
+test('MediaKeys follow the element across source changes', async ({ page }) => {
+  // On an http page: blob URLs made in about:blank do not load in this engine yet.
+  await page.goto(`${PAGE}?url=https://example.com/`);
+  await view(page).evaluate((el) => el.ready);
+  await expect.poll(() => evaluate(page, 'document.readyState'), { timeout: 30_000 }).toBe('complete');
+  const warnings = [];
+  page.on('console', (m) => { if (/setMediaKeys|releasing MediaKeys/.test(m.text())) warnings.push(m.text()); });
+  await evaluate(page, `(async () => {
+    window.swapResult = 'pending';
+    try {
+      const access = await navigator.requestMediaKeySystemAccess('org.w3.clearkey', [{ initDataTypes: ['keyids'], videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.42E01E"' }] }]);
+      const keys = await access.createMediaKeys();
+      const video = document.createElement('video');
+      document.body.append(video);
+      await video.setMediaKeys(keys);
+      for (let track = 0; track < 3; track++) {
+        const source = new MediaSource();
+        const open = new Promise((resolve) => source.addEventListener('sourceopen', resolve, { once: true }));
+        video.src = URL.createObjectURL(source);
+        await open;
+        source.addSourceBuffer('video/mp4; codecs="avc1.42E01E"');
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+      window.swapResult = video.mediaKeys === keys ? 'kept' : 'lost';
+    } catch (e) {
+      window.swapResult = 'error: ' + e;
+    }
+  })(), 'started'`);
+  await expect.poll(() => evaluate(page, 'swapResult'), { timeout: 30_000 }).toBe('kept');
+  await page.waitForTimeout(1000);
+  expect(warnings).toEqual([]);
+});

@@ -60,6 +60,7 @@ export class MediaHost {
   #send;
   #soundAllowed;
   #eme;
+  #releasing = new Set();
 
   // `layer` is the element that holds the videos, under the canvas.
   // `soundAllowed`: the embedder knows autoplay with sound is permitted (a
@@ -172,6 +173,10 @@ export class MediaHost {
     player.video.pause();
     player.video.removeAttribute('src');
     player.video.load();
+    // A MediaKeys serves one element at a time: a page that moves on to its next
+    // track reuses its MediaKeys on a new element, which fails until this one
+    // lets go (after unloading: browsers refuse while media is loaded).
+    if (player.video.mediaKeys) this.#releasing.add(this.#releaseKeys(player.video));
     if (player.objectUrl) URL.revokeObjectURL(player.objectUrl);
     player.video.remove();
   }
@@ -297,9 +302,25 @@ export class MediaHost {
     if (!player.wantsPlay && !video.paused) video.pause();
   }
 
+  async #releaseKeys(video) {
+    try {
+      await video.setMediaKeys(null);
+    } catch (error) {
+      console.warn('[media] releasing MediaKeys:', error);
+    }
+  }
+
   async #setMediaKeys(player, keys) {
     try {
-      await player.video.setMediaKeys(keys ? await this.#eme?.mediaKeys(keys) : null);
+      const mediaKeys = keys ? await this.#eme?.mediaKeys(keys) : null;
+      if (mediaKeys) {
+        for (const other of this.#players.values()) {
+          if (other !== player && other.video.mediaKeys === mediaKeys) this.#releasing.add(this.#releaseKeys(other.video));
+        }
+        await Promise.all(this.#releasing);
+        this.#releasing.clear();
+      }
+      await player.video.setMediaKeys(mediaKeys);
     } catch (error) {
       console.warn(`[media] setMediaKeys on video ${player.id}:`, error);
     }
