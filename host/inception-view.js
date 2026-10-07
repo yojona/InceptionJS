@@ -109,6 +109,7 @@ export class InceptionView extends HTMLElement {
     this.#media = new MediaHost(this.#mediaLayer, (command, args) => this.#runtime.send(command, args), { soundAllowed });
     this.#runtime.onEngineEvent = (name, data) => {
       if (name === 'cursor') this.#canvas.style.cursor = data.cursor;
+      if (name === 'fullscreen') this.#setFullscreen(data.active);
       if (name.startsWith('media.')) this.#media.handleEvent(name, data);
     };
     this.#runtime.onMediaAppend = ({ id, sb, seq, bytes }) => this.#media.append(id, sb, seq, bytes);
@@ -133,11 +134,28 @@ export class InceptionView extends HTMLElement {
     attachInput(this, this.#canvas, (command, args) => this.#runtime.send(command, args));
     if (document.activeElement === this) this.#runtime.send('focus', { focused: true });
 
+    document.addEventListener('fullscreenchange', () => {
+      if (document.fullscreenElement !== this) this.#runtime.send('fullscreen.changed', { active: false });
+      this.dispatchEvent(new CustomEvent('fullscreen', { detail: { active: document.fullscreenElement === this } }));
+    });
+
     new ResizeObserver(() => {
       const size = this.#cssSize();
       this.#runtime.send('resize', { ...size, deviceScaleFactor: devicePixelRatio });
     }).observe(this);
     return ready;
+  }
+
+  // The page asked for fullscreen (or to leave it); the view element itself
+  // goes fullscreen in the host page.
+  async #setFullscreen(active) {
+    try {
+      if (active && document.fullscreenElement !== this) await this.requestFullscreen();
+      if (!active && document.fullscreenElement === this) await document.exitFullscreen();
+      if (active) this.#runtime.send('fullscreen.changed', { active: true });
+    } catch (error) {
+      this.#runtime.send('fullscreen.changed', { active: false, error: String(error?.message ?? error) });
+    }
   }
 
   #createServer() {
