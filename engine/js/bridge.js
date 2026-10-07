@@ -7,7 +7,7 @@ addToLibrary({
     postMessage({ inception: UTF8ToString(json) });
   },
 
-  $inceptionBridgeInstall__deps: ['$stringToNewUTF8', 'free', 'inception_loop_schedule'],
+  $inceptionBridgeInstall__deps: ['$stringToNewUTF8', 'malloc', 'free', 'inception_loop_schedule'],
   $inceptionBridgeInstall__postset: 'inceptionBridgeInstall();',
   $inceptionBridgeInstall: () => {
     if (!ENVIRONMENT_IS_PTHREAD) return;
@@ -21,6 +21,18 @@ addToLibrary({
     };
     self.addEventListener('error', (e) => crashed(e.error, e.message));
     self.addEventListener('unhandledrejection', (e) => crashed(e.reason, 'unhandled rejection'));
+    // A file from the host's picker; "file.chosen" follows on the same port.
+    self.addEventListener('message', (e) => {
+      const file = e.data?.inceptionFile;
+      if (!file) return;
+      const bytes = new Uint8Array(file.bytes);
+      const name = stringToNewUTF8(file.name);
+      const data = _malloc(Math.max(bytes.length, 1));
+      HEAPU8.set(bytes, data);
+      Module._inception_file_store(name, data, bytes.length);
+      _free(data);
+      _free(name);
+    });
     self.addEventListener('message', (e) => {
       const json = e.data?.inception;
       if (typeof json !== 'string') return;

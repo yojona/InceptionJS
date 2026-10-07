@@ -7,6 +7,8 @@
 #include "Element.h"
 #include "NodeDocument.h"
 #include "Exception.h"
+#include "FileChooser.h"
+#include "PopupMenuClient.h"
 #include "DocumentLoader.h"
 #include "FrameLoader.h"
 #include "LocalFrameInlines.h"
@@ -18,12 +20,20 @@
 #include "SharedBuffer.h"
 #include "UserAgent.h"
 #include "bridge/Bridge.h"
+#include "view/SelectMenu.h"
 #include "view/View.h"
 #include "wasm/GuestWasm.h"
 #include <JavaScriptCore/ConsoleTypes.h>
+#include <emscripten/em_macros.h>
+#include <wtf/FileHandle.h>
+#include <wtf/FileSystem.h>
+#include <wtf/NeverDestroyed.h>
+#include <wtf/text/MakeString.h>
 
 namespace Inception {
 using namespace WebCore;
+
+void runInjectedScript(LocalFrame&, DOMWrapperWorld&);
 
 ChromeClientImpl::ChromeClientImpl(View& view)
     : m_view(view)
@@ -32,6 +42,90 @@ ChromeClientImpl::ChromeClientImpl(View& view)
     registerCommand("fullscreen.changed"_s, [this](JSON::Object& args) {
         hostFullscreenChanged(args.getBoolean("active"_s).value_or(false), args.getString("error"_s));
     });
+    // {cancelled}
+    registerCommand("file.chosen"_s, [this](JSON::Object& args) {
+        filesChosen(args.getBoolean("cancelled"_s).value_or(false));
+    });
+    SelectMenu::registerCommands();
+}
+
+static Ref<JSON::Object> dialogData(LocalFrame& frame, const String& message)
+{
+    auto data = JSON::Object::create();
+    data->setString("message"_s, message);
+    data->setString("url"_s, frame.document() ? frame.document()->url().string() : String());
+    return data;
+}
+
+void ChromeClientImpl::runJavaScriptAlert(LocalFrame& frame, const String& message)
+{
+    askHost("alert"_s, dialogData(frame, message));
+}
+
+bool ChromeClientImpl::runJavaScriptConfirm(LocalFrame& frame, const String& message)
+{
+    auto reply = askHost("confirm"_s, dialogData(frame, message));
+    return reply && reply->asBoolean().value_or(false);
+}
+
+bool ChromeClientImpl::runJavaScriptPrompt(LocalFrame& frame, const String& message, const String& defaultValue, String& result)
+{
+    auto data = dialogData(frame, message);
+    data->setString("defaultValue"_s, defaultValue);
+    auto reply = askHost("prompt"_s, WTF::move(data));
+    if (!reply || reply->type() != JSON::Value::Type::String)
+        return false;
+    result = reply->asString();
+    return true;
+}
+
+bool ChromeClientImpl::runBeforeUnloadConfirmPanel(String&& message, LocalFrame& frame)
+{
+    auto reply = askHost("beforeunload"_s, dialogData(frame, message));
+    return !reply || reply->asBoolean().value_or(true);
+}
+
+RefPtr<PopupMenu> ChromeClientImpl::createPopupMenu(PopupMenuClient& client) const
+{
+    return SelectMenu::create(client);
+}
+
+// Files the host has copied in for the pending chooser.
+static Vector<String>& receivedFiles()
+{
+    static NeverDestroyed<Vector<String>> files;
+    return files;
+}
+
+void ChromeClientImpl::runOpenPanel(LocalFrame&, FileChooser& chooser)
+{
+    if (m_fileChooser)
+        m_fileChooser->cancelFileChoosing();
+    m_fileChooser = &chooser;
+    receivedFiles().clear();
+    auto& settings = chooser.settings();
+    auto data = JSON::Object::create();
+    data->setBoolean("multiple"_s, settings.allowsMultipleFiles);
+    data->setBoolean("directory"_s, settings.allowsDirectories);
+    auto accept = JSON::Array::create();
+    for (auto& type : settings.acceptMIMETypes)
+        accept->pushString(type);
+    for (auto& extension : settings.acceptFileExtensions)
+        accept->pushString(extension);
+    data->setArray("accept"_s, WTF::move(accept));
+    emitEvent("file.choose"_s, WTF::move(data));
+}
+
+void ChromeClientImpl::filesChosen(bool cancelled)
+{
+    RefPtr chooser = std::exchange(m_fileChooser, nullptr);
+    auto files = std::exchange(receivedFiles(), { });
+    if (!chooser)
+        return;
+    if (cancelled || files.isEmpty())
+        chooser->cancelFileChoosing();
+    else
+        chooser->chooseFiles(files);
 }
 
 void ChromeClientImpl::enterFullScreenForElement(Element& element, HTMLMediaElementEnums::VideoFullscreenMode mode, CompletionHandler<void(ExceptionOr<void>)>&& willEnter, CompletionHandler<bool(bool)>&& didEnter)
@@ -228,6 +322,7 @@ FrameLoaderClientImpl::FrameLoaderClientImpl(FrameLoader& loader, LocalFrame& fr
 void FrameLoaderClientImpl::dispatchDidClearWindowObjectInWorld(DOMWrapperWorld& world)
 {
     GuestWasm::installInWindow(m_frame.get(), world);
+    runInjectedScript(m_frame.get(), world);
 }
 
 bool FrameLoaderClientImpl::isMainFrame() const
@@ -335,3 +430,20 @@ void FrameLoaderClientImpl::dispatchDidFinishLoad()
 }
 
 } // namespace Inception
+
+// One file from the host's picker (bridge.js): written under /tmp so File
+// objects read it like any other file.
+extern "C" EMSCRIPTEN_KEEPALIVE void inception_file_store(const char* name, const uint8_t* data, size_t length)
+{
+    using namespace Inception;
+    static unsigned lastBatch;
+    auto directory = makeString("/tmp/chosen/"_s, ++lastBatch);
+    FileSystem::makeAllDirectories(directory);
+    auto path = FileSystem::pathByAppendingComponent(directory, FileSystem::pathFileName(String::fromUTF8(name)));
+    auto handle = FileSystem::openFile(path, FileSystem::FileOpenMode::Truncate);
+    if (!handle)
+        return;
+    if (handle.write({ data, length }) != std::optional<uint64_t> { length })
+        return;
+    receivedFiles().append(path);
+}
