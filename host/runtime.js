@@ -24,22 +24,26 @@ export class EngineRuntime extends EventTarget {
       throw new Error('InceptionJS needs a cross-origin isolated page (COOP: same-origin, COEP: require-corp)');
     const { default: createEngine } = await import(this.engineUrl);
     const started = new Promise((resolve) => this.addEventListener('started', resolve, { once: true }));
-    this.#module = await createEngine({
-      locateFile: (path) => new URL(path, this.engineUrl).href,
-      print: (text) => console.log('[engine]', text),
-      printErr: (text) => console.warn('[engine]', text),
-    });
-    // With the engine's main() proxied to a pthread, that pthread's worker is
-    // the only running one once the module is up.
-    const { PThread } = this.#module;
-    const deadline = performance.now() + 10000;
-    while (!PThread.runningWorkers.length) {
-      if (performance.now() > deadline) throw new Error('engine thread did not start');
-      await new Promise((resolve) => setTimeout(resolve, 10));
+    // The engine's thread announces itself as soon as it runs, possibly before
+    // the module promise settles, so listeners go on each worker as it is
+    // created rather than afterwards.
+    const NativeWorker = globalThis.Worker;
+    const runtime = this;
+    globalThis.Worker = class extends NativeWorker {
+      constructor(...args) {
+        super(...args);
+        this.addEventListener('message', (e) => runtime.#onWorkerMessage(this, e.data));
+      }
+    };
+    try {
+      this.#module = await createEngine({
+        locateFile: (path) => new URL(path, this.engineUrl).href,
+        print: (text) => console.log('[engine]', text),
+        printErr: (text) => console.warn('[engine]', text),
+      });
+    } finally {
+      globalThis.Worker = NativeWorker;
     }
-    const worker = PThread.runningWorkers[0];
-    worker.addEventListener('message', (e) => this.#onWorkerMessage(worker, e.data));
-    worker.postMessage({ inception: JSON.stringify({ command: 'hello', args: {} }) });
     await started;
   }
 
@@ -56,6 +60,7 @@ export class EngineRuntime extends EventTarget {
     if (typeof data.inception !== 'string') return;
     const { event, data: payload } = JSON.parse(data.inception);
     if (event === 'started') {
+      if (this.#worker) return;
       if (payload.version !== BRIDGE_VERSION)
         throw new Error(`engine speaks bridge v${payload.version}, host speaks v${BRIDGE_VERSION}`);
       this.#worker = worker;
