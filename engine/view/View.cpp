@@ -126,8 +126,8 @@ void View::frame()
     if (!frameView)
         return;
 
-    if (!m_paintedFrames++)
-        report("info"_s, makeString("first frame "_s, m_cssSize.width(), 'x', m_cssSize.height(), " @"_s, m_deviceScaleFactor));
+    if (m_paintedFrames++ < 3)
+        report("debug"_s, makeString("frame "_s, m_paintedFrames, ' ', m_cssSize.width(), 'x', m_cssSize.height(), " @"_s, m_deviceScaleFactor));
 
     Renderer::singleton().paintFrame([&](GraphicsContext& context) {
         context.scale(m_deviceScaleFactor);
