@@ -1,0 +1,633 @@
+Platform integration: theme, crypto, accessibility, input, screen, editing.
+
+Form controls, scrollbars and media controls use WebCore's own Adwaita theme.
+WebCrypto uses the OpenSSL implementation. The accessibility tree is built as
+on every port and read on demand by the embedder; platform notifications are
+dropped. Pasteboard and editor reuse the PasteboardStrategy-based
+implementation. Keyboard modifiers are the ones the embedder sets; screen
+geometry is pushed from the host page. A Linux WebKit user agent and a built-in
+MIME table complete the platform layer.
+
+diff --git a/Source/WebCore/PlatformEmscripten.cmake b/Source/WebCore/PlatformEmscripten.cmake
+index 640e5c8..2af0ccd 100644
+--- a/Source/WebCore/PlatformEmscripten.cmake
++++ b/Source/WebCore/PlatformEmscripten.cmake
+@@ -1,8 +1,10 @@
+ # WebCore for the Emscripten port: curl networking, Skia graphics (GPU through
+ # WebGL2, CPU raster as fallback), image decoders, fontconfig fonts.
+ 
++include(platform/Adwaita.cmake)
+ include(platform/Curl.cmake)
+ include(platform/ImageDecoders.cmake)
++include(platform/OpenSSL.cmake)
+ include(platform/Skia.cmake)
+ 
+ # Static libcurl does not carry its own dependencies into the final link.
+@@ -32,6 +34,18 @@ list(APPEND WebCore_PRIVATE_INCLUDE_DIRECTORIES
+ )
+ 
+ list(APPEND WebCore_SOURCES
++    accessibility/emscripten/AXObjectCacheEmscripten.cpp
++    accessibility/emscripten/AccessibilityObjectEmscripten.cpp
++
++    editing/libwpe/EditorLibWPE.cpp
++
++    platform/emscripten/MIMETypeRegistryEmscripten.cpp
++    platform/emscripten/PlatformKeyboardEventEmscripten.cpp
++    platform/emscripten/PlatformScreenEmscripten.cpp
++    platform/emscripten/UserAgentEmscripten.cpp
++
++    platform/libwpe/PasteboardLibWPE.cpp
++
+     platform/graphics/PlatformDisplay.cpp
+ 
+     platform/graphics/egl/GLContextWrapper.cpp
+@@ -59,6 +73,8 @@ list(APPEND WebCore_SOURCES
+ )
+ 
+ list(APPEND WebCore_PRIVATE_FRAMEWORK_HEADERS
++    platform/emscripten/PlatformScreenEmscripten.h
++
+     platform/graphics/emscripten/PlatformDisplayEmscripten.h
+     platform/graphics/emscripten/WebGLContextEmscripten.h
+ )
+diff --git a/Source/WebCore/accessibility/AXCoreObject.h b/Source/WebCore/accessibility/AXCoreObject.h
+index fc373ce..de6fadc 100644
+--- a/Source/WebCore/accessibility/AXCoreObject.h
++++ b/Source/WebCore/accessibility/AXCoreObject.h
+@@ -78,7 +78,7 @@ class AccessibilityObjectAtspi;
+ 
+ typedef WebCore::AccessibilityObjectAtspi AccessibilityObjectWrapper;
+ 
+-#elif PLATFORM(PLAYSTATION) || PLATFORM(HAIKU)
++#elif PLATFORM(PLAYSTATION) || PLATFORM(HAIKU) || PLATFORM(EMSCRIPTEN)
+ class AccessibilityObjectWrapper : public RefCounted<AccessibilityObjectWrapper> { };
+ #else
+ class AccessibilityObjectWrapper;
+@@ -1399,7 +1399,7 @@ private:
+     RetainPtr<WebAccessibilityObjectWrapper> m_wrapper;
+ #elif PLATFORM(WIN)
+     COMPtr<AccessibilityObjectWrapper> m_wrapper;
+-#elif PLATFORM(PLAYSTATION) || PLATFORM(HAIKU)
++#elif PLATFORM(PLAYSTATION) || PLATFORM(HAIKU) || PLATFORM(EMSCRIPTEN)
+     RefPtr<AccessibilityObjectWrapper> m_wrapper;
+ #elif USE(ATSPI)
+     RefPtr<AccessibilityObjectAtspi> m_wrapper;
+diff --git a/Source/WebCore/accessibility/emscripten/AXObjectCacheEmscripten.cpp b/Source/WebCore/accessibility/emscripten/AXObjectCacheEmscripten.cpp
+new file mode 100644
+index 0000000..c6a5c6b
+--- /dev/null
++++ b/Source/WebCore/accessibility/emscripten/AXObjectCacheEmscripten.cpp
+@@ -0,0 +1,69 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "AXObjectCache.h"
++
++#include "AccessibilityObject.h"
++
++namespace WebCore {
++
++// The accessibility tree is read on demand by the embedder (agent snapshots);
++// nothing is pushed to a platform accessibility API, so notifications are
++// dropped here.
++
++void AXObjectCache::attachWrapper(AccessibilityObject& object)
++{
++    object.setWrapper(adoptRef(*new AccessibilityObjectWrapper()).ptr());
++}
++
++void AXObjectCache::detachWrapper(AXCoreObject*, AccessibilityDetachmentType)
++{
++}
++
++void AXObjectCache::postPlatformNotification(AccessibilityObject&, AXNotification)
++{
++}
++
++void AXObjectCache::nodeTextChangePlatformNotification(AccessibilityObject*, AXTextChange, unsigned, const String&)
++{
++}
++
++void AXObjectCache::frameLoadingEventPlatformNotification(RenderView*, AXLoadingEvent)
++{
++}
++
++void AXObjectCache::handleScrolledToAnchor(const Node&)
++{
++}
++
++void AXObjectCache::platformHandleFocusedUIElementChanged(Element*, Element*)
++{
++}
++
++void AXObjectCache::platformPerformDeferredCacheUpdate()
++{
++}
++
++} // namespace WebCore
+diff --git a/Source/WebCore/accessibility/emscripten/AccessibilityObjectEmscripten.cpp b/Source/WebCore/accessibility/emscripten/AccessibilityObjectEmscripten.cpp
+new file mode 100644
+index 0000000..f8f0083
+--- /dev/null
++++ b/Source/WebCore/accessibility/emscripten/AccessibilityObjectEmscripten.cpp
+@@ -0,0 +1,44 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "AccessibilityObject.h"
++
++namespace WebCore {
++
++void AccessibilityObject::detachPlatformWrapper(AccessibilityDetachmentType)
++{
++}
++
++bool AccessibilityObject::accessibilityIgnoreAttachment() const
++{
++    return false;
++}
++
++AccessibilityObjectInclusion AccessibilityObject::accessibilityPlatformIncludesObject() const
++{
++    return AccessibilityObjectInclusion::DefaultBehavior;
++}
++
++} // namespace WebCore
+diff --git a/Source/WebCore/editing/libwpe/EditorLibWPE.cpp b/Source/WebCore/editing/libwpe/EditorLibWPE.cpp
+index d0a3d5c..61a92bb 100644
+--- a/Source/WebCore/editing/libwpe/EditorLibWPE.cpp
++++ b/Source/WebCore/editing/libwpe/EditorLibWPE.cpp
+@@ -26,7 +26,7 @@
+ #include "config.h"
+ #include "Editor.h"
+ 
+-#if USE(LIBWPE)
++#if USE(LIBWPE) || PLATFORM(EMSCRIPTEN)
+ 
+ #include "DocumentFragment.h"
+ #include "FrameDestructionObserverInlines.h"
+@@ -102,4 +102,4 @@ void Editor::platformPasteFont()
+ 
+ } // namespace WebCore
+ 
+-#endif // USE(LIBWPE)
++#endif // USE(LIBWPE) || PLATFORM(EMSCRIPTEN)
+diff --git a/Source/WebCore/platform/Pasteboard.h b/Source/WebCore/platform/Pasteboard.h
+index 11cef75..5079f3b 100644
+--- a/Source/WebCore/platform/Pasteboard.h
++++ b/Source/WebCore/platform/Pasteboard.h
+@@ -107,7 +107,7 @@ struct PasteboardWebContent {
+     bool canSmartCopyOrDelete;
+     String text;
+     String markup;
+-#elif USE(LIBWPE)
++#elif USE(LIBWPE) || PLATFORM(EMSCRIPTEN)
+     String text;
+     String markup;
+ #endif
+diff --git a/Source/WebCore/platform/PlatformKeyboardEvent.cpp b/Source/WebCore/platform/PlatformKeyboardEvent.cpp
+index a8b28f8..cd840aa 100644
+--- a/Source/WebCore/platform/PlatformKeyboardEvent.cpp
++++ b/Source/WebCore/platform/PlatformKeyboardEvent.cpp
+@@ -60,7 +60,7 @@ void PlatformKeyboardEvent::setCurrentModifierState(OptionSet<Modifier> modifier
+     s_currentModifiers = modifiers;
+ }
+ 
+-#if PLATFORM(GTK) || USE(LIBWPE) || ENABLE(WPE_PLATFORM)
++#if PLATFORM(GTK) || USE(LIBWPE) || ENABLE(WPE_PLATFORM) || PLATFORM(EMSCRIPTEN)
+ OptionSet<PlatformEvent::Modifier> PlatformKeyboardEvent::currentStateOfModifierKeys()
+ {
+     if (s_currentModifiers)
+diff --git a/Source/WebCore/platform/emscripten/MIMETypeRegistryEmscripten.cpp b/Source/WebCore/platform/emscripten/MIMETypeRegistryEmscripten.cpp
+new file mode 100644
+index 0000000..cf26dfe
+--- /dev/null
++++ b/Source/WebCore/platform/emscripten/MIMETypeRegistryEmscripten.cpp
+@@ -0,0 +1,108 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "MIMETypeRegistry.h"
++
++namespace WebCore {
++
++// There is no system MIME database inside the engine. This covers what file:
++// and blob: loads and downloads need; the first entry for a type is its
++// preferred extension.
++static std::span<const TypeExtensionPair> extensionTable()
++{
++    static const TypeExtensionPair table[] = {
++        { "text/html"_s, "html"_s },
++        { "text/html"_s, "htm"_s },
++        { "application/xhtml+xml"_s, "xhtml"_s },
++        { "text/css"_s, "css"_s },
++        { "text/javascript"_s, "js"_s },
++        { "text/javascript"_s, "mjs"_s },
++        { "application/json"_s, "json"_s },
++        { "application/wasm"_s, "wasm"_s },
++        { "text/plain"_s, "txt"_s },
++        { "text/plain"_s, "text"_s },
++        { "text/csv"_s, "csv"_s },
++        { "text/markdown"_s, "md"_s },
++        { "text/xml"_s, "xml"_s },
++        { "application/pdf"_s, "pdf"_s },
++        { "application/zip"_s, "zip"_s },
++        { "image/png"_s, "png"_s },
++        { "image/jpeg"_s, "jpg"_s },
++        { "image/jpeg"_s, "jpeg"_s },
++        { "image/gif"_s, "gif"_s },
++        { "image/webp"_s, "webp"_s },
++        { "image/avif"_s, "avif"_s },
++        { "image/svg+xml"_s, "svg"_s },
++        { "image/bmp"_s, "bmp"_s },
++        { "image/x-icon"_s, "ico"_s },
++        { "font/woff2"_s, "woff2"_s },
++        { "font/woff"_s, "woff"_s },
++        { "font/ttf"_s, "ttf"_s },
++        { "font/otf"_s, "otf"_s },
++        { "video/mp4"_s, "mp4"_s },
++        { "video/webm"_s, "webm"_s },
++        { "audio/mpeg"_s, "mp3"_s },
++        { "audio/mp4"_s, "m4a"_s },
++        { "audio/ogg"_s, "ogg"_s },
++        { "audio/wav"_s, "wav"_s },
++        { "audio/webm"_s, "weba"_s },
++    };
++    return table;
++}
++
++String MIMETypeRegistry::mimeTypeForExtension(StringView extension)
++{
++    for (auto& entry : extensionTable()) {
++        if (equalIgnoringASCIICase(extension, entry.extension))
++            return entry.type;
++    }
++    return emptyString();
++}
++
++bool MIMETypeRegistry::isApplicationPluginMIMEType(const String&)
++{
++    return false;
++}
++
++String MIMETypeRegistry::preferredExtensionForMIMEType(const String& mimeType)
++{
++    for (auto& entry : extensionTable()) {
++        if (equalIgnoringASCIICase(mimeType, entry.type))
++            return entry.extension;
++    }
++    return emptyString();
++}
++
++Vector<String> MIMETypeRegistry::extensionsForMIMEType(const String& mimeType)
++{
++    Vector<String> extensions;
++    for (auto& entry : extensionTable()) {
++        if (equalIgnoringASCIICase(mimeType, entry.type))
++            extensions.append(entry.extension);
++    }
++    return extensions;
++}
++
++} // namespace WebCore
+diff --git a/Source/WebCore/platform/emscripten/PlatformKeyboardEventEmscripten.cpp b/Source/WebCore/platform/emscripten/PlatformKeyboardEventEmscripten.cpp
+new file mode 100644
+index 0000000..f52bc41
+--- /dev/null
++++ b/Source/WebCore/platform/emscripten/PlatformKeyboardEventEmscripten.cpp
+@@ -0,0 +1,46 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "PlatformKeyboardEvent.h"
++
++namespace WebCore {
++
++// The host delivers DOM keydown events, which carry both the key and the text it
++// produces. WebCore wants a RawKeyDown without text followed by a Char with it.
++void PlatformKeyboardEvent::disambiguateKeyDownEvent(Type type, bool backwardCompatibilityMode)
++{
++    ASSERT(m_type == Type::KeyDown);
++    m_type = type;
++    if (backwardCompatibilityMode)
++        return;
++
++    if (type == Type::RawKeyDown) {
++        m_text = { };
++        m_unmodifiedText = { };
++    } else
++        m_keyIdentifier = { };
++}
++
++} // namespace WebCore
+diff --git a/Source/WebCore/platform/emscripten/PlatformScreenEmscripten.cpp b/Source/WebCore/platform/emscripten/PlatformScreenEmscripten.cpp
+new file mode 100644
+index 0000000..957017d
+--- /dev/null
++++ b/Source/WebCore/platform/emscripten/PlatformScreenEmscripten.cpp
+@@ -0,0 +1,83 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "PlatformScreen.h"
++#include "PlatformScreenEmscripten.h"
++
++#include "DestinationColorSpace.h"
++#include "FloatRect.h"
++
++namespace WebCore {
++
++static FloatRect s_screen { 0, 0, 1920, 1080 };
++static FloatRect s_available { 0, 0, 1920, 1080 };
++
++void setScreenGeometry(const FloatRect& screen, const FloatRect& available)
++{
++    s_screen = screen;
++    s_available = available;
++}
++
++int screenDepth(Widget*)
++{
++    return 24;
++}
++
++int screenDepthPerComponent(Widget*)
++{
++    return 8;
++}
++
++bool screenIsMonochrome(Widget*)
++{
++    return false;
++}
++
++bool screenHasInvertedColors()
++{
++    return false;
++}
++
++FloatRect screenRect(Widget*)
++{
++    return s_screen;
++}
++
++FloatRect screenAvailableRect(Widget*)
++{
++    return s_available;
++}
++
++bool screenSupportsExtendedColor(Widget*)
++{
++    return false;
++}
++
++DestinationColorSpace screenColorSpace(Widget*)
++{
++    return DestinationColorSpace::SRGB();
++}
++
++} // namespace WebCore
+diff --git a/Source/WebCore/platform/emscripten/PlatformScreenEmscripten.h b/Source/WebCore/platform/emscripten/PlatformScreenEmscripten.h
+new file mode 100644
+index 0000000..6cd65b9
+--- /dev/null
++++ b/Source/WebCore/platform/emscripten/PlatformScreenEmscripten.h
+@@ -0,0 +1,34 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#include "FloatRect.h"
++
++namespace WebCore {
++
++// Screen geometry comes from the host page's window.screen, in CSS pixels.
++WEBCORE_EXPORT void setScreenGeometry(const FloatRect& screen, const FloatRect& available);
++
++} // namespace WebCore
+diff --git a/Source/WebCore/platform/emscripten/UserAgentEmscripten.cpp b/Source/WebCore/platform/emscripten/UserAgentEmscripten.cpp
+new file mode 100644
+index 0000000..af20fd3
+--- /dev/null
++++ b/Source/WebCore/platform/emscripten/UserAgentEmscripten.cpp
+@@ -0,0 +1,55 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "UserAgent.h"
++
++#include <wtf/NeverDestroyed.h>
++#include <wtf/text/MakeString.h>
++
++namespace WebCore {
++
++// A Linux WebKit browser's user agent. Sites decide which media pipeline and
++// which code to serve from it; this one gets the same pages other WebKit
++// browsers on Linux get, which is what the engine actually is. The "605.1.15"
++// and "Version/" tokens are frozen values sites expect from WebKit.
++static const String& baseUserAgent()
++{
++    static NeverDestroyed<String> userAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"_s);
++    return userAgent;
++}
++
++String standardUserAgent(const String& applicationName, const String& applicationVersion)
++{
++    if (applicationName.isEmpty())
++        return baseUserAgent();
++    return makeString(baseUserAgent(), ' ', applicationName, '/', applicationVersion.isEmpty() ? "1.0"_s : applicationVersion);
++}
++
++String standardUserAgentForURL(const URL&)
++{
++    return baseUserAgent();
++}
++
++} // namespace WebCore
+diff --git a/Source/WebCore/platform/libwpe/PasteboardLibWPE.cpp b/Source/WebCore/platform/libwpe/PasteboardLibWPE.cpp
+index 19c4683..e3107fd 100644
+--- a/Source/WebCore/platform/libwpe/PasteboardLibWPE.cpp
++++ b/Source/WebCore/platform/libwpe/PasteboardLibWPE.cpp
+@@ -26,7 +26,7 @@
+ #include "config.h"
+ #include "Pasteboard.h"
+ 
+-#if USE(LIBWPE)
++#if USE(LIBWPE) || PLATFORM(EMSCRIPTEN)
+ 
+ #include "NotImplemented.h"
+ #include "PasteboardStrategy.h"
+@@ -162,4 +162,4 @@ void Pasteboard::write(const Color&)
+ 
+ } // namespace WebCore
+ 
+-#endif // USE(LIBWPE)
++#endif // USE(LIBWPE) || PLATFORM(EMSCRIPTEN)
+diff --git a/Source/cmake/OptionsEmscripten.cmake b/Source/cmake/OptionsEmscripten.cmake
+index df4b9bb..cc511cc 100644
+--- a/Source/cmake/OptionsEmscripten.cmake
++++ b/Source/cmake/OptionsEmscripten.cmake
+@@ -82,6 +82,8 @@ if (ENABLE_WEBCORE)
+     SET_AND_EXPOSE_TO_BUILD(USE_CURL ON)
+     SET_AND_EXPOSE_TO_BUILD(USE_OPENSSL ON)
+     SET_AND_EXPOSE_TO_BUILD(USE_HARFBUZZ ON)
++    # Form controls, scrollbars and media controls drawn by WebCore itself.
++    SET_AND_EXPOSE_TO_BUILD(USE_THEME_ADWAITA ON)
+ 
+     find_package(CURL 7.85.0 REQUIRED)
+     find_package(Freetype 2.9.0 REQUIRED)
