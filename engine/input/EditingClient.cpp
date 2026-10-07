@@ -8,7 +8,7 @@
 #include "LocalFrame.h"
 #include "Node.h"
 #include "PlatformKeyboardEvent.h"
-#include "TextCheckingRequest.h"
+#include "TextChecking.h"
 #include <wtf/TZoneMallocInlines.h>
 
 namespace Inception {

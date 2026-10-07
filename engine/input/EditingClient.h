@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DOMPasteAccess.h"
 #include "EditorClient.h"
 #include "TextCheckerClient.h"
 #include "UndoStep.h"
