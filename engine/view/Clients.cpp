@@ -4,7 +4,7 @@
 #include "Color.h"
 #include "DocumentLoader.h"
 #include "FrameLoader.h"
-#include "LocalFrame.h"
+#include "LocalFrameInlines.h"
 #include "LocalFrameView.h"
 #include "MIMETypeRegistry.h"
 #include "ResourceError.h"

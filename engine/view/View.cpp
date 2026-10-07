@@ -6,7 +6,7 @@
 #include "FrameLoadRequest.h"
 #include "FrameLoader.h"
 #include "GraphicsContext.h"
-#include "LocalFrame.h"
+#include "LocalFrameInlines.h"
 #include "LocalFrameView.h"
 #include "Page.h"
 #include "PageConfiguration.h"
