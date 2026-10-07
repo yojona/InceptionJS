@@ -3,6 +3,9 @@
 
 #include "Color.h"
 #include "Cursor.h"
+#include "DocumentFullscreen.h"
+#include "Element.h"
+#include "Exception.h"
 #include "DocumentLoader.h"
 #include "FrameLoader.h"
 #include "LocalFrameInlines.h"
@@ -20,6 +23,62 @@
 
 namespace Inception {
 using namespace WebCore;
+
+ChromeClientImpl::ChromeClientImpl(View& view)
+    : m_view(view)
+{
+    // {active, error?}
+    registerCommand("fullscreen.changed"_s, [this](JSON::Object& args) {
+        hostFullscreenChanged(args.getBoolean("active"_s).value_or(false), args.getString("error"_s));
+    });
+}
+
+void ChromeClientImpl::enterFullScreenForElement(Element&, HTMLMediaElementEnums::VideoFullscreenMode, CompletionHandler<void(ExceptionOr<void>)>&& willEnter, CompletionHandler<bool(bool)>&& didEnter)
+{
+    if (m_willEnterFullscreen)
+        m_willEnterFullscreen(Exception { ExceptionCode::TypeError, "Another fullscreen request is pending"_s });
+    if (m_didEnterFullscreen)
+        m_didEnterFullscreen(false);
+    m_willEnterFullscreen = WTF::move(willEnter);
+    m_didEnterFullscreen = WTF::move(didEnter);
+    auto data = JSON::Object::create();
+    data->setBoolean("active"_s, true);
+    emitEvent("fullscreen"_s, WTF::move(data));
+}
+
+void ChromeClientImpl::exitFullScreenForElement(Element*, CompletionHandler<void()>&& completion)
+{
+    if (m_hostFullscreen) {
+        auto data = JSON::Object::create();
+        data->setBoolean("active"_s, false);
+        emitEvent("fullscreen"_s, WTF::move(data));
+    }
+    completion();
+}
+
+void ChromeClientImpl::hostFullscreenChanged(bool active, const String& error)
+{
+    bool wasActive = std::exchange(m_hostFullscreen, active);
+    if (m_willEnterFullscreen) {
+        if (active) {
+            m_willEnterFullscreen({ });
+            if (m_didEnterFullscreen)
+                m_didEnterFullscreen(true);
+        } else {
+            m_willEnterFullscreen(Exception { ExceptionCode::TypeError, error.isEmpty() ? "Fullscreen request denied"_s : error });
+            if (m_didEnterFullscreen)
+                m_didEnterFullscreen(false);
+        }
+        return;
+    }
+    // The person left fullscreen in the host (Escape, a browser control).
+    if (wasActive && !active) {
+        if (RefPtr frame = m_view.mainFrame()) {
+            if (RefPtr document = frame->document(); document && document->fullscreen().fullscreenElement())
+                document->fullscreen().fullyExitFullscreen();
+        }
+    }
+}
 
 FloatRect ChromeClientImpl::windowRect() const
 {

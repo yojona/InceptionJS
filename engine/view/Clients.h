@@ -14,10 +14,7 @@ class View;
 
 class ChromeClientImpl final : public WebCore::EmptyChromeClient {
 public:
-    explicit ChromeClientImpl(View& view)
-        : m_view(view)
-    {
-    }
+    explicit ChromeClientImpl(View&);
 
 private:
     WebCore::FloatRect windowRect() const final;
@@ -31,12 +28,22 @@ private:
 
     void addMessageToConsole(JSC::MessageSource, JSC::MessageLevel, const String& message, unsigned lineNumber, unsigned columnNumber, const String& sourceID) final;
 
+    // Fullscreen is the host's: the view element itself goes fullscreen, and
+    // the host reports back with "fullscreen.changed".
+    bool supportsFullScreenForElement(const WebCore::Element&, bool) final { return true; }
+    void enterFullScreenForElement(WebCore::Element&, WebCore::HTMLMediaElementEnums::VideoFullscreenMode, CompletionHandler<void(WebCore::ExceptionOr<void>)>&& willEnter, CompletionHandler<bool(bool)>&& didEnter) final;
+    void exitFullScreenForElement(WebCore::Element*, CompletionHandler<void()>&&) final;
+    void hostFullscreenChanged(bool active, const String& error);
+
     void setCursor(const WebCore::Cursor&) final;
     void setCursorHiddenUntilMouseMoves(bool) final { }
 
     bool isEmptyChromeClient() const final { return false; }
 
     String m_cursor;
+    CompletionHandler<void(WebCore::ExceptionOr<void>)> m_willEnterFullscreen;
+    CompletionHandler<bool(bool)> m_didEnterFullscreen;
+    bool m_hostFullscreen { false };
 
     View& m_view;
 };
