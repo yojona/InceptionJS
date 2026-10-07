@@ -2,7 +2,9 @@
 // a MessageChannel (a macrotask, so input and network events interleave);
 // timer turns use setTimeout, keeping only the earliest pending one.
 addToLibrary({
-  $inceptionLoop: { channel: null, posted: false, timer: 0, due: Infinity },
+  // `due` is null when no timer is armed. (Library objects are serialized into
+  // the output; Infinity would not survive that.)
+  $inceptionLoop: { channel: null, posted: false, timer: 0, due: null },
 
   inception_loop_schedule__deps: ['$inceptionLoop'],
   inception_loop_schedule: (delayMs) => {
@@ -22,11 +24,11 @@ addToLibrary({
       return;
     }
     const due = performance.now() + delayMs;
-    if (due >= loop.due) return;
+    if (loop.due !== null && due >= loop.due) return;
     clearTimeout(loop.timer);
     loop.due = due;
     loop.timer = setTimeout(() => {
-      loop.due = Infinity;
+      loop.due = null;
       Module._inception_loop_iterate();
     }, delayMs);
   },
