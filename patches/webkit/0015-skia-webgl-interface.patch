@@ -3,42 +3,42 @@ Use Skia's WebGL interface over WebGL2.
 Skia recognizes WebGL's version string and builds its WebGL interface, which
 validates against the toolchain's WebGL2 entry points. Rewriting the strings to
 look like GLES produced an interface Skia rejected; that rewriting is gone.
+glGetInternalformativ is answered from WebGL2's SAMPLES query: the toolchain
+leaves NUM_SAMPLE_COUNTS unwritten, and Skia then treats every format as
+unrenderable.
 
 diff --git a/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.cpp b/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.cpp
-index 62a9cb6..3af9207 100644
+index 62a9cb6..ab0e6b1 100644
 --- a/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.cpp
 +++ b/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.cpp
-@@ -27,62 +27,19 @@
- 
+@@ -28,7 +28,6 @@
  #if USE(SKIA)
  
--#include <GLES3/gl3.h>
+ #include <GLES3/gl3.h>
 -#include <algorithm>
--#include <cstring>
--#include <emscripten/em_js.h>
+ #include <cstring>
+ #include <emscripten/em_js.h>
  #include <emscripten/html5_webgl.h>
- 
- WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+@@ -37,12 +36,12 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
  #include <skia/gpu/ganesh/gl/GrGLAssembleInterface.h>
  WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
  
 -// WebGL2 exposes only sample counts through getInternalformatParameter, and
 -// the toolchain's GL layer has no entry point for it. Skia asks for nothing else.
--EM_JS(void, inceptionGetInternalformativ, (GLenum target, GLenum internalformat, GLenum pname, GLsizei bufSize, GLint* params), {
++// WebGL2's getInternalformatParameter answers only SAMPLES; asked for
++// NUM_SAMPLE_COUNTS, the toolchain's glGetInternalformativ writes nothing and
++// Skia reads garbage, deciding no format can be rendered to. Both queries are
++// answered from the SAMPLES list.
+ EM_JS(void, inceptionGetInternalformativ, (GLenum target, GLenum internalformat, GLenum pname, GLsizei bufSize, GLint* params), {
 -    const samples = GLctx.getInternalformatParameter(target, internalformat, 0x80A9 /* SAMPLES */);
 -    if (!samples)
 -        return;
--    if (pname == 0x9380 /* NUM_SAMPLE_COUNTS */) {
--        if (bufSize > 0)
--            HEAP32[params >> 2] = samples.length;
--        return;
--    }
--    if (pname == 0x80A9) {
--        for (let i = 0; i < Math.min(bufSize, samples.length); i++)
--            HEAP32[(params >> 2) + i] = samples[i];
--    }
--});
--
++    const samples = GLctx.getInternalformatParameter(target, internalformat, 0x80A9 /* SAMPLES */) || [];
+     if (pname == 0x9380 /* NUM_SAMPLE_COUNTS */) {
+         if (bufSize > 0)
+             HEAP32[params >> 2] = samples.length;
+@@ -56,31 +55,11 @@ EM_JS(void, inceptionGetInternalformativ, (GLenum target, GLenum internalformat,
+ 
  namespace WebCore {
  
 -// Skia classifies "OpenGL ES 3.0 (WebGL 2.0 ...)" as the WebGL standard, whose
@@ -63,17 +63,15 @@ index 62a9cb6..3af9207 100644
 -}
 -
 +// WebGL2 reports "OpenGL ES 3.0 (WebGL 2.0 ...)", which Skia recognizes and
-+// answers with its WebGL interface; the toolchain resolves every entry point
-+// that interface needs.
++// answers with its WebGL interface; the toolchain resolves the entry points
++// that interface needs, with one correction above.
  static GrGLFuncPtr getProc(void*, const char* name)
  {
 -    if (!strcmp(name, "glGetString"))
 -        return reinterpret_cast<GrGLFuncPtr>(getStringForSkia);
--    if (!strcmp(name, "glGetInternalformativ"))
--        return reinterpret_cast<GrGLFuncPtr>(inceptionGetInternalformativ);
+     if (!strcmp(name, "glGetInternalformativ"))
+         return reinterpret_cast<GrGLFuncPtr>(inceptionGetInternalformativ);
      return reinterpret_cast<GrGLFuncPtr>(emscripten_webgl_get_proc_address(name));
- }
- 
 diff --git a/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.h b/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.h
 index e38b8d4..8a9d338 100644
 --- a/Source/WebCore/platform/graphics/emscripten/SkiaGLInterfaceEmscripten.h
