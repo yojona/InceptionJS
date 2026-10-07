@@ -1,0 +1,115 @@
+import { EngineRuntime } from './runtime.js';
+import { ProtocolClient, ProtocolServer, createInPagePair } from './protocol.js';
+
+const config = { engineUrl: null, wispUrl: null, storage: null, policy: null };
+
+export const Inception = {
+  // engineUrl: URL of inception-engine.js; wispUrl: the Wisp relay (ws:// or wss://).
+  configure(options) {
+    Object.assign(config, options);
+  },
+};
+
+// Events the engine reports that the view re-dispatches as DOM events.
+const VIEW_EVENTS = ['navigate', 'title', 'loading', 'popup', 'console', 'crash'];
+
+// <inception-view src gpu="auto|on|off" muted media profile>
+//
+// A thin client: it speaks the protocol to a server bound to its own engine,
+// exactly as a remote agent would. `serve(transport)` connects more clients.
+export class InceptionView extends HTMLElement {
+  static observedAttributes = ['src'];
+
+  #runtime = null;
+  #server = null;
+  #client = null;
+  #canvas;
+  #ready = null;
+  #state = { url: '', title: '', loading: false };
+
+  constructor() {
+    super();
+    const shadow = this.attachShadow({ mode: 'open' });
+    shadow.innerHTML = `<style>
+      :host { display: block; position: relative; overflow: hidden; contain: strict; width: 800px; height: 600px; }
+      canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    </style><canvas part="screen"></canvas>`;
+    this.#canvas = shadow.querySelector('canvas');
+  }
+
+  get url() { return this.#state.url; }
+  get title() { return this.#state.title; }
+  get loading() { return this.#state.loading; }
+  get ready() { return this.#ready ??= this.#start(); }
+
+  connectedCallback() {
+    this.ready.catch((error) => this.dispatchEvent(new CustomEvent('crash', { detail: { reason: String(error?.message ?? error) } })));
+  }
+
+  attributeChangedCallback(name, previous, value) {
+    if (name === 'src' && value && value !== previous && this.#client) this.navigate(value);
+  }
+
+  async navigate(url) {
+    await this.ready;
+    return this.#client.request('view.navigate', { url });
+  }
+
+  serve(transport) {
+    return this.#server.connect(transport);
+  }
+
+  async #start() {
+    if (!config.engineUrl) throw new Error('Inception.configure({engineUrl, wispUrl}) first');
+    this.#runtime = new EngineRuntime({ engineUrl: config.engineUrl, wispUrl: config.wispUrl, canvas: this.#canvas });
+    this.#server = this.#createServer();
+    const [serverSide, clientSide] = createInPagePair();
+    this.#server.connect(serverSide);
+    this.#client = new ProtocolClient(clientSide);
+    for (const name of VIEW_EVENTS)
+      this.#client.addEventListener(name, (e) => this.dispatchEvent(new CustomEvent(name, { detail: e.detail })));
+
+    const engineReady = new Promise((resolve) => this.#runtime.addEventListener('ready', (e) => resolve(e.detail), { once: true }));
+    await this.#runtime.start();
+    await this.#client.hello();
+
+    const { width, height } = this.#cssSize();
+    const gpu = this.getAttribute('gpu') ?? 'auto';
+    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', url: this.getAttribute('src') ?? '' });
+    const ready = await engineReady;
+    if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');
+    this.dataset.renderer = ready.renderer;
+
+    new ResizeObserver(() => {
+      const size = this.#cssSize();
+      this.#runtime.send('resize', { ...size, deviceScaleFactor: devicePixelRatio });
+    }).observe(this);
+    return ready;
+  }
+
+  #createServer() {
+    const server = new ProtocolServer(['view']);
+    const runtime = this.#runtime;
+    server.handle('view.navigate', ({ url }) => {
+      if (typeof url !== 'string' || !url) throw new TypeError('url must be a non-empty string');
+      runtime.send('load', { url });
+    });
+    server.handle('view.state', () => ({ ...this.#state }));
+    for (const name of VIEW_EVENTS) {
+      runtime.addEventListener(name, (e) => {
+        if (name === 'navigate') this.#state.url = e.detail.url;
+        if (name === 'title') this.#state.title = e.detail.title;
+        if (name === 'loading') this.#state.loading = e.detail.loading;
+        server.emit(name, e.detail);
+      });
+    }
+    return server;
+  }
+
+  #cssSize() {
+    const rect = this.getBoundingClientRect();
+    return { width: Math.max(1, Math.round(rect.width)), height: Math.max(1, Math.round(rect.height)) };
+  }
+}
+
+customElements.define('inception-view', InceptionView);
