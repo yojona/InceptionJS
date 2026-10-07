@@ -16,6 +16,7 @@
 #include "Settings.h"
 #include "bridge/Bridge.h"
 #include "gfx/Renderer.h"
+#include "input/EditorClient.h"
 #include "net/Session.h"
 #include "storage/IndexedDB.h"
 #include "view/Clients.h"
@@ -52,6 +53,7 @@ View::View(IntSize cssSize, float deviceScaleFactor)
     configuration.chromeClient = makeUniqueRef<ChromeClientImpl>(*this);
     configuration.cookieJar = createCookieJar();
     configuration.databaseProvider = createDatabaseProvider();
+    configuration.editorClient = makeUniqueRef<EditorClientImpl>();
     configuration.mainFrameCreationParameters = PageConfiguration::LocalMainFrameCreationParameters {
         CompletionHandler<UniqueRef<LocalFrameLoaderClient>(LocalFrame&, FrameLoader&)> { [this](auto& frame, auto& frameLoader) {
             return makeUniqueRefWithoutRefCountedCheck<FrameLoaderClientImpl>(frameLoader, frame, *this);

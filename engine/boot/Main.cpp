@@ -4,6 +4,7 @@
 #include "IntSize.h"
 #include "bridge/Bridge.h"
 #include "gfx/Renderer.h"
+#include "input/Input.h"
 #include "platform/Strategies.h"
 #include "view/View.h"
 #include "CurlContext.h"
@@ -100,6 +101,7 @@ int main()
     });
 
     Inception::registerCommands();
+    Inception::registerInputCommands();
 
     // The host listens on every worker it creates and recognizes the engine's
     // by this event; "hello" repeats it on request.
