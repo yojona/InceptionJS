@@ -11,6 +11,16 @@ addToLibrary({
   $inceptionBridgeInstall__postset: 'inceptionBridgeInstall();',
   $inceptionBridgeInstall: () => {
     if (!ENVIRONMENT_IS_PTHREAD) return;
+    // The ErrorEvent the host sees on the Worker object has lost the error
+    // itself, so the stack is sent from here while it still exists.
+    const crashed = (error, fallback) => {
+      postMessage({ inceptionCrash: {
+        message: String(error?.message ?? error ?? fallback),
+        stack: String(error?.stack ?? ''),
+      } });
+    };
+    self.addEventListener('error', (e) => crashed(e.error, e.message));
+    self.addEventListener('unhandledrejection', (e) => crashed(e.reason, 'unhandled rejection'));
     self.addEventListener('message', (e) => {
       const json = e.data?.inception;
       if (typeof json !== 'string') return;
