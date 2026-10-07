@@ -48,10 +48,14 @@ addToLibrary({
     if (canvas.height !== height) canvas.height = height;
   },
 
-  inception_gfx_present__deps: ['$inceptionGfx'],
+  inception_gfx_present__deps: ['$inceptionGfx', '$inceptionReport'],
   inception_gfx_present: () => {
-    const bitmap = inceptionGfx.canvas.transferToImageBitmap();
-    postMessage({ inceptionFrame: bitmap }, [bitmap]);
+    try {
+      const bitmap = inceptionGfx.canvas.transferToImageBitmap();
+      postMessage({ inceptionFrame: bitmap }, [bitmap]);
+    } catch (e) {
+      inceptionReport('error', `present failed: ${e}`);
+    }
   },
 
   // CPU fallback: the pixels live in shared memory, which cannot be transferred,

@@ -133,8 +133,10 @@ void Renderer::paintGPU(const Function<void(GraphicsContext&)>& paint)
     auto properties = FontRenderOptions::singleton().createSurfaceProps();
     auto surface = SkSurfaces::WrapBackendRenderTarget(grContext, target, kBottomLeft_GrSurfaceOrigin,
         kRGBA_8888_SkColorType, SkColorSpace::MakeSRGB(), &properties);
-    if (!surface)
+    if (!surface) {
+        report("error"_s, makeString("Skia could not wrap the WebGL2 framebuffer at "_s, m_size.width(), 'x', m_size.height()));
         return;
+    }
 
     auto* canvas = surface->getCanvas();
     canvas->clear(SK_ColorTRANSPARENT);
