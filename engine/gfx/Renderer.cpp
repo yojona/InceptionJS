@@ -11,6 +11,7 @@
 #include <GLES3/gl3.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/text/MakeString.h>
+#include <wtf/text/StringBuilder.h>
 
 WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
 #include <skia/core/SkCanvas.h>
@@ -20,6 +21,7 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
 #include <skia/gpu/ganesh/GrDirectContext.h>
 #include <skia/gpu/ganesh/SkSurfaceGanesh.h>
 #include <skia/gpu/ganesh/gl/GrGLBackendSurface.h>
+#include <skia/gpu/ganesh/gl/GrGLAssembleInterface.h>
 WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
 
 extern "C" {
@@ -45,6 +47,23 @@ Renderer::Mode Renderer::initialize(IntSize pixelSize, bool preferGPU)
     return m_mode;
 }
 
+// Assembles Skia's GLES interface the way the port does, recording which entry
+// points WebGL2 does not provide, so a failed GPU start says why.
+static void reportMissingGLFunctions()
+{
+    static StringBuilder* missing;
+    StringBuilder names;
+    missing = &names;
+    auto interface = GrGLMakeAssembledInterface(nullptr, [](void*, const char* name) -> GrGLFuncPtr {
+        auto proc = reinterpret_cast<GrGLFuncPtr>(emscripten_webgl_get_proc_address(name));
+        if (!proc && strcmp(name, "glGetInternalformativ"))
+            missing->append(' ', String::fromLatin1(name));
+        return proc;
+    });
+    missing = nullptr;
+    report("warn"_s, makeString("GL interface "_s, interface ? (interface->validate() ? "valid"_s : "invalid"_s) : "not assembled"_s, ", missing:"_s, names.toString()));
+}
+
 bool Renderer::initializeGPU()
 {
     auto handle = inception_gfx_create_context(m_size.width(), m_size.height());
@@ -64,6 +83,7 @@ bool Renderer::initializeGPU()
     }
     auto& display = PlatformDisplay::sharedDisplay();
     if (!display.skiaGLContext() || !display.skiaGrContext()) {
+        reportMissingGLFunctions();
         report("warn"_s, makeString("Skia could not use WebGL2 ("_s, String::fromLatin1(reinterpret_cast<const char*>(glGetString(GL_VERSION))), "); painting on the CPU"_s));
         return false;
     }
