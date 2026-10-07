@@ -2,6 +2,8 @@
 #include "net/Session.h"
 
 #include "CookieJar.h"
+#include "CookieJarDB.h"
+#include "storage/Profile.h"
 #include "CurlResponse.h"
 #include "HTTPHeaderNames.h"
 #include "NetworkStorageSession.h"
@@ -16,7 +18,12 @@ using namespace WebCore;
 
 NetworkStorageSession& networkSession()
 {
-    static NeverDestroyed<std::unique_ptr<NetworkStorageSession>> session = makeUnique<NetworkStorageSession>(PAL::SessionID::defaultSessionID());
+    static NeverDestroyed<std::unique_ptr<NetworkStorageSession>> session = [] {
+        auto session = makeUnique<NetworkStorageSession>(PAL::SessionID::defaultSessionID());
+        // Cookies persist in the profile, in the cookie store's own database.
+        session->setCookieDatabase(makeUniqueRef<CookieJarDB>(Profile::file("cookies.db"_s)));
+        return session;
+    }();
     return *session.get();
 }
 
