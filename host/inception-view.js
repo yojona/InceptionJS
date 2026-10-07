@@ -16,7 +16,7 @@ export const Inception = {
 };
 
 // Events the engine reports that the view re-dispatches as DOM events.
-const VIEW_EVENTS = ['navigate', 'title', 'loading', 'popup', 'console', 'crash'];
+const VIEW_EVENTS = ['navigate', 'title', 'loading', 'popup', 'console', 'crash', 'cursor'];
 
 // <inception-view src gpu="auto|on|off" muted media profile user-agent>
 //
@@ -102,6 +102,7 @@ export class InceptionView extends HTMLElement {
     const soundAllowed = this.hasAttribute('autoplay-sound') || config.policy?.autoplaySound === true;
     this.#media = new MediaHost(this.#mediaLayer, (command, args) => this.#runtime.send(command, args), { soundAllowed });
     this.#runtime.onEngineEvent = (name, data) => {
+      if (name === 'cursor') this.#canvas.style.cursor = data.cursor;
       if (name.startsWith('media.')) this.#media.handleEvent(name, data);
     };
     this.#runtime.onMediaAppend = ({ id, sb, seq, bytes }) => this.#media.append(id, sb, seq, bytes);
