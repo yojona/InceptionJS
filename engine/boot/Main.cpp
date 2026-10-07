@@ -28,6 +28,14 @@ static IntSize sizeFrom(JSON::Object& args)
 
 static void registerCommands()
 {
+    // The host finds the engine's worker and greets it; the reply carries the
+    // bridge version the host must speak.
+    registerCommand("hello"_s, [](JSON::Object&) {
+        auto started = JSON::Object::create();
+        started->setInteger("version"_s, bridgeVersion);
+        emitEvent("started"_s, WTF::move(started));
+    });
+
     // {width, height, deviceScaleFactor, gpu: bool, url?} -> "ready" {version, renderer}
     registerCommand("init"_s, [](JSON::Object& args) {
         if (View::singleton())
@@ -94,10 +102,6 @@ int main()
     emscripten_set_socket_close_callback(nullptr, Inception::pumpNetwork);
 
     Inception::registerCommands();
-
-    auto started = JSON::Object::create();
-    started->setInteger("version"_s, Inception::bridgeVersion);
-    Inception::emitEvent("started"_s, WTF::move(started));
 
     // The engine lives on in this worker's event loop.
     emscripten_exit_with_live_runtime();
