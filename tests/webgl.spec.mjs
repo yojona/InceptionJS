@@ -73,3 +73,31 @@ test('the real GPU is reported through WEBGL_debug_renderer_info', async ({ page
   });
   expect(renderer).toBe(hostRenderer);
 });
+
+test('many short-lived page contexts leave the engine painting', async ({ page }) => {
+  const warnings = [];
+  page.on('console', (m) => { if (/Too many active WebGL contexts|invalid capability/.test(m.text())) warnings.push(m.text()); });
+  const lost = await evaluate(page, `(() => {
+    let lost = 0;
+    for (let i = 0; i < 50; i++) {
+      const canvas = document.createElement('canvas');
+      canvas.addEventListener('webglcontextlost', () => lost++);
+      const gl = canvas.getContext(i % 2 ? 'webgl' : 'webgl2');
+      gl.enable(gl.BLEND);
+      gl.clearColor(0, 1, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+    return String(lost);
+  })()`);
+  expect(Number(lost)).toBeGreaterThanOrEqual(0);
+  expect(warnings).toEqual([]);
+  // The engine still paints: a new page renders.
+  await evaluate(page, `document.body.innerHTML = '<div id="x" style="width:100px;height:100px;background:rgb(255,0,0)"></div>'; document.body.style.margin = '0'; 'ok'`);
+  await expect.poll(() => page.evaluate(async () => {
+    const canvas = document.querySelector('inception-view').shadowRoot.querySelector('canvas');
+    const bitmap = await createImageBitmap(canvas);
+    const copy = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d');
+    copy.drawImage(bitmap, 0, 0);
+    return [...copy.getImageData(10, 10, 1, 1).data.slice(0, 3)];
+  }), { timeout: 20_000 }).toEqual([255, 0, 0]);
+});
