@@ -214,6 +214,13 @@ void registerInputCommands()
             frame->editor().cancelComposition();
     });
 
+    // {command}: an editing command on the focused frame, e.g. "Paste" once
+    // the host has delivered its clipboard.
+    registerCommand("edit"_s, [](JSON::Object& args) {
+        if (RefPtr frame = focusedFrame())
+            frame->editor().command(args.getString("command"_s)).execute();
+    });
+
     registerCommand("mouse"_s, handleMouse);
     registerCommand("wheel"_s, handleWheel);
     registerCommand("key"_s, handleKey);

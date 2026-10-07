@@ -22,8 +22,9 @@ function belongsToHost(event) {
 // focus whenever the view has it: the platform's input method (dead keys and
 // accents, IME composition, the emoji picker, dictation) only works on a real
 // text field. Plain keys are forwarded as key events and kept out of it;
-// composed text arrives through composition and input events.
-export function attachInput(element, canvas, textInput, send) {
+// composed text arrives through composition and input events. `clipboard`:
+// whether the page may receive the host's clipboard on paste.
+export function attachInput(element, canvas, textInput, send, { clipboard = true } = {}) {
   const position = (event) => {
     const rect = canvas.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
@@ -62,8 +63,12 @@ export function attachInput(element, canvas, textInput, send) {
   // composition of its own.
   let composing = false;
   const composingKey = (event) => composing || event.isComposing || event.key === 'Dead' || event.keyCode === 229;
+  // Paste is left to the platform so the paste event below carries the
+  // clipboard; the engine pastes once it has the data.
+  const isPaste = (event) => (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'v';
   textInput.addEventListener('keydown', (event) => {
     if (belongsToHost(event) || composingKey(event)) return;
+    if (clipboard && isPaste(event)) return;
     event.preventDefault();
     const text = event.key.length === 1 || [...event.key].length === 1 ? event.key : event.key === 'Enter' ? '\r' : '';
     send('key', { type: 'down', key: event.key, code: event.code, keyCode: event.keyCode, text, repeat: event.repeat, modifiers: modifiersOf(event) });
@@ -92,9 +97,18 @@ export function attachInput(element, canvas, textInput, send) {
     if (event.data) send('ime.commit', { text: event.data });
     textInput.value = '';
   });
-  // Clipboard shortcuts reach the textarea as events; the engine handles
-  // them from the key events it already received.
-  for (const type of ['cut', 'copy', 'paste']) textInput.addEventListener(type, (event) => event.preventDefault());
+  // Copy and cut are the engine's (it reports "clipboard.write"); paste brings
+  // the host's clipboard in.
+  for (const type of ['cut', 'copy']) textInput.addEventListener(type, (event) => event.preventDefault());
+  textInput.addEventListener('paste', (event) => {
+    event.preventDefault();
+    if (!clipboard) return;
+    const items = {};
+    for (const type of event.clipboardData.types)
+      if (type.startsWith('text/')) items[type] = event.clipboardData.getData(type);
+    send('clipboard.set', { items });
+    send('edit', { command: 'Paste' });
+  });
 
   textInput.addEventListener('focus', () => send('focus', { focused: true }));
   textInput.addEventListener('blur', () => {
@@ -104,4 +118,17 @@ export function attachInput(element, canvas, textInput, send) {
     }
     send('focus', { focused: false });
   });
+}
+
+// The engine copied or cut: mirror it to the system clipboard. Browsers allow
+// this within the user's gesture, which the copy shortcut was.
+export async function writeClipboard(items) {
+  try {
+    const parts = {};
+    for (const [type, value] of Object.entries(items))
+      if (type === 'text/plain' || type === 'text/html') parts[type] = new Blob([value], { type });
+    if (Object.keys(parts).length) await navigator.clipboard.write([new ClipboardItem(parts)]);
+  } catch {
+    if (items['text/plain'] !== undefined) await navigator.clipboard.writeText(items['text/plain']).catch(() => {});
+  }
 }

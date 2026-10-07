@@ -1,4 +1,4 @@
-import { attachInput } from './input.js';
+import { attachInput, writeClipboard } from './input.js';
 import { SelectMenu, answerDialog, chooseFiles } from './ui.js';
 import { MediaHost, probeMediaCapabilities } from './media.js';
 import { EngineRuntime } from './runtime.js';
@@ -141,6 +141,7 @@ export class InceptionView extends HTMLElement {
       if (name === 'select.update') this.#selectMenu.update(data);
       if (name === 'select.hide') this.#selectMenu.hide(data.id);
       if (name === 'file.choose') chooseFiles(this, this.#runtime, data);
+      if (name === 'clipboard.write' && config.policy?.clipboard !== false) writeClipboard(data.items);
     };
     this.#selectMenu = new SelectMenu(this.#shadow, (command, args) => this.#runtime.send(command, args));
     this.#runtime.onAsk = (question) => answerDialog(this, question);
@@ -167,7 +168,7 @@ export class InceptionView extends HTMLElement {
     this.#runtime.addEventListener('crash', (e) => this.dispatchEvent(new CustomEvent('crash', { detail: { reason: e.detail.message, stack: e.detail.stack } })));
     if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');
     this.dataset.renderer = ready.renderer;
-    attachInput(this, this.#canvas, this.#textInput, (command, args) => this.#runtime.send(command, args));
+    attachInput(this, this.#canvas, this.#textInput, (command, args) => this.#runtime.send(command, args), { clipboard: config.policy?.clipboard !== false });
     if (document.activeElement === this) this.focusInput();
 
     document.addEventListener('fullscreenchange', () => {

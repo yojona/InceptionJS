@@ -17,6 +17,7 @@
 #include "ResourceLoader.h"
 #include "SharedBuffer.h"
 #include "SubresourceLoader.h"
+#include "bridge/Bridge.h"
 #include "net/NetworkLoad.h"
 #include <wtf/HashMap.h>
 #include <wtf/RunLoop.h>
@@ -142,16 +143,43 @@ public:
         m_items.clear();
         m_items.set("text/plain"_s, content.text);
         m_items.set("text/html"_s, content.markup);
-        ++m_changeCount;
+        changed();
     }
     void writeToPasteboard(const String& type, const String& value) final
     {
         m_items.clear();
         m_items.set(type, value);
+        changed();
+    }
+
+    // The host's clipboard, delivered before a paste.
+    void replace(JSON::Object& items)
+    {
+        m_items.clear();
+        for (auto& [type, value] : items) {
+            auto text = value->asString();
+            if (!text.isNull())
+                m_items.set(type, text);
+        }
         ++m_changeCount;
     }
 
 private:
+    // "clipboard.write" {items: {type: value}}: the host copies it to the
+    // system clipboard if its policy allows.
+    void changed()
+    {
+        ++m_changeCount;
+        auto items = JSON::Object::create();
+        for (auto& [type, value] : m_items) {
+            if (!value.isEmpty())
+                items->setString(type, value);
+        }
+        auto data = JSON::Object::create();
+        data->setObject("items"_s, WTF::move(items));
+        emitEvent("clipboard.write"_s, WTF::move(data));
+    }
+
     HashMap<String, String> m_items;
     int64_t m_changeCount { 0 };
 };
@@ -181,7 +209,14 @@ private:
 class PlatformStrategiesImpl final : public PlatformStrategies {
 private:
     LoaderStrategy* createLoaderStrategy() final { return new LoaderStrategyImpl; }
-    PasteboardStrategy* createPasteboardStrategy() final { return new ClipboardStrategy; }
+    PasteboardStrategy* createPasteboardStrategy() final { return clipboard(); }
+public:
+    static ClipboardStrategy* clipboard()
+    {
+        static ClipboardStrategy* strategy = new ClipboardStrategy;
+        return strategy;
+    }
+private:
     MediaStrategy* createMediaStrategy() final { return new MediaStrategyImpl; }
     BlobRegistry* createBlobRegistry() final { return new BlobRegistryBridge; }
 };
@@ -190,6 +225,12 @@ void installPlatformStrategies()
 {
     static PlatformStrategiesImpl* strategies = new PlatformStrategiesImpl;
     setPlatformStrategies(strategies);
+
+    // {items: {type: value}}
+    registerCommand("clipboard.set"_s, [](JSON::Object& args) {
+        if (auto items = args.getObject("items"_s))
+            PlatformStrategiesImpl::clipboard()->replace(*items);
+    });
 }
 
 } // namespace Inception
