@@ -62,12 +62,13 @@ View::View(IntSize cssSize, float deviceScaleFactor)
     // Until the layer compositor lands, everything paints into one surface.
     settings.setAcceleratedCompositingEnabled(false);
 
+    // The main frame must exist before activity state reaches it.
+    if (RefPtr frame = mainFrame())
+        frame->init();
+
     m_page->setDeviceScaleFactor(m_deviceScaleFactor);
     m_page->setActivityState({ ActivityState::WindowIsActive, ActivityState::IsFocused, ActivityState::IsVisible, ActivityState::IsVisibleOrOccluded, ActivityState::IsInWindow });
     m_page->setIsVisible(true);
-
-    if (RefPtr frame = mainFrame())
-        frame->init();
 }
 
 LocalFrame* View::mainFrame() const
