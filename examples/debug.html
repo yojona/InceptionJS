@@ -30,6 +30,9 @@
   });
 
   const view = document.getElementById('view');
+  // ?persist=clear starts from an empty profile; ?profile=name picks one.
+  if (params.get('persist') === 'clear') view.setAttribute('fresh-profile', '');
+  if (params.get('profile')) view.setAttribute('profile', params.get('profile'));
   const log = document.getElementById('log');
   const status = document.getElementById('status');
   const add = (kind, text) => {

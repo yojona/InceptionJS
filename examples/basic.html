@@ -23,6 +23,9 @@
   });
 
   const view = document.getElementById('view');
+  // ?persist=clear starts from an empty profile; ?profile=name picks one.
+  if (params.get('persist') === 'clear') view.setAttribute('fresh-profile', '');
+  if (params.get('profile')) view.setAttribute('profile', params.get('profile'));
   const address = document.getElementById('address');
   if (params.get('url')) view.setAttribute('src', address.value = params.get('url'));
   document.getElementById('bar').addEventListener('submit', (e) => {
