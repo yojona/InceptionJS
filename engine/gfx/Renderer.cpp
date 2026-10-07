@@ -117,6 +117,9 @@ void Renderer::paintGPU(const Function<void(GraphicsContext&)>& paint)
     auto* surface = m_surface.get();
 
     auto* canvas = surface->getCanvas();
+    // The surface, and so its canvas and matrix, lives across frames: each
+    // frame's transforms must not carry into the next.
+    SkAutoCanvasRestore restoreCanvas(canvas, true);
     canvas->clear(SK_ColorTRANSPARENT);
     {
         GraphicsContextSkia context(*canvas, RenderingMode::Accelerated, RenderingPurpose::Unspecified);
