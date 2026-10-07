@@ -53,6 +53,7 @@ target_link_options(inception-engine PRIVATE
     -sEXIT_RUNTIME=0
     -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,stringToUTF8,lengthBytesUTF8,HEAPU8,HEAP32,FS,PThread
     -sEXPORTED_FUNCTIONS=_main,_malloc,_free
+    "-sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=$inceptionBridgeInstall"
 
     "--preload-file=${INCEPTION_FS_DIR}@/"
 )
