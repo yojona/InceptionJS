@@ -81,6 +81,9 @@ View::View(IntSize cssSize, float deviceScaleFactor)
     settings.setSerifFontFamily("serif"_s);
     settings.setSansSerifFontFamily("sans-serif"_s);
     settings.setFixedFontFamily("monospace"_s);
+    // Players treat ManagedMediaSource as a different streaming client; the
+    // host mirror implements plain MediaSource.
+    settings.setManagedMediaSourceEnabled(false);
     settings.setCanvasUsesAcceleratedDrawing(Renderer::singleton().mode() == Renderer::Mode::GPU);
     // Until the layer compositor lands, everything paints into one surface.
     settings.setAcceleratedCompositingEnabled(false);
