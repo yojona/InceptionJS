@@ -1,0 +1,244 @@
+Emscripten port skeleton: the port name, its CMake options, and the WTF, PAL and
+WebCore platform files. Defines PLATFORM(EMSCRIPTEN) for every later patch.
+
+diff --git a/Source/WTF/wtf/PlatformEmscripten.cmake b/Source/WTF/wtf/PlatformEmscripten.cmake
+new file mode 100644
+index 0000000..35d4687
+--- /dev/null
++++ b/Source/WTF/wtf/PlatformEmscripten.cmake
+@@ -0,0 +1,28 @@
++list(APPEND WTF_SOURCES
++    generic/MainThreadGeneric.cpp
++    generic/MemoryFootprintGeneric.cpp
++    generic/MemoryPressureHandlerGeneric.cpp
++    generic/RunLoopGeneric.cpp
++    generic/WorkQueueGeneric.cpp
++
++    posix/CPUTimePOSIX.cpp
++    posix/FileHandlePOSIX.cpp
++    posix/FileSystemPOSIX.cpp
++    posix/MappedFileDataPOSIX.cpp
++    posix/OSAllocatorPOSIX.cpp
++    posix/ThreadingPOSIX.cpp
++
++    text/unix/TextBreakIteratorInternalICUUnix.cpp
++
++    unix/LanguageUnix.cpp
++    unix/LoggingUnix.cpp
++    unix/UniStdExtrasUnix.cpp
++)
++
++list(APPEND WTF_PUBLIC_HEADERS
++    unix/UnixFileDescriptor.h
++)
++
++list(APPEND WTF_LIBRARIES
++    Threads::Threads
++)
+diff --git a/Source/WebCore/PAL/pal/PlatformEmscripten.cmake b/Source/WebCore/PAL/pal/PlatformEmscripten.cmake
+new file mode 100644
+index 0000000..0a85df1
+--- /dev/null
++++ b/Source/WebCore/PAL/pal/PlatformEmscripten.cmake
+@@ -0,0 +1,10 @@
++list(APPEND PAL_SOURCES
++    crypto/openssl/CryptoDigestOpenSSL.cpp
++
++    system/ClockGeneric.cpp
++    system/Sound.cpp
++
++    text/KillRing.cpp
++)
++
++list(APPEND PAL_LIBRARIES OpenSSL::Crypto)
+diff --git a/Source/WebCore/PlatformEmscripten.cmake b/Source/WebCore/PlatformEmscripten.cmake
+new file mode 100644
+index 0000000..bb56d6f
+--- /dev/null
++++ b/Source/WebCore/PlatformEmscripten.cmake
+@@ -0,0 +1,50 @@
++# WebCore for the Emscripten port: curl networking, Skia graphics (GPU through
++# WebGL2, CPU raster as fallback), image decoders, fontconfig fonts.
++
++include(platform/Curl.cmake)
++include(platform/ImageDecoders.cmake)
++include(platform/Skia.cmake)
++
++# Static libcurl does not carry its own dependencies into the final link.
++find_library(NGHTTP2_LIBRARY nghttp2 REQUIRED)
++find_library(BROTLIDEC_LIBRARY brotlidec REQUIRED)
++find_library(BROTLICOMMON_LIBRARY brotlicommon REQUIRED)
++list(APPEND WebCore_LIBRARIES
++    ${NGHTTP2_LIBRARY}
++    ${BROTLIDEC_LIBRARY}
++    ${BROTLICOMMON_LIBRARY}
++)
++
++# Skia's font code calls fontconfig directly; the sysroot is not a default include
++# path, so wire the target in explicitly.
++find_package(Fontconfig 2.13.0 REQUIRED)
++list(APPEND WebCore_LIBRARIES Fontconfig::Fontconfig)
++
++list(APPEND WebCore_PRIVATE_INCLUDE_DIRECTORIES
++    ${WEBCORE_DIR}/platform
++    ${WEBCORE_DIR}/platform/emscripten
++    ${WEBCORE_DIR}/platform/generic
++    ${WEBCORE_DIR}/platform/graphics/egl
++    ${WEBCORE_DIR}/platform/graphics/emscripten
++    ${WEBCORE_DIR}/platform/graphics/opengl
++    ${WEBCORE_DIR}/platform/mediacapabilities
++    ${WEBCORE_DIR}/platform/video-codecs
++)
++
++list(APPEND WebCore_SOURCES
++    platform/generic/KeyedDecoderGeneric.cpp
++    platform/generic/KeyedEncoderGeneric.cpp
++
++    platform/text/Hyphenation.cpp
++    platform/text/LocaleICU.cpp
++
++    platform/unix/LoggingUnix.cpp
++    platform/unix/SharedMemoryUnix.cpp
++)
++
++# The embedder (the executable that owns the page) lives outside the WebKit tree.
++# Its CMake file runs at the end of this directory, once the WebCore target and its
++# include lists are final.
++if (WEBKIT_EMBEDDER_CMAKE_FILE)
++    cmake_language(DEFER CALL include "${WEBKIT_EMBEDDER_CMAKE_FILE}")
++endif ()
+diff --git a/Source/cmake/OptionsEmscripten.cmake b/Source/cmake/OptionsEmscripten.cmake
+new file mode 100644
+index 0000000..df4b9bb
+--- /dev/null
++++ b/Source/cmake/OptionsEmscripten.cmake
+@@ -0,0 +1,117 @@
++# Emscripten port: WebCore and JavaScriptCore compiled to WebAssembly and linked
++# into one embedder executable. Single process: no WebKit2, no legacy API, no
++# inspector UI, no tools.
++
++add_definitions(-DWTF_PLATFORM_EMSCRIPTEN=1)
++
++find_package(Threads REQUIRED)
++find_package(ICU 70.1 REQUIRED COMPONENTS data i18n uc)
++
++set(CMAKE_C_VISIBILITY_PRESET hidden)
++set(CMAKE_CXX_VISIBILITY_PRESET hidden)
++set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
++
++set(ENABLE_WEBKIT OFF)
++set(ENABLE_WEBKIT_LEGACY OFF)
++set(ENABLE_WEBINSPECTORUI OFF)
++set(ENABLE_WEBGPU OFF)
++
++WEBKIT_OPTION_BEGIN()
++
++WEBKIT_OPTION_DEFINE(ENABLE_STATIC_JSC "Build JavaScriptCore as a static library." PUBLIC ON)
++
++# WebAssembly code cannot generate machine code at run time: JavaScriptCore runs on
++# the C loop interpreter only.
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_JIT PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_DFG_JIT PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_FTL_JIT PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_C_LOOP PRIVATE ON)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEBASSEMBLY PRIVATE OFF)
++
++# Both need to suspend other threads with signals, which wasm cannot do.
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_SAMPLING_PROFILER PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_REMOTE_INSPECTOR PRIVATE OFF)
++
++# bmalloc reserves address space up front; wasm32 linear memory does not fit that.
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_SYSTEM_MALLOC PRIVATE ON)
++
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_SKIA PRIVATE ON)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_SKIA_ENCODERS PRIVATE OFF)
++
++# libcurl is built without FTP. With FTP directories enabled, WebCore puts "ftp"
++# in curl's protocol allowlist, curl rejects the whole list, and only file: stays
++# allowed.
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_FTPDIR PRIVATE OFF)
++
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_VIDEO PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MEDIA_SOURCE PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_FULLSCREEN_API PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEB_AUDIO PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEBGL PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MEDIA_STREAM PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEB_RTC PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_ENCRYPTED_MEDIA PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GAMEPAD PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GEOLOCATION PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_NOTIFICATIONS PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_SPEECH_SYNTHESIS PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEBXR PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_XSLT PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MATHML PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEBDRIVER PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MINIBROWSER PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_API_TESTS PRIVATE OFF)
++
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_AVIF PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_JPEGXL PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_LCMS PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_WOFF2 PRIVATE OFF)
++
++WEBKIT_OPTION_END()
++
++if (NOT ENABLE_STATIC_JSC)
++    message(FATAL_ERROR "The Emscripten port links statically: ENABLE_STATIC_JSC must be ON")
++endif ()
++
++SET_AND_EXPOSE_TO_BUILD(USE_GENERIC_EVENT_LOOP 1)
++SET_AND_EXPOSE_TO_BUILD(WTF_DEFAULT_EVENT_LOOP 0)
++SET_AND_EXPOSE_TO_BUILD(USE_INSPECTOR_SOCKET_SERVER ${ENABLE_REMOTE_INSPECTOR})
++SET_AND_EXPOSE_TO_BUILD(USE_UNIX_DOMAIN_SOCKETS ON)
++
++if (ENABLE_WEBCORE)
++    SET_AND_EXPOSE_TO_BUILD(USE_CURL ON)
++    SET_AND_EXPOSE_TO_BUILD(USE_OPENSSL ON)
++    SET_AND_EXPOSE_TO_BUILD(USE_HARFBUZZ ON)
++
++    find_package(CURL 7.85.0 REQUIRED)
++    find_package(Freetype 2.9.0 REQUIRED)
++    find_package(HarfBuzz 1.4.2 REQUIRED COMPONENTS ICU)
++    find_package(JPEG REQUIRED)
++    find_package(LibPSL 0.20.2 REQUIRED)
++    find_package(LibXml2 2.9.7 REQUIRED)
++    find_package(OpenSSL REQUIRED)
++    find_package(PNG REQUIRED)
++    find_package(SQLite3 REQUIRED)
++    if (NOT TARGET SQLite3::SQLite3)
++        add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
++    endif ()
++    find_package(WebP REQUIRED COMPONENTS demux)
++    find_package(ZLIB REQUIRED)
++
++    # FreeType decodes WOFF2 itself when built with brotli; that is what makes web
++    # fonts load, so a FreeType without it is a configuration error.
++    include(WOFF2Checks)
++    if (NOT FREETYPE_WOFF2_SUPPORT_IS_AVAILABLE)
++        message(FATAL_ERROR "FreeType in the sysroot has no WOFF2 support (build it with brotli)")
++    endif ()
++    SET_AND_EXPOSE_TO_BUILD(HAVE_WOFF_SUPPORT ON)
++
++    # libpsl is static and built on ICU, which its pkg-config file omits.
++    target_link_libraries(LibPSL::LibPSL INTERFACE ICU::uc)
++
++    # Emscripten provides GLES and EGL as link-time libraries with headers in its
++    # sysroot; there is no library file for find modules to locate.
++    if (NOT TARGET OpenGL::GLES)
++        add_library(OpenGL::GLES INTERFACE IMPORTED)
++    endif ()
++endif ()
+diff --git a/Source/cmake/WebKitCommon.cmake b/Source/cmake/WebKitCommon.cmake
+index 639b7e5..cda5331 100644
+--- a/Source/cmake/WebKitCommon.cmake
++++ b/Source/cmake/WebKitCommon.cmake
+@@ -43,6 +43,7 @@ if (NOT HAS_RUN_WEBKIT_COMMON)
+     # Determine which port will be built
+     # -----------------------------------------------------------------------------
+     set(ALL_PORTS
++        Emscripten
+         GTK
+         JSCOnly
+         Mac
