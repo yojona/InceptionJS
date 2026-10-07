@@ -1,0 +1,57 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InceptionJS: debug</title>
+<style>
+  body { margin: 0; display: grid; grid-template-columns: 1fr 360px; height: 100vh; font: 12px ui-monospace, monospace; }
+  inception-view { width: 100%; height: 100%; }
+  aside { display: flex; flex-direction: column; border-left: 1px solid #ccc; min-width: 0; }
+  header { padding: 6px 8px; background: #f4f4f5; border-bottom: 1px solid #ccc; }
+  form { display: flex; gap: 4px; padding: 6px 8px; }
+  form input { flex: 1; min-width: 0; font: inherit; }
+  ol { flex: 1; overflow: auto; margin: 0; padding: 6px 8px 6px 32px; }
+  li { white-space: pre-wrap; word-break: break-all; }
+  li.error { color: #b91c1c; }
+  li.warn { color: #a16207; }
+</style>
+<inception-view id="view"></inception-view>
+<aside>
+  <header id="status">starting</header>
+  <form id="bar"><input id="address" value="https://example.com/" spellcheck="false"><button>Go</button></form>
+  <ol id="log"></ol>
+</aside>
+<script type="module">
+  import { Inception } from '../host/inception-view.js';
+
+  const params = new URLSearchParams(location.search);
+  Inception.configure({
+    engineUrl: new URL('../engine/inception-engine.js', import.meta.url).href,
+    wispUrl: params.get('wisp') ?? `ws://${location.hostname}:5001/`,
+  });
+
+  const view = document.getElementById('view');
+  const log = document.getElementById('log');
+  const status = document.getElementById('status');
+  const add = (kind, text) => {
+    const item = document.createElement('li');
+    item.className = kind;
+    item.textContent = `${new Date().toISOString().slice(11, 23)} ${text}`;
+    log.append(item);
+    item.scrollIntoView({ block: 'end' });
+  };
+
+  if (params.get('gpu')) view.setAttribute('gpu', params.get('gpu'));
+  for (const name of ['navigate', 'title', 'loading', 'popup', 'crash'])
+    view.addEventListener(name, (e) => add(name === 'crash' ? 'error' : '', `${name} ${JSON.stringify(e.detail)}`));
+  view.addEventListener('console', (e) => add(e.detail.level, `console.${e.detail.level} ${e.detail.message}`));
+
+  const started = performance.now();
+  view.ready.then((ready) => (status.textContent = `renderer ${ready.renderer}, ready in ${Math.round(performance.now() - started)} ms`));
+  view.addEventListener('crash', (e) => (status.textContent = `crashed: ${e.detail.reason}`));
+
+  document.getElementById('bar').addEventListener('submit', (e) => {
+    e.preventDefault();
+    view.navigate(document.getElementById('address').value);
+  });
+  view.navigate(params.get('url') ?? document.getElementById('address').value);
+</script>
