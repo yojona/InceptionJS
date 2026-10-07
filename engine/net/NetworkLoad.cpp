@@ -71,7 +71,6 @@ void NetworkLoad::curlDidReceiveResponse(CurlRequest& curl, CurlResponse&& curlR
         return;
     }
 
-    report("debug"_s, makeString("response "_s, response.httpStatusCode(), ' ', m_request.url().string()));
     loader->didReceiveResponse(WTF::move(response), [protectedThis = Ref { *this }, curl = Ref { curl }] {
         if (protectedThis->m_curl.get() == curl.ptr())
             curl->completeDidReceiveResponse();
@@ -103,7 +102,6 @@ void NetworkLoad::curlDidReceiveData(CurlRequest&, Ref<SharedBuffer>&& buffer)
 
 void NetworkLoad::curlDidComplete(CurlRequest&, NetworkLoadMetrics&& metrics)
 {
-    report("debug"_s, makeString("load done "_s, m_request.url().string()));
     m_curl = nullptr;
     if (RefPtr loader = std::exchange(m_loader, nullptr))
         loader->didFinishLoading(metrics);
