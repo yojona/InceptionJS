@@ -28,12 +28,10 @@
 namespace Inception {
 using namespace WebCore;
 using namespace WebCore::IDBClient;
-using namespace WebCore::IDBServer;
 
 // Both directions are delivered as separate loop tasks, never inline: WebCore's
 // IDB client and server expect replies to arrive after the call returns.
-class LocalIDBServer final : public RefCounted<LocalIDBServer>, public IDBConnectionToServerDelegate, public IDBConnectionToClientDelegate {
-    WTF_MAKE_FAST_ALLOCATED;
+class LocalIDBServer final : public RefCounted<LocalIDBServer>, public IDBConnectionToServerDelegate, public IDBServer::IDBConnectionToClientDelegate {
     WTF_OVERRIDE_DELETE_FOR_CHECKED_PTR(LocalIDBServer);
 public:
     static Ref<LocalIDBServer> create() { return adoptRef(*new LocalIDBServer); }
@@ -45,9 +43,9 @@ public:
 
 private:
     LocalIDBServer()
-        : m_server(makeUnique<IDBServer::IDBServer>(String { }, [](const ClientOrigin&, uint64_t) { return true; }, m_serverLock))
+        : m_server(makeUnique<WebCore::IDBServer::IDBServer>(String { }, [](const ClientOrigin&, uint64_t) { return true; }, m_serverLock))
         , m_connectionToServer(IDBConnectionToServer::create(*this, PAL::SessionID::defaultSessionID()))
-        , m_connectionToClient(IDBConnectionToClient::create(*this))
+        , m_connectionToClient(IDBServer::IDBConnectionToClient::create(*this))
     {
         Locker locker { m_serverLock };
         m_server->registerConnection(m_connectionToClient.get());
@@ -128,7 +126,7 @@ private:
     void didDeleteRecord(const IDBResultData& result) final { toClient([result](auto& client) { client.didDeleteRecord(result); }); }
     void didOpenCursor(const IDBResultData& result) final { toClient([result](auto& client) { client.didOpenCursor(result); }); }
     void didIterateCursor(const IDBResultData& result) final { toClient([result](auto& client) { client.didIterateCursor(result); }); }
-    void fireVersionChangeEvent(UniqueIDBDatabaseConnection& connection, const IDBResourceIdentifier& request, uint64_t version) final
+    void fireVersionChangeEvent(IDBServer::UniqueIDBDatabaseConnection& connection, const IDBResourceIdentifier& request, uint64_t version) final
     {
         toClient([connection = connection.identifier(), request, version](auto& client) { client.fireVersionChangeEvent(connection, request, version); });
     }
@@ -137,7 +135,7 @@ private:
         toClient([request, info, keyPath, key, value, recordID](auto& client) { client.generateIndexKeyForRecord(request, info, keyPath, key, value, recordID); });
     }
     void didStartTransaction(const IDBResourceIdentifier& id, const IDBError& error) final { toClient([id, error](auto& client) { client.didStartTransaction(id, error); }); }
-    void didCloseFromServer(UniqueIDBDatabaseConnection& connection, const IDBError& error) final
+    void didCloseFromServer(IDBServer::UniqueIDBDatabaseConnection& connection, const IDBError& error) final
     {
         toClient([connection = connection.identifier(), error](auto& client) { client.didCloseFromServer(connection, error); });
     }
@@ -148,9 +146,9 @@ private:
     }
 
     Lock m_serverLock;
-    std::unique_ptr<IDBServer::IDBServer> m_server;
+    std::unique_ptr<WebCore::IDBServer::IDBServer> m_server;
     Ref<IDBConnectionToServer> m_connectionToServer;
-    Ref<IDBConnectionToClient> m_connectionToClient;
+    Ref<IDBServer::IDBConnectionToClient> m_connectionToClient;
 };
 
 class Provider final : public DatabaseProvider {
