@@ -52,7 +52,10 @@ export class EncryptedMedia {
     const reply = handler();
     if (reply instanceof Promise && data.req !== undefined) {
       reply.then((result) => this.#send('eme.reply', { req: data.req, ok: true, ...result }), (error) => {
-        console.warn(`[eme] ${name}:`, error);
+        // A refused key system is ordinary (pages probe several, FairPlay first
+        // when the UA says Safari): say which, and what was asked.
+        if (name === 'eme.access') console.info(`[eme] the host browser does not offer ${data.keySystem} with`, data.configuration, `(${error?.name ?? error})`);
+        else console.warn(`[eme] ${name}:`, error);
         this.#send('eme.reply', { req: data.req, ok: false, error: String(error?.message ?? error) });
       });
     }
