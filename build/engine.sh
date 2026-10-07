@@ -19,10 +19,12 @@ BUILD="$WORK/build/engine-$variant"
 OUT="$WORK/out/engine"
 mkdir -p "$BUILD" "$OUT"
 
-# Re-configure when the cmake inputs that live outside the WebKit tree change.
-config_inputs=$(cat "$ROOT/build/engine.sh" "$ROOT/engine/embedder.cmake" 2>/dev/null | sha256sum | cut -d' ' -f1)
+# Re-configure from a fresh cache when the build script, the embedder or the
+# patch series change: port option defaults only apply to an empty cache.
+config_inputs=$(cat "$ROOT/build/engine.sh" "$ROOT/engine/embedder.cmake" "$ROOT"/patches/webkit/*.patch 2>/dev/null | sha256sum | cut -d' ' -f1)
 if [ ! -f "$BUILD/build.ninja" ] || [ "$(cat "$BUILD/.inception-config" 2>/dev/null)" != "$config_inputs" ]; then
   step "configuring engine ($variant)"
+  rm -f "$BUILD/CMakeCache.txt"
   logged "engine-configure-$variant" emcmake cmake -G Ninja -S "$SRC" -B "$BUILD" \
     -DPORT=Emscripten \
     -DCMAKE_BUILD_TYPE=Release \
