@@ -2,6 +2,7 @@ import { attachInput, writeClipboard } from './input.js';
 import { SelectMenu, answerDialog, chooseFiles } from './ui.js';
 import { Preferences } from './preferences.js';
 import { defaultUserAgent } from './identity.js';
+import { PROVENANCE_STYLE, Provenance } from './provenance.js';
 import { MediaHost, probeMediaCapabilities } from './media.js';
 import { EngineRuntime } from './runtime.js';
 import { WasmTranslator } from './wasm-translator.js';
@@ -21,12 +22,13 @@ export const Inception = {
 // Events the engine reports that the view re-dispatches as DOM events.
 const VIEW_EVENTS = ['navigate', 'title', 'loading', 'popup', 'console', 'crash', 'cursor'];
 
-// <inception-view src gpu="auto|on|off" muted media profile fresh-profile user-agent>
+// <inception-view src gpu="auto|on|off" muted media profile fresh-profile user-agent
+//                 provenance-corner>
 //
 // A thin client: it speaks the protocol to a server bound to its own engine,
 // exactly as a remote agent would. `serve(transport)` connects more clients.
 export class InceptionView extends HTMLElement {
-  static observedAttributes = ['src'];
+  static observedAttributes = ['src', 'provenance-corner'];
 
   #runtime = null;
   #server = null;
@@ -36,6 +38,7 @@ export class InceptionView extends HTMLElement {
   #textInput;
   #shadow;
   #selectMenu = null;
+  #provenance;
   #preferences = new Preferences((changed) => this.#runtime?.send('preferences', changed));
   #media = null;
   #debugRequests = 0;
@@ -50,11 +53,13 @@ export class InceptionView extends HTMLElement {
       canvas, .media { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
       .media { overflow: hidden; pointer-events: none; }
       textarea { position: absolute; left: 0; top: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; resize: none; pointer-events: none; }
+      ${PROVENANCE_STYLE}
     </style><div class="media" part="media"></div><canvas part="screen"></canvas><textarea aria-hidden="true" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>`;
     this.#canvas = shadow.querySelector('canvas');
     this.#mediaLayer = shadow.querySelector('.media');
     this.#textInput = shadow.querySelector('textarea');
     this.#shadow = shadow;
+    this.#provenance = new Provenance(shadow, this);
     if (!this.hasAttribute('tabindex')) this.tabIndex = 0;
   }
 
@@ -76,6 +81,7 @@ export class InceptionView extends HTMLElement {
 
   attributeChangedCallback(name, previous, value) {
     if (name === 'src' && value && value !== previous && this.#client) this.navigate(value);
+    if (name === 'provenance-corner') this.#provenance.setCorner(value);
   }
 
   async navigate(url) {
@@ -149,6 +155,7 @@ export class InceptionView extends HTMLElement {
       if (name === 'select.update') this.#selectMenu.update(data);
       if (name === 'select.hide') this.#selectMenu.hide(data.id);
       if (name === 'file.choose') chooseFiles(this, this.#runtime, data);
+      if (name === 'field.focus') this.#provenance.fieldFocused(data.kind);
       if (name === 'clipboard.write' && config.policy?.clipboard !== false) writeClipboard(data.items);
     };
     this.#selectMenu = new SelectMenu(this.#shadow, (command, args) => this.#runtime.send(command, args));
@@ -213,7 +220,10 @@ export class InceptionView extends HTMLElement {
     server.handle('view.state', () => ({ ...this.#state }));
     for (const name of VIEW_EVENTS) {
       runtime.addEventListener(name, (e) => {
-        if (name === 'navigate') this.#state.url = e.detail.url;
+        if (name === 'navigate') {
+          this.#state.url = e.detail.url;
+          this.#provenance.navigated(e.detail.url);
+        }
         if (name === 'title') this.#state.title = e.detail.title;
         if (name === 'loading') this.#state.loading = e.detail.loading;
         server.emit(name, e.detail);
