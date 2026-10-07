@@ -104,6 +104,12 @@ int main()
 
     Inception::registerCommands();
 
+    // The host listens on every worker it creates and recognizes the engine's
+    // by this event; "hello" repeats it on request.
+    auto started = JSON::Object::create();
+    started->setInteger("version"_s, Inception::bridgeVersion);
+    Inception::emitEvent("started"_s, WTF::move(started));
+
     // The engine lives on in this worker's event loop.
     emscripten_exit_with_live_runtime();
     return 0;
