@@ -12,13 +12,6 @@ addToLibrary({
   $inceptionBridgeInstall: () => {
     if (!ENVIRONMENT_IS_PTHREAD) return;
     self.addEventListener('message', (e) => {
-      if (e.data?.inceptionPump) {
-        Module._inception_net_pump();
-        // Code run outside a RunLoop iteration may have armed timers the loop
-        // has not reported yet; one immediate iteration reports them.
-        _inception_loop_schedule(0);
-        return;
-      }
       const json = e.data?.inception;
       if (typeof json !== 'string') return;
       const ptr = stringToNewUTF8(json);
