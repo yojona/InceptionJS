@@ -20,6 +20,13 @@ using namespace WebCore;
 // Same limit as other engines; beyond it the load fails as a redirect loop.
 static constexpr unsigned maxRedirects = 20;
 
+static bool s_logging;
+
+void NetworkLoad::setLogging(bool enabled)
+{
+    s_logging = enabled;
+}
+
 NetworkLoad::NetworkLoad(ResourceLoader& loader)
     : m_loader(&loader)
 {
@@ -34,6 +41,8 @@ void NetworkLoad::start(const ResourceRequest& request)
 {
     m_request = request;
     addCookieHeader(m_request);
+    if (s_logging)
+        report("debug"_s, makeString("net "_s, m_request.httpMethod(), ' ', m_request.url().string().left(300)));
     m_curl = CurlRequest::create(m_request, *this);
     m_curl->resume();
 }
@@ -66,6 +75,8 @@ void NetworkLoad::curlDidReceiveResponse(CurlRequest& curl, CurlResponse&& curlR
 
     storeResponseCookies(m_request, curlResponse);
     ResourceResponse response(curlResponse);
+    if (s_logging)
+        report("debug"_s, makeString("net "_s, response.httpStatusCode(), ' ', m_request.url().string().left(200)));
     if (response.isRedirection() && !response.httpHeaderField(HTTPHeaderName::Location).isEmpty()) {
         followRedirect(WTF::move(response));
         return;

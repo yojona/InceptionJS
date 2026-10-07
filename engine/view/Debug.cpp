@@ -5,6 +5,7 @@
 #include "LocalFrame.h"
 #include "ScriptController.h"
 #include "bridge/Bridge.h"
+#include "net/NetworkLoad.h"
 #include "view/View.h"
 #include <JavaScriptCore/JSCJSValueInlines.h>
 
@@ -16,6 +17,11 @@ using namespace WebCore;
 // host exposes it on the debug page, never through the public API.
 void registerDebugCommands()
 {
+    // {enabled}: report network requests as console debug events.
+    registerCommand("debug.netlog"_s, [](JSON::Object& args) {
+        NetworkLoad::setLogging(args.getBoolean("enabled"_s).value_or(false));
+    });
+
     registerCommand("debug.evaluate"_s, [](JSON::Object& args) {
         auto* view = View::singleton();
         RefPtr frame = view ? view->mainFrame() : nullptr;

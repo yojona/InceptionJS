@@ -19,6 +19,9 @@ public:
     static Ref<NetworkLoad> create(WebCore::ResourceLoader& loader) { return adoptRef(*new NetworkLoad(loader)); }
     ~NetworkLoad();
 
+    // Development aid: report every request and response.
+    static void setLogging(bool);
+
     void start(const WebCore::ResourceRequest&);
     void cancel();
 
