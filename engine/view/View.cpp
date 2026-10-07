@@ -21,6 +21,7 @@
 #include "bridge/Bridge.h"
 #include "gfx/Renderer.h"
 #include "input/EditingClient.h"
+#include "media/HostCDM.h"
 #include "media/MediaBridge.h"
 #include "net/Session.h"
 #include "net/WebSocketChannel.h"
@@ -74,6 +75,9 @@ View::View(IntSize cssSize, float deviceScaleFactor)
     };
 
     m_page = Page::create(WTF::move(configuration));
+#if ENABLE(ENCRYPTED_MEDIA)
+    Media::provideMediaKeySystem(*m_page);
+#endif
 
     // Raw WebCore defaults are off for most of what a browser turns on; each of
     // these is a feature pages expect.
@@ -100,6 +104,9 @@ View::View(IntSize cssSize, float deviceScaleFactor)
     settings.setFullScreenEnabled(true);
 #if ENABLE(WEBGL)
     settings.setWebGLEnabled(true);
+#endif
+#if ENABLE(ENCRYPTED_MEDIA)
+    settings.setEncryptedMediaAPIEnabled(true);
 #endif
     settings.setMinimumLogicalFontSize(9);
     settings.setStandardFontFamily("serif"_s);

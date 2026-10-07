@@ -1,0 +1,18 @@
+Build Encrypted Media Extensions.
+
+The port has no CDM of its own; the embedder registers a CDM factory that
+mirrors every EME call on the host browser's EME, whose CDM decrypts.
+
+--- a/Source/cmake/OptionsEmscripten.cmake
++++ b/Source/cmake/OptionsEmscripten.cmake
+@@ -54,7 +54,9 @@
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEBGL PRIVATE ON)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MEDIA_STREAM PRIVATE OFF)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEB_RTC PRIVATE OFF)
+-WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_ENCRYPTED_MEDIA PRIVATE OFF)
++# Encrypted Media Extensions through the host browser's CDM: the embedder registers
++# a CDM factory that mirrors every EME call on the host's own EME.
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_ENCRYPTED_MEDIA PRIVATE ON)
+ # Mouse-drag text selection lives behind drag support in EventHandler.
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_DRAG_SUPPORT PRIVATE ON)
+ # prefers-color-scheme and dark native controls follow the embedder's preference.

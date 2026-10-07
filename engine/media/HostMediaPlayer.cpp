@@ -6,12 +6,15 @@
 #include "MediaPlayer.h"
 #include "MediaSourcePrivateClient.h"
 #include "bridge/Bridge.h"
+#include "media/HostCDM.h"
 #include "media/HostMediaSource.h"
 #include "media/MediaBridge.h"
 #include "view/View.h"
 #include <wtf/HashMap.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/TZoneMallocInlines.h>
+#include <JavaScriptCore/ArrayBuffer.h>
+#include <wtf/text/Base64.h>
 #include <wtf/text/MakeString.h>
 
 namespace Inception::Media {
@@ -266,6 +269,34 @@ static MediaPlayer::NetworkState networkStateFrom(int value, int error)
 }
 
 // A state report from the host's <video> (host/media.js).
+void HostMediaPlayer::encrypted(JSON::Object& args)
+{
+    RefPtr player = m_player.get();
+    if (!player)
+        return;
+    auto bytes = base64Decode(args.getString("initData"_s));
+    if (!bytes || bytes->size() > 64 * 1024)
+        return;
+    player->initializationDataEncountered(args.getString("initDataType"_s), ArrayBuffer::create(bytes->span()));
+}
+
+#if ENABLE(ENCRYPTED_MEDIA)
+// The host <video> decrypts with the MediaKeys mirroring this instance.
+void HostMediaPlayer::cdmInstanceAttached(CDMInstance& instance)
+{
+    auto data = JSON::Object::create();
+    data->setInteger("keys"_s, hostMediaKeysID(instance));
+    sendToHost("media.setMediaKeys"_s, WTF::move(data));
+}
+
+void HostMediaPlayer::cdmInstanceDetached(CDMInstance&)
+{
+    auto data = JSON::Object::create();
+    data->setInteger("keys"_s, 0);
+    sendToHost("media.setMediaKeys"_s, WTF::move(data));
+}
+#endif
+
 void HostMediaPlayer::update(JSON::Object& state)
 {
     RefPtr player = m_player.get();
@@ -302,6 +333,12 @@ void HostMediaPlayer::update(JSON::Object& state)
         }
     }
     m_buffered = WTF::move(buffered);
+
+    bool waitingForKey = state.getBoolean("waitingForKey"_s).value_or(false);
+    if (waitingForKey != m_waitingForKey) {
+        m_waitingForKey = waitingForKey;
+        player->waitingForKeyChanged();
+    }
 
     m_totalFrames = state.getInteger("totalFrames"_s).value_or(m_totalFrames);
     m_droppedFrames = state.getInteger("droppedFrames"_s).value_or(m_droppedFrames);

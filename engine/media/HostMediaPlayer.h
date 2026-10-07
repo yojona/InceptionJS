@@ -27,6 +27,8 @@ public:
     unsigned id() const { return m_id; }
 
     void update(JSON::Object& state);
+    // The host <video> met encrypted media: {initDataType, initData}.
+    void encrypted(JSON::Object&);
     void sendToHost(const String& event, Ref<JSON::Object>&& data = JSON::Object::create());
 
     // Where the page painted the video during the frame, in CSS pixels of the
@@ -77,6 +79,12 @@ private:
     std::optional<WebCore::VideoPlaybackQualityMetrics> videoPlaybackQualityMetrics() final;
     WebCore::DestinationColorSpace colorSpace() final;
 
+#if ENABLE(ENCRYPTED_MEDIA)
+    void cdmInstanceAttached(WebCore::CDMInstance&) final;
+    void cdmInstanceDetached(WebCore::CDMInstance&) final;
+    bool waitingForKey() const final { return m_waitingForKey; }
+#endif
+
     ThreadSafeWeakPtr<WebCore::MediaPlayer> m_player;
     unsigned m_id;
     RefPtr<HostMediaSource> m_mediaSource;
@@ -95,6 +103,7 @@ private:
     bool m_seeking { false };
     bool m_ended { false };
     bool m_muted { false };
+    bool m_waitingForKey { false };
     unsigned m_totalFrames { 0 };
     unsigned m_droppedFrames { 0 };
 

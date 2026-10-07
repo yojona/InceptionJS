@@ -7,6 +7,7 @@
 #include "MediaEngineConfigurationFactory.h"
 #include "MediaPlayer.h"
 #include "bridge/Bridge.h"
+#include "media/HostCDM.h"
 #include "media/HostMediaPlayer.h"
 #include "media/HostMediaSource.h"
 #include <wtf/HashMap.h>
@@ -193,6 +194,16 @@ void install()
         if (auto* player = HostMediaPlayer::fromID(args.getInteger("id"_s).value_or(0)))
             player->update(args);
     });
+
+    // {id, initDataType, initData}
+    registerCommand("media.encrypted"_s, [](JSON::Object& args) {
+        if (auto* player = HostMediaPlayer::fromID(args.getInteger("id"_s).value_or(0)))
+            player->encrypted(args);
+    });
+
+#if ENABLE(ENCRYPTED_MEDIA)
+    installHostCDM();
+#endif
 
     // {id, sb, buffered: [[start, end], ...], error}
     registerCommand("media.bufferDone"_s, [](JSON::Object& args) {
