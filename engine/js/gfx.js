@@ -75,7 +75,7 @@ addToLibrary({
     postMessage({ inceptionWantsFrame: 1 });
   },
 
-  $inceptionGfxInstall__deps: ['$inceptionGfx'],
+  $inceptionGfxInstall__deps: ['$inceptionGfx', 'inception_loop_schedule'],
   $inceptionGfxInstall__postset: 'inceptionGfxInstall();',
   $inceptionGfxInstall: () => {
     if (!ENVIRONMENT_IS_PTHREAD) return;
@@ -83,6 +83,7 @@ addToLibrary({
       if (!e.data?.inceptionFrameTick) return;
       inceptionGfx.frameRequested = false;
       Module._inception_gfx_frame();
+      _inception_loop_schedule(0);
     });
   },
 });
