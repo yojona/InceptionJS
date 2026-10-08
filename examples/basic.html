@@ -9,8 +9,17 @@
   #menu button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 6px 14px; font: inherit; }
   #menu button:hover { background: #eef; }
   input { flex: 1; padding: 6px 8px; font: inherit; }
-  inception-view { width: 100vw; height: calc(100vh - 50px); background: #fff; }
+  inception-view { width: 100vw; height: calc(100vh - 86px); background: #fff; }
+  #tabs { display: flex; gap: 2px; padding: 6px 8px 0; overflow-x: auto; }
+  #tabs .tab { display: flex; align-items: center; gap: 6px; max-width: 200px; padding: 6px 10px; border: 0; border-radius: 6px 6px 0 0; background: #e4e4e7; font: inherit; cursor: default; }
+  #tabs .tab[aria-selected="true"] { background: #fff; }
+  #tabs .tab span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  #tabs .close { border: 0; background: none; padding: 0 2px; font: inherit; }
+  #downloads { position: fixed; right: 12px; bottom: 12px; display: none; flex-direction: column; gap: 6px; width: 280px; padding: 8px; background: #fff; border: 1px solid #ccc; border-radius: 8px; box-shadow: 0 4px 16px #0002; z-index: 5; }
+  #downloads .item { display: flex; align-items: center; gap: 6px; }
+  #downloads .item span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 </style>
+<div id="tabs" role="tablist"><button type="button" id="newTab" class="tab" title="New tab">+</button></div>
 <form id="bar">
   <button type="button" id="back" title="Back" disabled>&larr;</button>
   <button type="button" id="forward" title="Forward" disabled>&rarr;</button>
@@ -22,6 +31,7 @@
   <button type="button" id="zoomIn" title="Zoom in">+</button>
 </form>
 <div id="menu"></div>
+<div id="downloads" aria-live="polite"></div>
 <inception-view id="view" src="https://example.com/"></inception-view>
 <script type="module">
   import { Inception } from '../host/inception-view.js';
@@ -68,13 +78,68 @@
   document.addEventListener('pointerdown', (e) => { if (!menu.contains(e.target)) hideMenu(); });
   view.addEventListener('contextmenurequest', (e) => {
     const d = e.detail, items = [];
-    if (d.link) items.push(['Open link', () => view.navigate(d.link)], ['Copy link', () => navigator.clipboard.writeText(d.link)], ['Save link as', () => view.download(d.link)]);
-    if (d.image) items.push(['Open image', () => view.navigate(d.image)], ['Save image', () => view.download(d.image)]);
+    if (d.link) items.push(['Open link', () => view.navigate(d.link)], ['Open link in new tab', () => view.createTab(d.link, { activate: false })], ['Copy link', () => navigator.clipboard.writeText(d.link)], ['Save link as', () => view.download(d.link)]);
+    if (d.image) items.push(['Open image', () => view.navigate(d.image)], ['Open image in new tab', () => view.createTab(d.image)], ['Copy image address', () => navigator.clipboard.writeText(d.image)], ['Save image', () => view.download(d.image)]);
     if (d.selection) items.push(['Copy', () => navigator.clipboard.writeText(d.selection)]);
+    if (d.editable) items.push(['Paste', () => view.edit('Paste')]);
     items.push(['Back', () => view.back()], ['Reload', () => view.reload()]);
     menu.replaceChildren(...items.map(([label, run]) => Object.assign(document.createElement('button'), { textContent: label, onclick: () => { hideMenu(); run(); } })));
     const rect = view.getBoundingClientRect();
     Object.assign(menu.style, { display: 'block', left: `${rect.left + d.x}px`, top: `${rect.top + d.y}px` });
   });
   view.addEventListener('crash', (e) => console.error('engine crashed:', e.detail.reason));
+
+  // Tab strip: one button per tab, from the view's tab events.
+  const strip = $('tabs');
+  const tabButtons = new Map();
+  const renderTab = (id) => {
+    const tab = view.tabs.find((t) => t.id === id);
+    const button = tabButtons.get(id);
+    if (!tab || !button) return;
+    button.querySelector('span').textContent = (tab.audible ? '\u{1F50A} ' : '') + (tab.title || tab.url || 'New tab');
+    button.title = tab.url;
+    button.setAttribute('aria-selected', String(tab.active));
+  };
+  view.addEventListener('tabcreated', (e) => {
+    const id = e.detail.tab;
+    const button = Object.assign(document.createElement('div'), { className: 'tab', role: 'tab', tabIndex: 0 });
+    button.append(document.createElement('span'), Object.assign(document.createElement('button'), { type: 'button', className: 'close', textContent: '\u00d7', title: 'Close tab', onclick: (ev) => { ev.stopPropagation(); view.closeTab(id); } }));
+    button.onclick = () => view.activateTab(id);
+    tabButtons.set(id, button);
+    strip.insertBefore(button, $('newTab'));
+    renderTab(id);
+  });
+  view.addEventListener('tabupdated', (e) => renderTab(e.detail.tab));
+  view.addEventListener('tabactivated', () => tabButtons.forEach((_, id) => renderTab(id)));
+  view.addEventListener('tabclosed', (e) => { tabButtons.get(e.detail.tab)?.remove(); tabButtons.delete(e.detail.tab); });
+  $('newTab').onclick = () => view.createTab('https://example.com/');
+
+  // Downloads list: progress, pause/resume and cancel.
+  const list = $('downloads');
+  const rows = new Map();
+  const row = (id) => rows.get(id);
+  view.addEventListener('downloadstart', (e) => {
+    const { id, filename, size } = e.detail;
+    const item = Object.assign(document.createElement('div'), { className: 'item' });
+    const label = Object.assign(document.createElement('span'), { textContent: filename });
+    const progress = Object.assign(document.createElement('progress'), { max: size || 1, value: 0 });
+    let paused = false;
+    const toggle = Object.assign(document.createElement('button'), { type: 'button', textContent: 'Pause' });
+    toggle.onclick = () => { paused ? view.resumeDownload(id) : view.pauseDownload(id); };
+    const cancel = Object.assign(document.createElement('button'), { type: 'button', textContent: 'Cancel', onclick: () => view.cancelDownload(id) });
+    item.append(label, progress, toggle, cancel);
+    rows.set(id, { item, progress, toggle, setPaused: (value) => { paused = value; toggle.textContent = value ? 'Resume' : 'Pause'; } });
+    list.append(item);
+    list.style.display = 'flex';
+  });
+  view.addEventListener('downloadprogress', (e) => { const r = row(e.detail.id); if (r) r.progress.value = e.detail.received; });
+  view.addEventListener('downloadpause', (e) => row(e.detail.id)?.setPaused(true));
+  view.addEventListener('downloadresume', (e) => { const r = row(e.detail.id); if (r) { r.setPaused(false); r.progress.value = e.detail.received; } });
+  view.addEventListener('downloadfinish', (e) => {
+    const r = row(e.detail.id);
+    if (!r) return;
+    r.toggle.remove();
+    r.progress.replaceWith(Object.assign(document.createElement('small'), { textContent: e.detail.error ?? 'Done' }));
+    setTimeout(() => { r.item.remove(); rows.delete(e.detail.id); if (!rows.size) list.style.display = 'none'; }, 5000);
+  });
 </script>
