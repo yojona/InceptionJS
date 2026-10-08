@@ -14,6 +14,9 @@
 #   BUILD_ENV  extra "NAME=value ..." passed to the command
 #   KEEP=1     leave the server running
 #   SERVER     reuse this running server (left running; delete it when done)
+#   REMOTE_DIR checkout directory on the server (/srv/inceptionjs). A new one is
+#              seeded from /srv/inceptionjs/.work, so branches built side by side
+#              on one server start with a warm build tree and compiler cache
 #   SSH_KEY    private key (~/.ssh/inceptionjs-build); its public half is registered
 set -euo pipefail
 
@@ -22,6 +25,7 @@ TYPE="${TYPE:-cpx62}"
 LOC="${LOC:-fsn1}"
 IMAGE="${IMAGE:-ubuntu-24.04}"
 FETCH="${FETCH:-.work/out}"
+REMOTE_DIR="${REMOTE_DIR:-/srv/inceptionjs}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/inceptionjs-build}"
 KEY_NAME="inceptionjs-build"
 NAME="${SERVER:-inceptionjs-build-$(date +%Y%m%d-%H%M%S)}"
@@ -59,20 +63,23 @@ IP="$(hcloud server ip "$NAME")"
 for _ in $(seq 1 60); do remote -o ConnectTimeout=5 true 2>/dev/null && break; sleep 5; done
 
 remote 'command -v docker >/dev/null || (apt-get update -qq && apt-get install -y -qq docker.io rsync >/dev/null)'
+if [ "$REMOTE_DIR" != /srv/inceptionjs ]; then
+  remote "[ -d $REMOTE_DIR/.work ] || [ ! -d /srv/inceptionjs/.work ] || (mkdir -p $REMOTE_DIR && cp -a --reflink=auto /srv/inceptionjs/.work $REMOTE_DIR/.work)"
+fi
 rsync -a --delete -e "ssh ${ssh_opts[*]}" \
   --exclude .work/ --exclude node_modules/ --exclude .git/ \
-  "$ROOT/" "root@$IP:/srv/inceptionjs/"
-remote 'cd /srv/inceptionjs && docker build -q -t inceptionjs-build build >/dev/null'
+  "$ROOT/" "root@$IP:$REMOTE_DIR/"
+remote "cd $REMOTE_DIR && docker build -q -t inceptionjs-build build >/dev/null"
 
 started=$(date +%s)
 printf -v quoted '%q ' "${COMMAND[@]}"
 status=0
-remote "docker run --rm -v /srv/inceptionjs:/work/inceptionjs inceptionjs-build env ${BUILD_ENV:-} bash -c $(printf %q "$quoted")" || status=$?
+remote "docker run --rm -v $REMOTE_DIR:/work/inceptionjs inceptionjs-build env ${BUILD_ENV:-} bash -c $(printf %q "$quoted")" || status=$?
 echo "remote command took $(( $(date +%s) - started )) s (exit $status)"
 
 # Logs come back even when the command failed; that is when they matter.
 mkdir -p "$ROOT/.work/logs"
-rsync -a -e "ssh ${ssh_opts[*]}" "root@$IP:/srv/inceptionjs/.work/logs/" "$ROOT/.work/logs/" || true
+rsync -a -e "ssh ${ssh_opts[*]}" "root@$IP:$REMOTE_DIR/.work/logs/" "$ROOT/.work/logs/" || true
 
 # A failed build still leaves a warm build tree and compiler cache worth keeping.
 if [ "${SNAPSHOT:-0}" = 1 ]; then
@@ -83,5 +90,5 @@ fi
 [ "$status" = 0 ] || exit "$status"
 
 mkdir -p "$ROOT/$FETCH"
-rsync -a -e "ssh ${ssh_opts[*]}" "root@$IP:/srv/inceptionjs/$FETCH/" "$ROOT/$FETCH/"
+rsync -a -e "ssh ${ssh_opts[*]}" "root@$IP:$REMOTE_DIR/$FETCH/" "$ROOT/$FETCH/"
 echo "fetched $FETCH"
