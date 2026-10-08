@@ -116,6 +116,11 @@ private:
     void dispatchDidFinishLoad() final;
     void emitIcons();
 
+    // target=_blank and named targets: the new tab comes from the chrome
+    // client, as window.open's does.
+    WebCore::LocalFrame* dispatchCreatePage(const WebCore::NavigationAction&, WebCore::NewFrameOpenerPolicy) final;
+    void dispatchShow() final;
+
     void dispatchDidClearWindowObjectInWorld(WebCore::DOMWrapperWorld&) final;
 
     bool isMainFrame() const;

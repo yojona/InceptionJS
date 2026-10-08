@@ -24,7 +24,9 @@
 #include "LinkIcon.h"
 #include "LinkIconCollector.h"
 #include "LinkIconType.h"
+#include "Chrome.h"
 #include "LocalFrameInlines.h"
+#include "WindowFeatures.h"
 #include "MediaProducer.h"
 #include "NavigationAction.h"
 #include "UserGestureIndicator.h"
@@ -568,6 +570,21 @@ void FrameLoaderClientImpl::dispatchDidFailProvisionalLoad(const ResourceError& 
         emitLoadFinished(m_view, &error);
 }
 
+LocalFrame* FrameLoaderClientImpl::dispatchCreatePage(const NavigationAction& action, NewFrameOpenerPolicy)
+{
+    RefPtr page = m_frame->page();
+    if (!page)
+        return nullptr;
+    RefPtr newPage = page->chrome().createWindow(m_frame.get(), { }, { }, action);
+    return newPage ? dynamicDowncast<LocalFrame>(newPage->mainFrame()) : nullptr;
+}
+
+void FrameLoaderClientImpl::dispatchShow()
+{
+    if (RefPtr page = m_frame->page())
+        page->chrome().show();
+}
+
 // The page's icons ("tab.icons"), largest first; the host picks one and
 // fetches it as it sees fit.
 void FrameLoaderClientImpl::emitIcons()
@@ -587,7 +604,7 @@ void FrameLoaderClientImpl::emitIcons()
         list->pushObject(WTF::move(entry));
     }
     // A site without <link rel=icon> still has the conventional one.
-    if (!list->length()) {
+    if (!list->length() && document->url().protocolIsInHTTPFamily()) {
         auto entry = JSON::Object::create();
         entry->setString("url"_s, URL { document->url(), "/favicon.ico"_s }.string());
         list->pushObject(WTF::move(entry));
