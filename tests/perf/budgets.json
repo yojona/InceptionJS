@@ -1,0 +1,15 @@
+{
+  "size.total.brotli": { "max": 60 },
+  "size.wasm.brotli": { "max": 25 },
+  "startup.ready": { "max": 8000 },
+  "startup.firstContentfulFrame.exampleCom": { "max": 15000 },
+  "load.wikipedia": { "max": 20000 },
+  "load.youtubeHome": { "max": 40000 },
+  "load.youtubeWatch": { "max": 40000 },
+  "load.news": { "max": 40000 },
+  "scroll.fps.mean": { "min": 10 },
+  "scroll.frameTime.p95": { "max": 250 },
+  "media.timeToFirstFrame.youtubeWatch": { "max": 30000 },
+  "memory.wasm.peak": { "max": 2500 },
+  "memory.jsHeap.peak": { "max": 600 }
+}
