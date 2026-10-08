@@ -73,3 +73,11 @@ test('a download reaches the host as a file', async ({ page }) => {
   expect(result.filename).toBe('robots.txt');
   expect(result.size).toBeGreaterThan(0);
 });
+
+test('a second view on an open profile says so in the view', async ({ page, context }) => {
+  const second = await context.newPage();
+  await second.goto(`${PAGE}?url=about:blank`);
+  const message = second.locator('inception-view').locator('.message');
+  await expect(message).toContainText('already open in another tab', { timeout: 20_000 });
+  await second.close();
+});

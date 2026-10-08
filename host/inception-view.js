@@ -65,6 +65,8 @@ export class InceptionView extends HTMLElement {
       canvas, .media { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
       .media { overflow: hidden; pointer-events: none; }
       textarea { position: absolute; left: 0; top: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; resize: none; pointer-events: none; }
+      .message { position: absolute; inset: 0; z-index: 4; display: flex; align-items: center; justify-content: center; padding: 24px;
+        text-align: center; font: 500 14px/1.5 system-ui, sans-serif; color: #333; background: #f6f6f7; }
       ${PROVENANCE_STYLE}
     </style><div class="media" part="media"></div><canvas part="screen"></canvas><textarea aria-label="Web content" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>`;
     this.#canvas = shadow.querySelector('canvas');
@@ -99,7 +101,11 @@ export class InceptionView extends HTMLElement {
     if (!this.hasAttribute('tabindex')) this.tabIndex = 0;
     // Deferred so a page can define the element and configure it in the same
     // script, in either order.
-    queueMicrotask(() => this.ready.catch((error) => this.dispatchEvent(new CustomEvent('crash', { detail: { reason: String(error?.message ?? error) } }))));
+    queueMicrotask(() => this.ready.catch((error) => {
+      const reason = String(error?.message ?? error);
+      this.#showMessage(reason);
+      this.dispatchEvent(new CustomEvent('crash', { detail: { reason } }));
+    }));
   }
 
   attributeChangedCallback(name, previous, value) {
@@ -177,7 +183,7 @@ export class InceptionView extends HTMLElement {
         resolve(!!lock);
         return lock ? new Promise(() => {}) : undefined;
       }));
-      if (!acquired) throw new Error(`The profile "${profile}" is open in another tab or window`);
+      if (!acquired) throw new Error(`The profile "${profile}" is already open in another tab or window. Close it there, or open this page with a different profile.`);
     }
     navigator.storage?.persist?.().catch(() => {});
     this.#runtime = new EngineRuntime({ engineUrl: config.engineUrl, wispUrl: config.wispUrl, canvas: this.#canvas });
@@ -273,6 +279,20 @@ export class InceptionView extends HTMLElement {
     this.#provenance.navigated(tab.url);
     for (const [name, detail] of [['navigate', { url: tab.url }], ['title', { title: tab.title }], ['loading', { loading: tab.loading }]])
       this.#server?.emit(name, { tab: id, ...detail });
+  }
+
+  // Why the view cannot start, shown in the view itself so it never just stays
+  // blank (e.g. the profile is open in another tab).
+  #showMessage(text) {
+    let box = this.#shadow.querySelector('.message');
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'message';
+      box.setAttribute('part', 'message');
+      box.setAttribute('role', 'alert');
+      this.#shadow.append(box);
+    }
+    box.textContent = text;
   }
 
   // The page asked for fullscreen (or to leave it); the view element itself
