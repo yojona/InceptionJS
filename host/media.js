@@ -63,6 +63,7 @@ export class MediaHost {
   #eme;
   #releasing = new Set();
   #fetches = new Map();
+  #master = { volume: 1, muted: false };
 
   // `layer` is the element that holds the videos, under the canvas.
   // `soundAllowed`: the embedder knows autoplay with sound is permitted (a
@@ -79,6 +80,20 @@ export class MediaHost {
     this.#eme = eme;
   }
 
+  // The embedder's master output level (the view's volume/muted): it scales
+  // every video and applies to the ones already playing.
+  setMaster({ volume, muted }) {
+    this.#master = { volume, muted };
+    for (const player of this.#players.values()) this.#output(player);
+  }
+
+  // A video's effective sound: the page's level times the master's; silent when
+  // either mutes, or while held muted for the autoplay policy.
+  #output(player) {
+    player.video.volume = player.volume * this.#master.volume;
+    if (!player.forcedMute) player.video.muted = player.muted || this.#master.muted;
+  }
+
   // A user gesture anywhere in the host page: videos muted only to get past
   // the autoplay policy get their sound back. Activation is sticky for the
   // page's lifetime, so this happens at most once per page load.
@@ -86,7 +101,7 @@ export class MediaHost {
     for (const player of this.#players.values()) {
       if (player.forcedMute) {
         player.forcedMute = false;
-        player.video.muted = player.muted;
+        this.#output(player);
       }
       if (player.wantsPlay && player.video.paused) this.#play(player);
     }
@@ -134,11 +149,10 @@ export class MediaHost {
     case 'media.pause': player.wantsPlay = false; player.video.pause(); return;
     case 'media.seek': player.video.currentTime = data.time; return;
     case 'media.rate': player.video.playbackRate = data.rate; return;
-    case 'media.volume': player.video.volume = Math.min(1, Math.max(0, data.volume)); return;
+    case 'media.volume': player.volume = Math.min(1, Math.max(0, data.volume)); return this.#output(player);
     case 'media.muted':
       player.muted = data.muted;
-      if (!player.forcedMute) player.video.muted = data.muted;
-      return;
+      return this.#output(player);
     case 'media.layout': return this.#layout(player, data.rect);
     case 'media.setMediaKeys': return this.#setMediaKeys(player, data.keys);
     case 'media.captureAudio': return this.#captureAudio(player, data);
@@ -234,7 +248,7 @@ export class MediaHost {
     video.preload = 'auto';
     Object.assign(video.style, { position: 'absolute', left: '0', top: '0', width: '0', height: '0', objectFit: 'contain', background: 'black', display: 'none' });
     this.#layer.append(video);
-    const player = { id, video, source: null, sourceOpen: null, buffers: new Map(), muted: false, forcedMute: false, wantsPlay: false, pendingDuration: undefined, stateQueued: false };
+    const player = { id, video, source: null, sourceOpen: null, buffers: new Map(), muted: false, volume: 1, forcedMute: false, wantsPlay: false, pendingDuration: undefined, stateQueued: false };
     for (const type of STATE_EVENTS) video.addEventListener(type, () => this.#queueState(player, type));
     video.addEventListener('error', () => console.warn(`[media] video ${id} error ${video.error?.code}: ${video.error?.message}`));
     for (const type of ['loadstart', 'loadedmetadata', 'canplay', 'playing', 'pause', 'waiting', 'stalled', 'emptied', 'ended', 'error', 'encrypted', 'waitingforkey'])

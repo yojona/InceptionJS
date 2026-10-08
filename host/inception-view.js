@@ -41,7 +41,7 @@ const DOM_EVENT_NAMES = { contextmenu: 'contextmenurequest', 'navigation.state':
 // A thin client: it speaks the protocol to a server bound to its own engine,
 // exactly as a remote agent would. `serve(transport)` connects more clients.
 export class InceptionView extends HTMLElement {
-  static observedAttributes = ['src', 'provenance-corner', 'provenance'];
+  static observedAttributes = ['src', 'provenance-corner', 'provenance', 'volume', 'muted'];
 
   #runtime = null;
   #server = null;
@@ -54,6 +54,9 @@ export class InceptionView extends HTMLElement {
   #provenance;
   #preferences = new Preferences((changed) => this.#runtime?.send('preferences', changed));
   #media = null;
+  #audio = null;
+  #volume = 1;
+  #muted = false;
   #debugRequests = 0;
   #ready = null;
   #state = { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, zoom: 1 };
@@ -97,6 +100,25 @@ export class InceptionView extends HTMLElement {
   get preferences() { return this.#preferences.settings; }
   set preferences(values) { this.#preferences.set(values); }
 
+  // Master output level for everything this view plays (media and Web Audio),
+  // on top of what the pages set themselves. Applies to sound already playing.
+  get volume() { return this.#volume; }
+  set volume(value) {
+    this.#volume = Math.min(1, Math.max(0, Number(value) || 0));
+    this.#applyLevel();
+  }
+
+  get muted() { return this.#muted; }
+  set muted(value) {
+    this.#muted = !!value;
+    this.#applyLevel();
+  }
+
+  #applyLevel() {
+    this.#media?.setMaster({ volume: this.#volume, muted: this.#muted });
+    this.#audio?.setLevel(this.#muted ? 0 : this.#volume);
+  }
+
   connectedCallback() {
     // Not in the constructor: an element created with document.createElement
     // must not gain attributes there.
@@ -113,6 +135,8 @@ export class InceptionView extends HTMLElement {
   attributeChangedCallback(name, previous, value) {
     if (name === 'src' && value && value !== previous && this.#client) this.navigate(value);
     if (name === 'provenance-corner') this.#provenance.setCorner(value);
+    if (name === 'volume') this.volume = value ?? 1;
+    if (name === 'muted') this.muted = value !== null;
     if (name === 'provenance') this.#provenance.setEnabled(value !== 'off');
   }
 
@@ -202,7 +226,9 @@ export class InceptionView extends HTMLElement {
     const soundAllowed = this.hasAttribute('autoplay-sound') || config.policy?.autoplaySound === true;
     const eme = new EncryptedMedia((command, args) => this.#runtime.send(command, args), { onKeysUsable: (mediaKeys) => this.#media.keysUsable(mediaKeys) });
     const audio = new AudioHost(() => this.#runtime.memory(), { soundAllowed });
+    this.#audio = audio;
     this.#media = new MediaHost(this.#mediaLayer, (command, args) => this.#runtime.send(command, args), { soundAllowed, eme, audio });
+    this.#applyLevel();
     const modules = new Modules(this, (command, args) => this.#runtime.send(command, args), config.modules);
     const downloads = new Downloads(this);
     this.#runtime.onDownloadChunk = (chunk) => (this.#media.ownsFetch(chunk.id) ? this.#media.fetchChunk(chunk) : downloads.chunk(chunk));

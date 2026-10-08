@@ -74,6 +74,8 @@ export class AudioHost {
   #memory;
   #contexts = new Map();
   #nodes = new Map();
+  #masters = new Map();
+  #level = 1;
   #moduleUrl = URL.createObjectURL(new Blob([PROCESSOR], { type: 'text/javascript' }));
   #soundAllowed;
 
@@ -94,9 +96,15 @@ export class AudioHost {
       outputChannelCount: [channels],
       processorOptions: { memory: this.#memory(), header, samples, capacity, channels },
     });
-    node.connect(context.destination);
+    node.connect(this.#masters.get(context) ?? context.destination);
     this.#nodes.set(id, node);
     this.#tryResume(context);
+  }
+
+  // The embedder's master output level, 0..1 (0 when muted).
+  setLevel(level) {
+    this.#level = level;
+    for (const master of this.#masters.values()) master.gain.value = level;
   }
 
   close({ id }) {
@@ -136,7 +144,12 @@ export class AudioHost {
     let entry = this.#contexts.get(sampleRate);
     if (!entry) {
       const context = new AudioContext({ sampleRate, latencyHint: 'interactive' });
-      entry = context.audioWorklet.addModule(this.#moduleUrl).then(() => context);
+      entry = context.audioWorklet.addModule(this.#moduleUrl).then(() => {
+        const master = new GainNode(context, { gain: this.#level });
+        master.connect(context.destination);
+        this.#masters.set(context, master);
+        return context;
+      });
       this.#contexts.set(sampleRate, entry);
     }
     return entry;
