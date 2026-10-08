@@ -56,15 +56,59 @@
   // defaultPlaybackRate, muted and volume on media elements, and calls
   // play(), pause() and load(), with the calling script's location.
   if (params.get('medialog') === '1') view.ready.then(() => view.debugCommand('debug.inject', { source: `(() => {
+    const t0 = performance.now();
+    const stamp = () => ((performance.now() - t0) / 1000).toFixed(3);
+    const log = (text) => console.info('[pagemedia ' + stamp() + '] ' + text);
     const where = () => (new Error().stack || '').split('\\n').slice(2, 4).map((l) => l.trim()).join(' < ');
+    const ranges = (r) => { const out = []; for (let i = 0; r && i < r.length; i++) out.push(r.start(i).toFixed(2) + '-' + r.end(i).toFixed(2)); return out.join(',') || 'none'; };
+    const ids = new WeakMap(); let next = 0;
+    // Media elements are often never in the document (new Audio()), so each is
+    // watched directly the first time the page touches it.
+    const tag = (el) => { if (!ids.has(el)) { ids.set(el, ++next); watch(el); } return el.tagName + '#' + ids.get(el); };
     const proto = HTMLMediaElement.prototype;
-    for (const name of ['playbackRate', 'defaultPlaybackRate', 'muted', 'volume']) {
+    for (const name of ['playbackRate', 'defaultPlaybackRate', 'muted', 'volume', 'currentTime', 'src', 'srcObject']) {
       const d = Object.getOwnPropertyDescriptor(proto, name);
-      Object.defineProperty(proto, name, { ...d, set(v) { console.info('[pagemedia] ' + this.tagName + ' ' + name + ' = ' + v + ' from ' + where()); d.set.call(this, v); } });
+      if (!d || !d.set) continue;
+      Object.defineProperty(proto, name, { ...d, set(v) { log(tag(this) + ' ' + name + ' = ' + (typeof v === 'object' ? String(v) : v) + ' from ' + where()); d.set.call(this, v); } });
     }
-    for (const name of ['play', 'pause', 'load']) {
+    for (const name of ['play', 'pause', 'load', 'setMediaKeys']) {
       const f = proto[name];
-      proto[name] = function (...args) { console.info('[pagemedia] ' + this.tagName + ' ' + name + '() rate=' + this.playbackRate + ' from ' + where()); return f.apply(this, args); };
+      proto[name] = function (...args) { log(tag(this) + ' ' + name + '() rate=' + this.playbackRate + ' rs=' + this.readyState + ' from ' + where()); return f.apply(this, args); };
+    }
+    // Reads the page makes, counted per element and property, summarized every
+    // two seconds with the value it last saw.
+    const reads = new Map();
+    for (const name of ['readyState', 'buffered', 'currentTime', 'seeking', 'paused', 'networkState', 'played', 'ended', 'duration', 'seekable', 'error']) {
+      const d = Object.getOwnPropertyDescriptor(proto, name);
+      if (!d || !d.get) continue;
+      Object.defineProperty(proto, name, { ...d, get() {
+        const v = d.get.call(this);
+        const key = tag(this) + '.' + name;
+        const shown = (name === 'buffered' || name === 'played' || name === 'seekable') ? ranges(v) : (name === 'currentTime' ? v.toFixed(3) : String(v && v.code !== undefined ? 'MediaError ' + v.code : v));
+        const entry = reads.get(key) || { count: 0 };
+        entry.count++; entry.value = shown; reads.set(key, entry);
+        return v;
+      } });
+    }
+    if (window.HTMLVideoElement && HTMLVideoElement.prototype.getVideoPlaybackQuality) {
+      const q = HTMLVideoElement.prototype.getVideoPlaybackQuality;
+      HTMLVideoElement.prototype.getVideoPlaybackQuality = function () { const r = q.call(this); const key = tag(this) + '.getVideoPlaybackQuality'; const e = reads.get(key) || { count: 0 }; e.count++; e.value = r.totalVideoFrames + '/' + r.droppedVideoFrames; reads.set(key, e); return r; };
+    }
+    setInterval(() => { if (!reads.size) return; log('reads ' + [...reads].map(([k, e]) => k + '=' + e.value + ' x' + e.count).join(' ')); reads.clear(); }, 2000);
+    // Which events the page listens for, and every event it receives.
+    const add = EventTarget.prototype.addEventListener;
+    EventTarget.prototype.addEventListener = function (type, ...rest) {
+      if (this instanceof HTMLMediaElement) log(tag(this) + ' listens ' + type + ' from ' + where());
+      return add.call(this, type, ...rest);
+    };
+    const EVENTS = ['loadstart', 'loadedmetadata', 'loadeddata', 'canplay', 'canplaythrough', 'playing', 'waiting', 'stalled', 'suspend', 'progress', 'timeupdate', 'seeking', 'seeked', 'pause', 'play', 'ended', 'emptied', 'error', 'ratechange', 'durationchange', 'encrypted', 'waitingforkey', 'volumechange'];
+    const lastTimeupdate = new WeakMap();
+    function watch(el) { for (const type of EVENTS) add.call(el, type, onEvent, true); }
+    function onEvent(e) {
+      const el = e.currentTarget, type = e.type;
+      if (type === 'timeupdate' || type === 'progress') { const last = lastTimeupdate.get(el) || 0; if (performance.now() - last < 1000) return; lastTimeupdate.set(el, performance.now()); }
+      const get = (n) => Object.getOwnPropertyDescriptor(proto, n).get.call(el);
+      log(tag(el) + ' event ' + type + ' t=' + get('currentTime').toFixed(3) + ' rs=' + get('readyState') + ' ns=' + get('networkState') + ' rate=' + el.playbackRate + ' paused=' + get('paused') + ' buffered=' + ranges(get('buffered')));
     }
   })()` }));
   // ?netlog=1 reports every network request in the log.
