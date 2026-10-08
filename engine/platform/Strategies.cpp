@@ -20,6 +20,7 @@
 #include "SubresourceLoader.h"
 #include "bridge/Bridge.h"
 #include "net/NetworkLoad.h"
+#include "net/PingLoad.h"
 #include <wtf/HashMap.h>
 #include <wtf/RunLoop.h>
 
@@ -68,8 +69,10 @@ public:
 
     void startPingLoad(LocalFrame&, ResourceRequest& request, const HTTPHeaderMap&, const FetchOptions&, ContentSecurityPolicyImposition, PingLoadCompletionHandler&& completionHandler) final
     {
-        if (completionHandler)
-            completionHandler(makeError(request.url(), 2, "Ping loads are not supported yet"_s), { });
+        PingLoad::start(request, [completionHandler = WTF::move(completionHandler)](const ResourceError& error, const ResourceResponse& response) mutable {
+            if (completionHandler)
+                completionHandler(error, response);
+        });
     }
 
     void preconnectTo(FrameLoader&, ResourceRequest&&, StoredCredentialsPolicy, ShouldPreconnectAsFirstParty, PreconnectCompletionHandler&& completionHandler) final
