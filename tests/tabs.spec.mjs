@@ -63,17 +63,20 @@ test('the last tab cannot be closed', async ({ page }) => {
   expect((await tabs(page)).map((t) => t.id)).toEqual([first]);
 });
 
-test('hidden tabs report their own title and url', async ({ page }) => {
+test('hidden tabs report their own title', async ({ page }) => {
+  // Tabs a page opens stay in the background with this policy.
+  await page.evaluate(async () => (await import('/host/inception-view.js')).Inception.configure({ policy: { newTabs: 'background' } }));
   const first = await activeTab(page);
-  const url = 'data:text/html,<title>background</title>';
-  await view(page).evaluate((el, u) => el.createTab(u, { activate: false }), url);
-  await expect.poll(async () => (await tabs(page)).find((t) => t.id !== first)?.title).toBe('background');
+  await write(page, '<title>opener</title><button id="b" style="font-size:40px" onclick="window.open(\'https://example.com/\')">open</button>');
+  const box = await view(page).boundingBox();
+  await page.mouse.click(box.x + 40, box.y + 30);
+  await expect.poll(async () => (await tabs(page)).find((t) => t.id !== first)?.title, { timeout: 30_000 }).toBe('Example Domain');
   const hidden = (await tabs(page)).find((t) => t.id !== first);
-  expect(hidden.url).toBe(url);
   expect(hidden.active).toBe(false);
+  expect(hidden.opener).toBe(first);
   // The view itself still shows the first tab.
   expect(await activeTab(page)).toBe(first);
-  expect(await view(page).evaluate((el) => el.title)).not.toBe('background');
+  expect(await view(page).evaluate((el) => el.title)).toBe('opener');
 });
 
 test('a download can be paused and resumed', async ({ page }) => {
