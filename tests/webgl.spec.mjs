@@ -117,18 +117,91 @@ test('the page context budget follows the renderer, or the embedder', async ({ p
   expect(await view(page).evaluate((el) => el.ready.then((r) => r.webglContexts))).toBe(2);
 });
 
-test('pages hold their whole budget; one more loses their oldest', async ({ page }) => {
-  const budget = await view(page).evaluate((el) => el.ready.then((r) => r.webglContexts));
-  // The lost event comes later, as in browsers; isContextLost() answers now.
-  const counts = JSON.parse(await evaluate(page, `(() => {
-    window.held = [];
-    const lostCount = () => window.held.filter((gl) => gl.isContextLost()).length;
-    for (let i = 0; i < ${budget}; i++) window.held.push(document.createElement('canvas').getContext('webgl2'));
-    const within = lostCount();
-    window.held.push(document.createElement('canvas').getContext('webgl2'));
-    return JSON.stringify({ within, past: lostCount(), firstLost: window.held[0].isContextLost(), lastLost: window.held.at(-1).isContextLost() });
+test('pages hold many WebGL contexts at once, each with its own state', async ({ page }) => {
+  // Sixteen contexts (WebKit's per-page limit, as in browsers), far past the
+  // host's per-worker cap: none is lost, and each keeps its own clear color,
+  // scissor and bindings while the others draw.
+  const result = JSON.parse(await evaluate(page, `(() => {
+    const contexts = [];
+    for (let i = 0; i < 16; i++) {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 16;
+      document.body.append(canvas);
+      const gl = canvas.getContext(i % 2 ? 'webgl' : 'webgl2');
+      gl.clearColor(i / 15, 1 - i / 15, (i % 3) / 2, 1);
+      gl.enable(gl.SCISSOR_TEST);
+      gl.scissor(0, 0, 8 + (i % 8), 8);
+      gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+      contexts.push(gl);
+    }
+    const results = contexts.map((gl, i) => {
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      const inside = new Uint8Array(4), outside = new Uint8Array(4);
+      gl.readPixels(1, 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, inside);
+      gl.readPixels(15, 15, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, outside);
+      return {
+        lost: gl.isContextLost(),
+        inside: [...inside],
+        outside: [...outside],
+        scissor: [...gl.getParameter(gl.SCISSOR_BOX)],
+        textureBound: gl.getParameter(gl.TEXTURE_BINDING_2D) !== null,
+        error: gl.getError(),
+      };
+    });
+    return JSON.stringify(results);
   })()`));
-  expect(counts).toEqual({ within: 0, past: 1, firstLost: true, lastLost: false });
+  expect(result).toHaveLength(16);
+  result.forEach((r, i) => {
+    const expected = [Math.round(255 * i / 15), Math.round(255 * (1 - i / 15)), Math.round(255 * (i % 3) / 2), 255];
+    expect(r.lost).toBe(false);
+    r.inside.forEach((v, c) => expect(Math.abs(v - expected[c])).toBeLessThanOrEqual(1));
+    expect(r.outside).toEqual([0, 0, 0, 0]);
+    expect(r.scissor).toEqual([0, 0, 8 + (i % 8), 8]);
+    expect(r.textureBound).toBe(true);
+    expect(r.error).toBe(0);
+  });
+});
+
+test('interleaved draws in two contexts keep their vertex state apart', async ({ page }) => {
+  const pixels = JSON.parse(await evaluate(page, `(() => {
+    const make = (kind, color) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 8;
+      const gl = canvas.getContext(kind);
+      const shader = (type, source) => { const s = gl.createShader(type); gl.shaderSource(s, source); gl.compileShader(s); return s; };
+      const program = gl.createProgram();
+      gl.attachShader(program, shader(gl.VERTEX_SHADER, 'attribute vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }'));
+      gl.attachShader(program, shader(gl.FRAGMENT_SHADER, 'precision mediump float; uniform vec4 c; void main() { gl_FragColor = c; }'));
+      gl.linkProgram(program);
+      gl.useProgram(program);
+      gl.uniform4fv(gl.getUniformLocation(program, 'c'), color);
+      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+      return gl;
+    };
+    const a = make('webgl', [1, 0, 0, 1]);
+    const b = make('webgl', [0, 0, 1, 1]);
+    const c = make('webgl2', [0, 1, 0, 1]);
+    const draw = (gl) => { gl.drawArrays(gl.TRIANGLES, 0, 3); const p = new Uint8Array(4); gl.readPixels(4, 4, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p); return [...p]; };
+    return JSON.stringify([draw(a), draw(b), draw(c), draw(a), draw(c), draw(b)]);
+  })()`));
+  expect(pixels).toEqual([[255, 0, 0, 255], [0, 0, 255, 255], [0, 255, 0, 255], [255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]]);
+});
+
+test('losing a page context leaves the others working', async ({ page }) => {
+  const result = JSON.parse(await evaluate(page, `(() => {
+    const a = document.createElement('canvas').getContext('webgl2');
+    const b = document.createElement('canvas').getContext('webgl2');
+    a.getExtension('WEBGL_lose_context').loseContext();
+    b.clearColor(0, 1, 0, 1);
+    b.clear(b.COLOR_BUFFER_BIT);
+    const p = new Uint8Array(4);
+    b.readPixels(0, 0, 1, 1, b.RGBA, b.UNSIGNED_BYTE, p);
+    return JSON.stringify({ aLost: a.isContextLost(), bLost: b.isContextLost(), pixel: [...p] });
+  })()`));
+  expect(result).toEqual({ aLost: true, bLost: false, pixel: [0, 255, 0, 255] });
 });
 
 test('the engine recovers when its own WebGL context is lost', async ({ page }) => {
