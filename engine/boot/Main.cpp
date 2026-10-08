@@ -151,6 +151,11 @@ int main()
     // inception_loop_iterate); a concurrent one would resume mid-stack.
     setenv("JSC_useConcurrentGC", "false", 1);
 
+    // The interpreter's JavaScript stack: about as deep as other browsers
+    // allow (some ten thousand frames), and shallow enough that runaway
+    // recursion fails fast.
+    setenv("JSC_maxPerThreadStackUsage", "2097152", 1);
+
     JSC::initialize();
     WTF::initializeMainThread();
     Inception::installPlatformStrategies();
