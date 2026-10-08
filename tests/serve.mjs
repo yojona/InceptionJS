@@ -1,14 +1,14 @@
 // Development server: the repository with the headers InceptionJS needs
 // (cross-origin isolation for SharedArrayBuffer). /engine/ maps to the build
 // output. No caching, so a rebuilt engine is picked up on reload.
-//   node tests/serve.mjs            PORT (8085), HOST (127.0.0.1)
+//   node tests/serve.mjs            PORT (8085), HOST (127.0.0.1), ENGINE_DIR
 import { createServer } from 'node:http';
 import { createReadStream, statSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const engineDir = resolve(root, '.work/out/engine');
+const engineDir = resolve(root, process.env.ENGINE_DIR ?? '.work/out/engine');
 const port = Number(process.env.PORT ?? 8085);
 const host = process.env.HOST ?? '127.0.0.1';
 
