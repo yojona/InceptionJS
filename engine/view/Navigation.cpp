@@ -27,6 +27,7 @@ void emitNavigationState()
         return;
     auto& history = view->page().backForward();
     auto state = JSON::Object::create();
+    state->setInteger("tab"_s, view->id());
     state->setBoolean("canGoBack"_s, history.canGoBackOrForward(-1));
     state->setBoolean("canGoForward"_s, history.canGoBackOrForward(1));
     emitEvent("navigation.state"_s, WTF::move(state));
@@ -34,6 +35,26 @@ void emitNavigationState()
 
 void registerNavigationCommands()
 {
+    // {url?, activate?} -> "tab.created" {tab}; then "tab.activated" if asked.
+    registerCommand("tab.create"_s, [](JSON::Object& args) {
+        if (!View::singleton())
+            return;
+        auto& tab = View::createTab();
+        auto url = args.getString("url"_s);
+        if (!url.isEmpty())
+            tab.load(URL { url });
+        if (args.getBoolean("activate"_s).value_or(true))
+            View::activate(tab.id());
+    });
+    // {tab}
+    registerCommand("tab.activate"_s, [](JSON::Object& args) {
+        View::activate(args.getInteger("tab"_s).value_or(0));
+    });
+    // {tab} -> "tab.closed" {tab}; the last tab stays.
+    registerCommand("tab.close"_s, [](JSON::Object& args) {
+        View::close(args.getInteger("tab"_s).value_or(0));
+    });
+
     registerCommand("back"_s, [](JSON::Object&) {
         if (auto* view = View::singleton())
             view->page().backForward().goBack();

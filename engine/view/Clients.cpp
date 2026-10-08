@@ -21,7 +21,13 @@
 #include "HTMLFrameOwnerElement.h"
 #include "HistoryController.h"
 #include "HistoryItem.h"
+#include "LinkIcon.h"
+#include "LinkIconCollector.h"
+#include "LinkIconType.h"
 #include "LocalFrameInlines.h"
+#include "MediaProducer.h"
+#include "NavigationAction.h"
+#include "UserGestureIndicator.h"
 #include "LocalFrameView.h"
 #include "MIMETypeRegistry.h"
 #include "ResourceError.h"
@@ -287,6 +293,55 @@ static ASCIILiteral cssCursor(Cursor::Type type)
     return "default"_s;
 }
 
+RefPtr<Page> ChromeClientImpl::createWindow(LocalFrame&, const String& openedMainFrameName, const WindowFeatures&, const NavigationAction& action)
+{
+    auto& tab = View::createTab(m_view.id());
+    auto data = JSON::Object::create();
+    data->setInteger("tab"_s, tab.id());
+    data->setInteger("opener"_s, m_view.id());
+    data->setString("url"_s, action.url().string());
+    if (!openedMainFrameName.isEmpty())
+        data->setString("name"_s, openedMainFrameName);
+    data->setBoolean("userGesture"_s, UserGestureIndicator::processingUserGesture());
+    emitEvent("tab.opened"_s, WTF::move(data));
+    return &tab.page();
+}
+
+// The page asked to show the window it opened: the host decides whether it
+// becomes the active tab.
+void ChromeClientImpl::show()
+{
+    auto data = JSON::Object::create();
+    data->setInteger("tab"_s, m_view.id());
+    emitEvent("tab.show"_s, WTF::move(data));
+}
+
+void ChromeClientImpl::closeWindow()
+{
+    View::close(m_view.id());
+}
+
+void ChromeClientImpl::focus()
+{
+    if (!m_view.isActive()) {
+        auto data = JSON::Object::create();
+        data->setInteger("tab"_s, m_view.id());
+        emitEvent("tab.focus"_s, WTF::move(data));
+    }
+}
+
+void ChromeClientImpl::isPlayingMediaDidChange(MediaProducerMediaStateFlags state)
+{
+    bool audible = state.contains(MediaProducerMediaState::IsPlayingAudio);
+    if (audible == m_audible)
+        return;
+    m_audible = audible;
+    auto data = JSON::Object::create();
+    data->setInteger("tab"_s, m_view.id());
+    data->setBoolean("audible"_s, audible);
+    emitEvent("tab.audible"_s, WTF::move(data));
+}
+
 void ChromeClientImpl::setCursor(const Cursor& cursor)
 {
     String css = cssCursor(cursor.type());
@@ -411,12 +466,12 @@ void FrameLoaderClientImpl::startDownload(const ResourceRequest& request, const 
         Download::start(request, suggestedName);
 }
 
-void FrameLoaderClientImpl::dispatchDecidePolicyForNewWindowAction(const NavigationAction&, const ResourceRequest& request, FormState*, const String&, std::optional<HitTestResult>&&, FramePolicyFunction&& function)
+// target=_blank and the like: WebCore opens a new tab through createWindow,
+// and the host decides what to do with it. Pop-ups without a user gesture are
+// already blocked by WebCore.
+void FrameLoaderClientImpl::dispatchDecidePolicyForNewWindowAction(const NavigationAction&, const ResourceRequest&, FormState*, const String&, std::optional<HitTestResult>&&, FramePolicyFunction&& function)
 {
-    auto data = JSON::Object::create();
-    data->setString("url"_s, request.url().string());
-    emitEvent("popup"_s, WTF::move(data));
-    function(PolicyAction::Ignore);
+    function(PolicyAction::Use);
 }
 
 bool FrameLoaderClientImpl::canShowMIMEType(const String& mimeType) const
@@ -466,6 +521,7 @@ void FrameLoaderClientImpl::dispatchDidStartProvisionalLoad()
     if (!isMainFrame())
         return;
     auto data = JSON::Object::create();
+    data->setInteger("tab"_s, m_view.id());
     data->setBoolean("loading"_s, true);
     emitEvent("loading"_s, WTF::move(data));
 }
@@ -475,6 +531,7 @@ void FrameLoaderClientImpl::dispatchDidReceiveTitle(const StringWithDirection& t
     if (!isMainFrame())
         return;
     auto data = JSON::Object::create();
+    data->setInteger("tab"_s, m_view.id());
     data->setString("title"_s, title.string);
     emitEvent("title"_s, WTF::move(data));
     if (RefPtr loader = m_frame->loader().documentLoader())
@@ -486,15 +543,17 @@ void FrameLoaderClientImpl::dispatchDidCommitLoad(std::optional<HasInsecureConte
     if (!isMainFrame())
         return;
     auto data = JSON::Object::create();
+    data->setInteger("tab"_s, m_view.id());
     auto& url = m_frame->loader().documentLoader()->url();
     data->setString("url"_s, url.string());
     emitEvent("navigate"_s, WTF::move(data));
     History::recordVisit(url);
 }
 
-static void emitLoadFinished(const ResourceError* error)
+static void emitLoadFinished(View& view, const ResourceError* error)
 {
     auto data = JSON::Object::create();
+    data->setInteger("tab"_s, view.id());
     data->setBoolean("loading"_s, false);
     if (error && !error->isCancellation()) {
         data->setString("error"_s, error->localizedDescription());
@@ -506,19 +565,51 @@ static void emitLoadFinished(const ResourceError* error)
 void FrameLoaderClientImpl::dispatchDidFailProvisionalLoad(const ResourceError& error, WillContinueLoading, WillInternallyHandleFailure)
 {
     if (isMainFrame())
-        emitLoadFinished(&error);
+        emitLoadFinished(m_view, &error);
+}
+
+// The page's icons ("tab.icons"), largest first; the host picks one and
+// fetches it as it sees fit.
+void FrameLoaderClientImpl::emitIcons()
+{
+    RefPtr document = m_frame->document();
+    if (!document)
+        return;
+    auto icons = LinkIconCollector { Ref { *document } }.iconsOfTypes({ LinkIconType::Favicon, LinkIconType::TouchIcon, LinkIconType::TouchPrecomposedIcon });
+    auto list = JSON::Array::create();
+    for (auto& icon : icons) {
+        auto entry = JSON::Object::create();
+        entry->setString("url"_s, icon.url.string());
+        if (icon.size)
+            entry->setInteger("size"_s, *icon.size);
+        if (!icon.mimeType.isEmpty())
+            entry->setString("type"_s, icon.mimeType);
+        list->pushObject(WTF::move(entry));
+    }
+    // A site without <link rel=icon> still has the conventional one.
+    if (!list->length()) {
+        auto entry = JSON::Object::create();
+        entry->setString("url"_s, URL { document->url(), "/favicon.ico"_s }.string());
+        list->pushObject(WTF::move(entry));
+    }
+    auto data = JSON::Object::create();
+    data->setInteger("tab"_s, m_view.id());
+    data->setArray("icons"_s, WTF::move(list));
+    emitEvent("tab.icons"_s, WTF::move(data));
 }
 
 void FrameLoaderClientImpl::dispatchDidFailLoad(const ResourceError& error)
 {
     if (isMainFrame())
-        emitLoadFinished(&error);
+        emitLoadFinished(m_view, &error);
 }
 
 void FrameLoaderClientImpl::dispatchDidFinishLoad()
 {
-    if (isMainFrame())
-        emitLoadFinished(nullptr);
+    if (isMainFrame()) {
+        emitLoadFinished(m_view, nullptr);
+        emitIcons();
+    }
     m_view.setNeedsPaint();
 }
 

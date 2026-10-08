@@ -46,6 +46,16 @@ private:
 
     RefPtr<WebCore::PopupMenu> createPopupMenu(WebCore::PopupMenuClient&) const final;
 
+    // window.open() and target=_blank: a new tab the host decides on
+    // ("tab.created", then "tab.show"); window.close() closes this tab.
+    RefPtr<WebCore::Page> createWindow(WebCore::LocalFrame&, const String& openedMainFrameName, const WebCore::WindowFeatures&, const WebCore::NavigationAction&) final;
+    void show() final;
+    void closeWindow() final;
+    void focus() final;
+
+    // Whether the tab plays sound ("tab.audible").
+    void isPlayingMediaDidChange(WebCore::MediaProducerMediaStateFlags) final;
+
     // The host's file picker; the chosen files are copied into the engine's
     // file system before "file.chosen" arrives.
     void runOpenPanel(WebCore::LocalFrame&, WebCore::FileChooser&) final;
@@ -62,6 +72,7 @@ private:
 
     RefPtr<WebCore::FileChooser> m_fileChooser;
     String m_cursor;
+    bool m_audible { false };
     String m_sensitiveField;
     CompletionHandler<void(WebCore::ExceptionOr<void>)> m_willEnterFullscreen;
     CompletionHandler<bool(bool)> m_didEnterFullscreen;
@@ -103,6 +114,7 @@ private:
     void dispatchDidFailProvisionalLoad(const WebCore::ResourceError&, WebCore::WillContinueLoading, WebCore::WillInternallyHandleFailure) final;
     void dispatchDidFailLoad(const WebCore::ResourceError&) final;
     void dispatchDidFinishLoad() final;
+    void emitIcons();
 
     void dispatchDidClearWindowObjectInWorld(WebCore::DOMWrapperWorld&) final;
 
