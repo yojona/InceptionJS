@@ -36,8 +36,19 @@ export class EncryptedMedia {
   #keys = new Map(); // engine MediaKeys id -> Promise<MediaKeys>
   #sessions = new Map(); // engine session id -> {keys, native}
 
-  constructor(send) {
+  // `onKeysUsable(mediaKeys)`: a session of that host MediaKeys has a usable key.
+  constructor(send, { onKeysUsable } = {}) {
     this.#send = send;
+    this.#onKeysUsable = onKeysUsable;
+  }
+
+  #onKeysUsable;
+
+  #reportUsable(keys, native) {
+    let usable = false;
+    native.keyStatuses.forEach((status) => { if (status === 'usable') usable = true; });
+    if (!usable) return;
+    this.mediaKeys(keys).then((mediaKeys) => mediaKeys && this.#onKeysUsable?.(mediaKeys));
   }
 
   // The host MediaKeys mirroring engine MediaKeys `id`, or null.
@@ -126,6 +137,7 @@ export class EncryptedMedia {
       mediaLog(`eme session ${session} message`, message);
       this.#send('eme.message', { session, ...message });
     });
+    native.addEventListener('keystatuseschange', () => this.#reportUsable(keys, native));
     native.addEventListener('keystatuseschange', () => mediaLog(`eme session ${session} keystatuses`, this.#statuses(native)));
     native.addEventListener('keystatuseschange', () => this.#send('eme.keyStatuses', { session, statuses: this.#statuses(native) }));
     return native;

@@ -195,6 +195,12 @@ void install()
             player->update(args);
     });
 
+    // {id}: see HostMediaPlayer::keysUsable.
+    registerCommand("media.keysUsable"_s, [](JSON::Object& args) {
+        if (auto* player = HostMediaPlayer::fromID(args.getInteger("id"_s).value_or(0)))
+            player->keysUsable();
+    });
+
     // {id, initDataType, initData}
     registerCommand("media.encrypted"_s, [](JSON::Object& args) {
         if (auto* player = HostMediaPlayer::fromID(args.getInteger("id"_s).value_or(0)))

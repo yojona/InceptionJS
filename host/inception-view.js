@@ -191,7 +191,7 @@ export class InceptionView extends HTMLElement {
     // Videos play in the host page, under the canvas (host/media.js).
     // `autoplay-sound`: the embedder knows playback with sound is allowed here.
     const soundAllowed = this.hasAttribute('autoplay-sound') || config.policy?.autoplaySound === true;
-    const eme = new EncryptedMedia((command, args) => this.#runtime.send(command, args));
+    const eme = new EncryptedMedia((command, args) => this.#runtime.send(command, args), { onKeysUsable: (mediaKeys) => this.#media.keysUsable(mediaKeys) });
     this.#media = new MediaHost(this.#mediaLayer, (command, args) => this.#runtime.send(command, args), { soundAllowed, eme });
     const audio = new AudioHost(() => this.#runtime.memory(), { soundAllowed });
     const modules = new Modules(this, (command, args) => this.#runtime.send(command, args), config.modules);

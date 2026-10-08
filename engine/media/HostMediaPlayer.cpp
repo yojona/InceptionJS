@@ -297,6 +297,30 @@ void HostMediaPlayer::cdmInstanceDetached(CDMInstance&)
 }
 #endif
 
+// Media that waited for a key becomes playable now, as in a browser, where
+// encrypted media cannot advance until its key arrives. The element goes
+// through waiting and back, so the page sees the stall end (waiting, then
+// canplay, canplaythrough and playing), even if the host already reported
+// data it could not yet decrypt.
+void HostMediaPlayer::keysUsable()
+{
+    RefPtr player = m_player.get();
+    if (!player)
+        return;
+    if (m_waitingForKey) {
+        m_waitingForKey = false;
+        player->waitingForKeyChanged();
+    }
+    if (m_readyState < MediaPlayer::ReadyState::HaveFutureData)
+        return;
+    auto readyState = m_readyState;
+    m_readyState = MediaPlayer::ReadyState::HaveMetadata;
+    player->readyStateChanged();
+    m_readyState = readyState;
+    m_currentTimeUpdatedAt = MonotonicTime::now();
+    player->readyStateChanged();
+}
+
 void HostMediaPlayer::update(JSON::Object& state)
 {
     RefPtr player = m_player.get();

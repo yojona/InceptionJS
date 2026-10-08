@@ -139,6 +139,16 @@ export class MediaHost {
     }
   }
 
+  // Every element decrypting with these MediaKeys can play now.
+  keysUsable(mediaKeys) {
+    for (const player of this.#players.values()) {
+      if (player.video.mediaKeys !== mediaKeys) continue;
+      player.waitingForKey = false;
+      mediaLog(`video ${player.id} keys usable`);
+      this.#send('media.keysUsable', { id: player.id });
+    }
+  }
+
   append(id, sb, seq, bytes) {
     const player = this.#players.get(id);
     mediaLog('append', { id, sb, seq, bytes: bytes.byteLength, known: !!player });

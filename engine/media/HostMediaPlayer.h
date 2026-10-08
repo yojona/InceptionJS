@@ -29,6 +29,8 @@ public:
     void update(JSON::Object& state);
     // The host <video> met encrypted media: {initDataType, initData}.
     void encrypted(JSON::Object&);
+    // The host's CDM made a key usable for this element's media.
+    void keysUsable();
     void sendToHost(const String& event, Ref<JSON::Object>&& data = JSON::Object::create());
 
     // Where the page painted the video during the frame, in CSS pixels of the
