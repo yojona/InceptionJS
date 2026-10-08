@@ -38,3 +38,18 @@ test('the color scheme follows the host unless set', async ({ page }) => {
   await view(page).evaluate((el) => { el.preferences = { colorScheme: 'light' }; });
   await expect.poll(async () => (await read(page)).dark).toBe(false);
 });
+
+test('navigator.inception names the engine, read-only, in every frame', async ({ page }) => {
+  await page.goto(`${PAGE}?url=https://example.com/`);
+  await view(page).evaluate((el) => el.ready);
+  await expect.poll(() => evaluate(page, 'location.host + " " + document.readyState'), { timeout: 30_000 }).toBe('example.com complete');
+  const result = JSON.parse(await evaluate(page, `(() => {
+    const signal = navigator.inception;
+    try { navigator.inception = null; } catch {}
+    try { signal.engine = 'x'; } catch {}
+    const frame = document.createElement('iframe');
+    document.body.append(frame);
+    return JSON.stringify({ signal, frozen: Object.isFrozen(signal), same: navigator.inception === signal, ownKey: Object.keys(navigator).includes('inception'), inFrame: frame.contentWindow.navigator.inception?.engine ?? null });
+  })()`));
+  expect(result).toEqual({ signal: { engine: 'InceptionJS', version: expect.stringMatching(/^\d+\.\d+/) }, frozen: true, same: true, ownKey: false, inFrame: 'InceptionJS' });
+});

@@ -3,6 +3,16 @@
 // them would: feature detection sees them, and every request is refused with
 // the error a page already handles.
 (() => {
+  // The page-visible engine signal (responsible-release: honest
+  // identification): navigator.inception tells a page it runs inside
+  // InceptionJS without UA sniffing. Read-only and frozen, on the prototype
+  // so it adds nothing to navigator's own keys, and it says nothing about who
+  // embeds the view. __INCEPTION_VERSION__ is filled in by the host.
+  if (!('inception' in Navigator.prototype)) {
+    const signal = Object.freeze({ engine: 'InceptionJS', version: '__INCEPTION_VERSION__' });
+    Object.defineProperty(Navigator.prototype, 'inception', { get: () => signal, enumerable: false, configurable: false });
+  }
+
   const denied = (what) => new DOMException(`${what} is not allowed`, 'NotAllowedError');
   const define = (target, name, value) => {
     if (!(name in target)) Object.defineProperty(target, name, { value, configurable: true, writable: true, enumerable: false });
