@@ -86,6 +86,21 @@ void Download::curlDidReceiveResponse(CurlRequest& curl, CurlResponse&& curlResp
         finish(makeString("HTTP "_s, response.httpStatusCode()));
         return;
     }
+    if (std::exchange(m_resuming, false)) {
+        auto data = JSON::Object::create();
+        data->setDouble("id"_s, m_id);
+        if (response.httpStatusCode() == 206) {
+            data->setDouble("received"_s, m_received);
+            emitEvent("download.resumed"_s, WTF::move(data));
+        } else {
+            // The server ignored the range: the file starts over.
+            m_received = 0;
+            m_reported = 0;
+            emitEvent("download.restarted"_s, WTF::move(data));
+        }
+        curl.completeDidReceiveResponse();
+        return;
+    }
     auto filename = m_suggestedFilename;
     if (filename.isEmpty())
         filename = response.suggestedFilename();
@@ -137,6 +152,35 @@ void Download::cancel()
     finish("Cancelled"_s);
 }
 
+// Stops the transfer and keeps what arrived; resume() asks the server for the
+// rest with a range request.
+void Download::pause()
+{
+    if (m_paused || !m_curl)
+        return;
+    m_paused = true;
+    if (RefPtr curl = std::exchange(m_curl, nullptr)) {
+        curl->invalidateClient();
+        curl->cancel();
+    }
+    auto data = JSON::Object::create();
+    data->setDouble("id"_s, m_id);
+    data->setDouble("received"_s, m_received);
+    emitEvent("download.paused"_s, WTF::move(data));
+}
+
+void Download::resume()
+{
+    if (!m_paused)
+        return;
+    m_paused = false;
+    m_resuming = m_started;
+    m_request.removeHTTPHeaderField(HTTPHeaderName::Cookie);
+    if (m_resuming && m_received)
+        m_request.setHTTPHeaderField(HTTPHeaderName::Range, makeString("bytes="_s, m_received, '-'));
+    begin();
+}
+
 void Download::finish(const String& error)
 {
     if (RefPtr curl = std::exchange(m_curl, nullptr)) {
@@ -160,6 +204,19 @@ void Download::registerCommands()
         auto id = static_cast<uint64_t>(args.getDouble("id"_s).value_or(0));
         if (auto it = active().find(id); it != active().end())
             Ref { it->value }->cancel();
+    });
+    // {id} -> "download.paused" {id, received}
+    registerCommand("download.pause"_s, [](JSON::Object& args) {
+        auto id = static_cast<uint64_t>(args.getDouble("id"_s).value_or(0));
+        if (auto it = active().find(id); it != active().end())
+            Ref { it->value }->pause();
+    });
+    // {id} -> "download.resumed" {id, received}, or "download.restarted" {id}
+    // when the server cannot continue where it stopped.
+    registerCommand("download.resume"_s, [](JSON::Object& args) {
+        auto id = static_cast<uint64_t>(args.getDouble("id"_s).value_or(0));
+        if (auto it = active().find(id); it != active().end())
+            Ref { it->value }->resume();
     });
     // {url}: a download the host asked for (a context menu's "Save").
     registerCommand("download.start"_s, [](JSON::Object& args) {

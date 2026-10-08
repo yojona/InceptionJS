@@ -11,7 +11,8 @@ namespace Inception {
 // A file the page downloads: fetched by the engine (cookies, TLS, the relay,
 // like any load) and streamed to the host, which saves it where the embedder
 // decides. Events: download.started {id, url, filename, mime, size},
-// download.progress {id, received, size}, download.finished {id, error?}; the
+// download.progress {id, received, size}, download.paused/resumed {id, received},
+// download.restarted {id}, download.finished {id, error?}; the
 // bytes travel next to them as transferable chunks.
 class Download final : public RefCounted<Download>, public WebCore::CurlRequestClient {
 public:
@@ -25,6 +26,8 @@ private:
     Download(const WebCore::ResourceRequest&, const String& suggestedFilename);
     void begin();
     void cancel();
+    void pause();
+    void resume();
 
     void curlDidSendData(WebCore::CurlRequest&, unsigned long long, unsigned long long) final { }
     void curlDidReceiveResponse(WebCore::CurlRequest&, WebCore::CurlResponse&&) final;
@@ -43,6 +46,8 @@ private:
     uint64_t m_size { 0 };
     uint64_t m_reported { 0 };
     bool m_started { false };
+    bool m_paused { false };
+    bool m_resuming { false };
 };
 
 } // namespace Inception
