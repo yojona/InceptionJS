@@ -70,7 +70,6 @@ export class InceptionView extends HTMLElement {
     this.#textInput = shadow.querySelector('textarea');
     this.#shadow = shadow;
     this.#provenance = new Provenance(shadow, this);
-    if (!this.hasAttribute('tabindex')) this.tabIndex = 0;
   }
 
   get url() { return this.#state.url; }
@@ -86,6 +85,9 @@ export class InceptionView extends HTMLElement {
   set preferences(values) { this.#preferences.set(values); }
 
   connectedCallback() {
+    // Not in the constructor: an element created with document.createElement
+    // must not gain attributes there.
+    if (!this.hasAttribute('tabindex')) this.tabIndex = 0;
     // Deferred so a page can define the element and configure it in the same
     // script, in either order.
     queueMicrotask(() => this.ready.catch((error) => this.dispatchEvent(new CustomEvent('crash', { detail: { reason: String(error?.message ?? error) } }))));
