@@ -77,3 +77,48 @@ test('MediaKeys follow the element across source changes', async ({ page }) => {
   await page.waitForTimeout(1000);
   expect(warnings).toEqual([]);
 });
+
+// A player that holds playbackRate at 0 until its element un-stalls (as some
+// streaming players do while rebuffering) must see the stall end once the
+// license makes its key usable, even if media data arrived before it.
+test('a key becoming usable ends the stall for a player holding rate 0', async ({ page }) => {
+  await page.goto(`${PAGE}?url=https://example.com/`);
+  await view(page).evaluate((el) => el.ready);
+  await expect.poll(() => evaluate(page, 'location.host + " " + document.readyState'), { timeout: 30_000 }).toBe('example.com complete');
+  await evaluate(page, `(async () => {
+    window.stall = [];
+    const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+    const base = 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps_480x270_600k/bbb_30fps_480x270_600k_';
+    const access = await navigator.requestMediaKeySystemAccess('org.w3.clearkey', [{ initDataTypes: ['keyids'], videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.64001e"' }] }]);
+    const keys = await access.createMediaKeys();
+    const video = document.createElement('video');
+    video.muted = true;
+    document.body.append(video);
+    await video.setMediaKeys(keys);
+    video.playbackRate = 0;
+    let usable = false;
+    for (const type of ['waiting', 'canplaythrough', 'playing']) video.addEventListener(type, () => {
+      window.stall.push((usable ? 'after:' : 'before:') + type);
+      if (usable && type === 'canplaythrough') video.playbackRate = 1;
+    });
+    const source = new MediaSource();
+    video.src = URL.createObjectURL(source);
+    await new Promise((r) => source.addEventListener('sourceopen', r, { once: true }));
+    const sb = source.addSourceBuffer('video/mp4; codecs="avc1.64001e"');
+    for (const part of ['0.m4v', '1.m4v', '2.m4v']) {
+      sb.appendBuffer(await (await fetch(base + part)).arrayBuffer());
+      await new Promise((r) => sb.addEventListener('updateend', r, { once: true }));
+    }
+    await video.play();
+    await new Promise((r) => setTimeout(r, 1500));
+    const session = keys.createSession();
+    const message = new Promise((r) => session.addEventListener('message', r, { once: true }));
+    await session.generateRequest('keyids', new TextEncoder().encode(JSON.stringify({ kids: [b64url(new Uint8Array(16).fill(1))] })));
+    const kid = JSON.parse(new TextDecoder().decode((await message).message)).kids[0];
+    usable = true;
+    await session.update(new TextEncoder().encode(JSON.stringify({ keys: [{ kty: 'oct', kid, k: b64url(new Uint8Array(16).fill(2)) }] })));
+    window.stallVideo = video;
+  })(), 'x'`);
+  await expect.poll(() => evaluate(page, 'JSON.stringify(window.stall.filter((e) => e.startsWith("after:")))'), { timeout: 30_000 }).toContain('after:canplaythrough');
+  await expect.poll(() => evaluate(page, 'String(window.stallVideo && window.stallVideo.currentTime > 0.5)'), { timeout: 20_000 }).toBe('true');
+});
