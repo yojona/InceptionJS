@@ -1,0 +1,43 @@
+Round aligned allocations up to a multiple of their alignment.
+
+C's aligned_alloc only promises sizes that are a multiple of the alignment,
+and Emscripten's allocator returns null for others, which WTF turns into a
+crash. Web Audio's arrays (an FFT's n/2 + 1 bins) hit it at once.
+
+diff --git a/Source/WTF/wtf/FastMalloc.cpp b/Source/WTF/wtf/FastMalloc.cpp
+index b8a269c..51a02c7 100644
+--- a/Source/WTF/wtf/FastMalloc.cpp
++++ b/Source/WTF/wtf/FastMalloc.cpp
+@@ -186,10 +186,22 @@ void fastAlignedFree(void* p)
+ 
+ #else
+ 
++// C's aligned_alloc only promises sizes that are a multiple of the alignment;
++// Emscripten's allocator returns null for the others.
++static size_t alignedAllocationSize(size_t alignment, size_t size)
++{
++#if PLATFORM(EMSCRIPTEN)
++    return (size + alignment - 1) / alignment * alignment;
++#else
++    UNUSED_PARAM(alignment);
++    return size;
++#endif
++}
++
+ void* fastAlignedMalloc(size_t alignment, size_t size) 
+ {
+     ASSERT_IS_WITHIN_LIMIT(size);
+-    void* p = aligned_alloc(alignment, size);
++    void* p = aligned_alloc(alignment, alignedAllocationSize(alignment, size));
+     if (!p) [[unlikely]]
+         CRASH();
+     return p;
+@@ -198,7 +210,7 @@ void* fastAlignedMalloc(size_t alignment, size_t size)
+ void* tryFastAlignedMalloc(size_t alignment, size_t size) 
+ {
+     FAIL_IF_EXCEEDS_LIMIT(size);
+-    return aligned_alloc(alignment, size);
++    return aligned_alloc(alignment, alignedAllocationSize(alignment, size));
+ }
+ 
+ void fastAlignedFree(void* p) 
