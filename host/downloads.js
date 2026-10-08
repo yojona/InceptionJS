@@ -3,6 +3,9 @@
 // over, saves the finished file the way the host browser saves any download.
 //   downloadstart    {id, url, filename, mime, size}
 //   downloadprogress {id, received, size}
+//   downloadpause    {id, received}
+//   downloadresume   {id, received}; after a restart (the server could not
+//                    continue) received is 0 and the file starts over
 //   downloadfinish   {id, filename, mime, error?, blob?}; preventDefault()
 //                    keeps the host browser from saving it
 export class Downloads {
@@ -19,6 +22,14 @@ export class Downloads {
       this.#view.dispatchEvent(new CustomEvent('downloadstart', { detail: data }));
     } else if (name === 'download.progress') {
       this.#view.dispatchEvent(new CustomEvent('downloadprogress', { detail: data }));
+    } else if (name === 'download.paused') {
+      this.#view.dispatchEvent(new CustomEvent('downloadpause', { detail: data }));
+    } else if (name === 'download.resumed') {
+      this.#view.dispatchEvent(new CustomEvent('downloadresume', { detail: data }));
+    } else if (name === 'download.restarted') {
+      const entry = this.#active.get(data.id);
+      if (entry) entry.chunks = [];
+      this.#view.dispatchEvent(new CustomEvent('downloadresume', { detail: { id: data.id, received: 0 } }));
     } else if (name === 'download.finished') {
       const entry = this.#active.get(data.id);
       this.#active.delete(data.id);

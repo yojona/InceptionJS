@@ -8,6 +8,7 @@ import { EncryptedMedia } from './eme.js';
 import { AudioHost } from './audio.js';
 import { Modules } from './modules.js';
 import { Downloads } from './downloads.js';
+import { Tabs } from './tabs.js';
 import { EngineRuntime } from './runtime.js';
 import { WasmTranslator } from './wasm-translator.js';
 import { ProtocolClient, ProtocolServer, createInPagePair } from './protocol.js';
@@ -54,6 +55,7 @@ export class InceptionView extends HTMLElement {
   #debugRequests = 0;
   #ready = null;
   #state = { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, zoom: 1 };
+  #tabs = new Tabs(this, (command, args) => this.#runtime?.send(command, args), () => config.policy);
 
   constructor() {
     super();
@@ -78,6 +80,13 @@ export class InceptionView extends HTMLElement {
   get canGoBack() { return this.#state.canGoBack; }
   get canGoForward() { return this.#state.canGoForward; }
   get ready() { return this.#ready ??= this.#start(); }
+
+  // Tabs share this view and its engine; one is shown (host/tabs.js).
+  get tabs() { return this.#tabs.list(); }
+  get activeTab() { return this.#tabs.active; }
+  async createTab(url = '', { activate = true } = {}) { await this.ready; this.#tabs.create(String(url), { activate }); }
+  async activateTab(id) { await this.ready; this.#tabs.activate(id); }
+  async closeTab(id) { await this.ready; this.#tabs.close(id); }
 
   // See host/preferences.js. Setting merges: {colorScheme: 'dark'} keeps the
   // other fields; a field set to 'auto' follows the host again.
@@ -119,6 +128,10 @@ export class InceptionView extends HTMLElement {
   // Downloads a URL with the page's cookies, as "Save link as" does.
   async download(url) { await this.ready; this.#runtime.send('download.start', { url: String(url) }); }
   async cancelDownload(id) { await this.ready; this.#runtime.send('download.cancel', { id }); }
+  // An editing command in the focused frame: 'Copy', 'Cut', 'Paste', 'SelectAll', 'Undo', 'Redo'.
+  async edit(command) { await this.ready; this.#runtime.send('edit', { command: String(command) }); }
+  async pauseDownload(id) { await this.ready; this.#runtime.send('download.pause', { id }); }
+  async resumeDownload(id) { await this.ready; this.#runtime.send('download.resume', { id }); }
   async deleteHistory(range) { await this.ready; return this.#client.request('history.delete', range); }
 
   // Development aid: evaluates script in the engine's main frame.
@@ -191,6 +204,10 @@ export class InceptionView extends HTMLElement {
       if (name.startsWith('media.')) this.#media.handleEvent(name, data);
       if (name.startsWith('eme.')) eme.handleEvent(name, data);
       if (name.startsWith('download.')) downloads.handleEvent(name, data);
+      if (name.startsWith('tab.')) {
+        this.#tabs.handleEvent(name, data);
+        if (name === 'tab.activated') this.#showTab(data.tab);
+      }
       if (name === 'audio.open') audio.open(data);
       if (name === 'audio.close') audio.close(data);
       if (name.startsWith('permission.') || name.startsWith('geolocation.') || name.startsWith('notification.')) modules.handleEvent(name, data);
@@ -226,6 +243,7 @@ export class InceptionView extends HTMLElement {
     const gpu = this.getAttribute('gpu') ?? 'auto';
     this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: await probeMediaCapabilities(), wasmPolyfill, pageShims, wispUrl: config.wispUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? defaultUserAgent(), preferences: this.#preferences.resolved(), webglContexts: config.webglContexts | 0, url: this.getAttribute('src') ?? '' });
     const ready = await engineReady;
+    this.#tabs.started(ready.tab ?? 1);
     this.#runtime.addEventListener('crash', (e) => this.dispatchEvent(new CustomEvent('crash', { detail: { reason: e.detail.message, stack: e.detail.stack } })));
     if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');
     this.dataset.renderer = ready.renderer;
@@ -242,6 +260,16 @@ export class InceptionView extends HTMLElement {
       this.#runtime.send('resize', { ...size, deviceScaleFactor: devicePixelRatio });
     }).observe(this);
     return ready;
+  }
+
+  // Another tab is shown: the view's own state and events follow it.
+  #showTab(id) {
+    const tab = this.#tabs.get(id);
+    if (!tab) return;
+    Object.assign(this.#state, { url: tab.url, title: tab.title, loading: tab.loading, canGoBack: tab.canGoBack, canGoForward: tab.canGoForward });
+    this.#provenance.navigated(tab.url);
+    for (const [name, detail] of [['navigate', { url: tab.url }], ['title', { title: tab.title }], ['loading', { loading: tab.loading }]])
+      this.#server?.emit(name, { tab: id, ...detail });
   }
 
   // The page asked for fullscreen (or to leave it); the view element itself
@@ -289,8 +317,14 @@ export class InceptionView extends HTMLElement {
       if (!(factor > 0)) throw new TypeError('factor must be a positive number');
       runtime.send('zoom', { factor });
     });
+    server.handle('view.tabs', () => this.#tabs.list());
+    server.handle('view.createTab', ({ url = '', activate = true } = {}) => this.#tabs.create(String(url), { activate: !!activate }));
+    server.handle('view.activateTab', ({ tab } = {}) => this.#tabs.activate(Number(tab)));
+    server.handle('view.closeTab', ({ tab } = {}) => this.#tabs.close(Number(tab)));
     for (const name of VIEW_EVENTS) {
       runtime.addEventListener(name, (e) => {
+        // A hidden tab's page events update its tab record only.
+        if (!this.#tabs.track(name, e.detail)) return;
         if (name === 'navigate') {
           this.#state.url = e.detail.url;
           this.#provenance.navigated(e.detail.url);
