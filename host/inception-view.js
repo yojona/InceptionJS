@@ -36,12 +36,12 @@ const VIEW_EVENTS = ['navigate', 'title', 'loading', 'popup', 'console', 'crash'
 const DOM_EVENT_NAMES = { contextmenu: 'contextmenurequest', 'navigation.state': 'navigationstate', 'find.result': 'findresult' };
 
 // <inception-view src gpu="auto|on|off" muted media profile fresh-profile user-agent
-//                 provenance-corner>
+//                 provenance-corner provenance="off">
 //
 // A thin client: it speaks the protocol to a server bound to its own engine,
 // exactly as a remote agent would. `serve(transport)` connects more clients.
 export class InceptionView extends HTMLElement {
-  static observedAttributes = ['src', 'provenance-corner'];
+  static observedAttributes = ['src', 'provenance-corner', 'provenance'];
 
   #runtime = null;
   #server = null;
@@ -113,6 +113,7 @@ export class InceptionView extends HTMLElement {
   attributeChangedCallback(name, previous, value) {
     if (name === 'src' && value && value !== previous && this.#client) this.navigate(value);
     if (name === 'provenance-corner') this.#provenance.setCorner(value);
+    if (name === 'provenance') this.#provenance.setEnabled(value !== 'off');
   }
 
   async navigate(url) {

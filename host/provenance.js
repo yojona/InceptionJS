@@ -8,8 +8,9 @@
 //
 // Embedders style the badge through ::part(provenance) and the
 // provenance-corner attribute (top-left, top-right, bottom-left,
-// bottom-right). Hiding it takes a key our service verifies; until that
-// service exists it is always shown.
+// bottom-right). A first-party embedder, one whose own window chrome already
+// says what the view is (an operating system's browser app, say), turns both
+// off with provenance="off"; it is on by default.
 
 const SIGN_IN_HOSTS = [
   'accounts.google.com',
@@ -45,6 +46,7 @@ export class Provenance {
   #notice;
   #field = '';
   #signIn = false;
+  #enabled = true;
   #site = location.hostname || location.host || 'this page';
 
   constructor(shadow, host) {
@@ -58,6 +60,14 @@ export class Provenance {
     this.#notice.setAttribute('role', 'alert');
     shadow.append(this.#badge, this.#notice);
     this.setCorner(host.getAttribute('provenance-corner'));
+    this.setEnabled(host.getAttribute('provenance') !== 'off');
+  }
+
+  // The provenance attribute: "off" hides the badge and the notice.
+  setEnabled(enabled) {
+    this.#enabled = enabled;
+    this.#badge.hidden = !enabled;
+    this.#update();
   }
 
   setCorner(corner) {
@@ -84,6 +94,6 @@ export class Provenance {
   #update() {
     const kind = this.#field === 'payment' ? 'payment' : this.#field === 'password' || this.#signIn ? 'password' : '';
     this.#notice.textContent = kind ? text[kind](this.#site) : '';
-    this.#notice.classList.toggle('shown', !!kind);
+    this.#notice.classList.toggle('shown', !!kind && this.#enabled);
   }
 }
