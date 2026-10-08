@@ -1,0 +1,120 @@
+Bound native recursion in WebAssembly, where the stack pointer cannot see it.
+
+JavaScriptCore guards recursion by comparing the stack pointer with a limit,
+but in WebAssembly most of a native frame lives on the engine's own stack,
+out of the stack pointer's sight: deep native recursion (proxy traps that
+recurse, recursive getters, deeply nested JSON) overflowed the engine and
+killed it instead of throwing a RangeError. Nested interpreter entries are
+now counted and limited, which makes such recursion fail with a catchable
+RangeError, and the fast JSON stringifier hands deep nesting to the general
+one, which does not recurse natively.
+
+diff --git a/Source/JavaScriptCore/llint/LLIntThunks.cpp b/Source/JavaScriptCore/llint/LLIntThunks.cpp
+index f27d31e..2d5b6ce 100644
+--- a/Source/JavaScriptCore/llint/LLIntThunks.cpp
++++ b/Source/JavaScriptCore/llint/LLIntThunks.cpp
+@@ -854,14 +854,29 @@ DEFINE_IPINT_THUNK_FOR_CATCH(inPlaceInterpreterTableCatchAllrefEntryThunk, ipint
+ #if ENABLE(C_LOOP)
+ // Non-JIT (i.e. C Loop LLINT) case:
+ 
++#if PLATFORM(EMSCRIPTEN)
++thread_local unsigned cloopEntryDepth;
++
++struct CLoopEntryScope {
++    CLoopEntryScope() { ++cloopEntryDepth; }
++    ~CLoopEntryScope() { --cloopEntryDepth; }
++};
++#endif
++
+ EncodedJSValue vmEntryToJavaScript(void* executableAddress, VM* vm, ProtoCallFrame* protoCallFrame)
+ {
++#if PLATFORM(EMSCRIPTEN)
++    CLoopEntryScope scope;
++#endif
+     JSValue result = CLoop::execute(llint_vm_entry_to_javascript, executableAddress, vm, protoCallFrame);
+     return JSValue::encode(result);
+ }
+ 
+ EncodedJSValue vmEntryToNative(void* executableAddress, VM* vm, ProtoCallFrame* protoCallFrame)
+ {
++#if PLATFORM(EMSCRIPTEN)
++    CLoopEntryScope scope;
++#endif
+     JSValue result = CLoop::execute(llint_vm_entry_to_native, executableAddress, vm, protoCallFrame);
+     return JSValue::encode(result);
+ }
+diff --git a/Source/JavaScriptCore/runtime/JSONObject.cpp b/Source/JavaScriptCore/runtime/JSONObject.cpp
+index 46499c1..6e59ac9 100644
+--- a/Source/JavaScriptCore/runtime/JSONObject.cpp
++++ b/Source/JavaScriptCore/runtime/JSONObject.cpp
+@@ -27,6 +27,8 @@
+ #include "config.h"
+ #include "JSONObject.h"
+ 
++#include <wtf/SetForScope.h>
++
+ #include "ArrayConstructor.h"
+ #include "BigIntObject.h"
+ #include "BooleanObject.h"
+@@ -748,6 +750,10 @@ private:
+     std::optional<FailureReason> m_failureReason;
+     Vector<CharType, dynamicBufferInlineCapacity, CrashOnOverflow, 16, WTF::StringImplMalloc> m_dynamicBuffer;
+     uint8_t* m_stackLimit { nullptr };
++#if PLATFORM(EMSCRIPTEN)
++    static constexpr unsigned maxDepth = 256;
++    unsigned m_depth { 0 };
++#endif
+ 
+     CharType m_buffer[staticBufferSize];
+ };
+@@ -1177,6 +1183,16 @@ static ALWAYS_INLINE bool stringCopyUpconvert(std::span<const Latin1Character> s
+ template<typename CharType, BufferMode bufferMode>
+ void FastStringifier<CharType, bufferMode>::append(JSValue value)
+ {
++#if PLATFORM(EMSCRIPTEN)
++    // The stack pointer does not see this recursion in WebAssembly (see
++    // VM::isSafeToRecurse); past a fixed depth the general stringifier, which
++    // does not recurse natively, takes over.
++    if (m_depth >= maxDepth) [[unlikely]] {
++        recordFailure(FailureReason::StackOverflow, "nesting depth"_s);
++        return;
++    }
++    SetForScope depthScope(m_depth, m_depth + 1);
++#endif
+     if constexpr (bufferMode == BufferMode::DynamicBuffer) {
+         if (std::bit_cast<uint8_t*>(currentStackPointer()) < m_stackLimit) [[unlikely]] {
+             recordFailure(FailureReason::StackOverflow, "stack overflow"_s);
+diff --git a/Source/JavaScriptCore/runtime/VM.h b/Source/JavaScriptCore/runtime/VM.h
+index da952a8..9ed606b 100644
+--- a/Source/JavaScriptCore/runtime/VM.h
++++ b/Source/JavaScriptCore/runtime/VM.h
+@@ -231,6 +231,13 @@ private:
+ enum VMIdentifierType { };
+ using VMIdentifier = AtomicObjectIdentifier<VMIdentifierType>;
+ 
++#if PLATFORM(EMSCRIPTEN)
++// Interpreter entries nested on this thread (LLIntThunks.cpp), and how many
++// the engine's stack holds with room to spare.
++extern thread_local unsigned cloopEntryDepth;
++constexpr unsigned maxCLoopEntryDepth = 160;
++#endif
++
+ class VM : public ThreadSafeRefCountedWithSuppressingSaferCPPChecking<VM> {
+     WTF_DEPRECATED_MAKE_FAST_ALLOCATED_WITH_HEAP_IDENTIFIER(VM, VM);
+ public:
+@@ -1194,6 +1201,15 @@ private:
+     bool isSafeToRecurse(void* stackLimit) const
+     {
+         void* curr = currentStackPointer();
++#if PLATFORM(EMSCRIPTEN)
++        // In WebAssembly most of a native frame lives on the engine's own
++        // stack, which the stack pointer does not see: deep native recursion
++        // overflows it long before the limit above trips. Each nested entry
++        // into the interpreter is the expensive part, so their count is
++        // limited as well.
++        if (cloopEntryDepth >= maxCLoopEntryDepth)
++            return false;
++#endif
+         return curr >= stackLimit;
+     }
+ 
