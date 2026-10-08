@@ -1,0 +1,44 @@
+{
+  "name": "inceptionjs",
+  "version": "0.1.0",
+  "description": "A web browser engine that runs inside a web page, GPU-first, with an agent-friendly API.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./types/server.d.ts",
+      "default": "./dist/server/index.js"
+    },
+    "./vite": {
+      "types": "./types/vite.d.ts",
+      "default": "./dist/vite/index.js"
+    },
+    "./next": {
+      "types": "./types/next.d.ts",
+      "default": "./dist/next/index.js"
+    }
+  },
+  "bin": {
+    "inceptionjs": "./bin/inceptionjs.js"
+  },
+  "files": [
+    "dist",
+    "types",
+    "bin"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "prepack": "node build.mjs"
+  },
+  "dependencies": {
+    "binaryen": "132.0.0",
+    "ws": "8.18.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
