@@ -29,6 +29,26 @@ RefPtr<MediaPlayerPrivateInterface> HostMediaSource::player() const
     return m_player;
 }
 
+// Bytes are parsed by the host, so the initialization segment's duration
+// (or +Infinity when it has none) reaches WebCore's MediaSource from there,
+// as the MSE algorithm would set it from the segment: only while the
+// duration is still unset, never over the page's own.
+void HostMediaSource::hostDurationKnown(const MediaTime& duration)
+{
+    if (duration.isInvalid() || this->duration().isValid())
+        return;
+    auto buffers = sourceBuffers();
+    if (buffers.isEmpty())
+        return;
+    static_cast<HostSourceBuffer&>(buffers.first().get()).reportDuration(duration);
+}
+
+void HostSourceBuffer::reportDuration(const MediaTime& duration)
+{
+    if (RefPtr client = this->client())
+        client->sourceBufferPrivateDurationChanged(duration);
+}
+
 HostSourceBuffer* HostMediaSource::sourceBuffer(unsigned id) const
 {
     for (auto& buffer : sourceBuffers()) {

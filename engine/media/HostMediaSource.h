@@ -19,6 +19,8 @@ public:
     void detachPlayer() { m_player = nullptr; }
     HostMediaPlayer* hostPlayer() const { return m_player; }
     HostSourceBuffer* sourceBuffer(unsigned id) const;
+    // The host parsed an initialization segment and knows the duration.
+    void hostDurationKnown(const MediaTime&);
 
 private:
     HostMediaSource(HostMediaPlayer&, WebCore::MediaSourcePrivateClient&);
@@ -43,6 +45,7 @@ public:
     unsigned id() const { return m_id; }
     // The host finished the append or removal with this sequence number.
     void operationDone(unsigned seq, const WebCore::PlatformTimeRanges& buffered, bool failed);
+    void reportDuration(const MediaTime&);
 
 private:
     HostSourceBuffer(HostMediaSource&, unsigned id);

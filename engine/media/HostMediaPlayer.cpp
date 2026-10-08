@@ -380,6 +380,8 @@ void HostMediaPlayer::update(JSON::Object& state)
 
     if (sizeChanged)
         player->sizeChanged();
+    if (durationChanged && m_isMediaSource && m_mediaSource && !std::isnan(m_duration))
+        m_mediaSource->hostDurationKnown(m_duration < 0 ? MediaTime::positiveInfiniteTime() : MediaTime::createWithDouble(m_duration));
     if (durationChanged)
         player->durationChanged();
     if (networkState != m_networkState || readyState != m_readyState)
