@@ -52,6 +52,21 @@
     view.addEventListener(name, (e) => add(name === 'crash' ? 'error' : '', `${name} ${JSON.stringify(e.detail)}`));
   view.addEventListener('console', (e) => add(e.detail.level, `console.${e.detail.level} ${e.detail.message}`));
 
+  // ?medialog=1 also traces, inside the page, who sets playbackRate,
+  // defaultPlaybackRate, muted and volume on media elements, and calls
+  // play(), pause() and load(), with the calling script's location.
+  if (params.get('medialog') === '1') view.ready.then(() => view.debugCommand('debug.inject', { source: `(() => {
+    const where = () => (new Error().stack || '').split('\\n').slice(2, 4).map((l) => l.trim()).join(' < ');
+    const proto = HTMLMediaElement.prototype;
+    for (const name of ['playbackRate', 'defaultPlaybackRate', 'muted', 'volume']) {
+      const d = Object.getOwnPropertyDescriptor(proto, name);
+      Object.defineProperty(proto, name, { ...d, set(v) { console.info('[pagemedia] ' + this.tagName + ' ' + name + ' = ' + v + ' from ' + where()); d.set.call(this, v); } });
+    }
+    for (const name of ['play', 'pause', 'load']) {
+      const f = proto[name];
+      proto[name] = function (...args) { console.info('[pagemedia] ' + this.tagName + ' ' + name + '() rate=' + this.playbackRate + ' from ' + where()); return f.apply(this, args); };
+    }
+  })()` }));
   // ?netlog=1 reports every network request in the log.
   if (params.get('netlog')) view.ready.then(() => view.debugCommand('debug.netlog', { enabled: true }));
 
