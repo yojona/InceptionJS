@@ -14,13 +14,24 @@ export class WasmTranslator {
   #binaryen = null;
   #cache = new Map();
 
+  // `binaryenUrl`: one URL, or candidates tried in order (the first that loads).
   constructor(binaryenUrl) {
-    this.#binaryenUrl = binaryenUrl;
+    this.#binaryenUrl = [binaryenUrl].flat();
   }
 
   // Loaded the first time a page uses WebAssembly.
   async #load() {
-    this.#binaryen ??= import(this.#binaryenUrl).then((m) => m.default);
+    this.#binaryen ??= (async () => {
+      let failure;
+      for (const url of this.#binaryenUrl) {
+        try {
+          return (await import(url)).default;
+        } catch (error) {
+          failure = error;
+        }
+      }
+      throw failure ?? new Error('no binaryen URL');
+    })();
     return this.#binaryen;
   }
 

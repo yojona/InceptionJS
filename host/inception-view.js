@@ -221,7 +221,10 @@ export class InceptionView extends HTMLElement {
     this.#selectMenu = new SelectMenu(this.#shadow, (command, args) => this.#runtime.send(command, args));
     this.#runtime.onAsk = (question) => answerDialog(this, question);
     this.#runtime.onMediaAppend = ({ id, sb, seq, bytes }) => this.#media.append(id, sb, seq, bytes);
-    translator ??= new WasmTranslator(config.binaryenUrl ?? new URL('../node_modules/binaryen/index.js', import.meta.url).href);
+    // binaryen next to the host modules (the package ships it there), or in the
+    // repository's node_modules; resolved from this module, so a plain
+    // <script type=module> setup needs no bundler.
+    translator ??= new WasmTranslator(config.binaryenUrl ?? [new URL('./vendor/binaryen.js', import.meta.url).href, new URL('../node_modules/binaryen/index.js', import.meta.url).href]);
     this.#runtime.wasmTranslator = translator;
     const [wasmPolyfill, pageShims] = await Promise.all(['./guest-wasm.js', './page-shims.js'].map((path) => fetch(new URL(path, import.meta.url)).then((r) => r.text())));
     // Activation is sticky for the host page's lifetime: the first gesture
