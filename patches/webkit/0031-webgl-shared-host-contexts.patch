@@ -1,0 +1,1800 @@
+Page WebGL contexts share one host context.
+
+Chromium caps WebGL contexts per worker at four, so giving every page context
+a host context of its own capped pages at three and put the engine's context
+at risk. Now all page contexts share one host WebGL 2 context (the engine is
+built for WebGL 2 only, so WebGL 1 contexts already ran on WebGL 2 host
+contexts). Each keeps a shadow of the state it sets and of the objects it
+creates; when another context becomes current the host is moved from one
+shadow to the next, setting only what differs. Stand-ins replace vertex array
+0 and transform feedback 0 per context, errors are kept per context, and a
+deleted program stays usable where it is current. A host context of its own
+remains the fallback when the shared one cannot be had.
+
+diff --git a/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.cpp b/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.cpp
+index 7df2a13..6b05764 100644
+--- a/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.cpp
++++ b/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.cpp
+@@ -33,8 +33,10 @@
+ #include "PixelBuffer.h"
+ #include "PlatformDisplay.h"
+ #include <emscripten/em_js.h>
++#include <bit>
+ #include <emscripten/html5_webgl.h>
+ #include <wtf/HashSet.h>
++#include <wtf/Function.h>
+ #include <wtf/NeverDestroyed.h>
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/text/StringBuilder.h>
+@@ -119,6 +121,545 @@ static Vector<GraphicsContextGLEmscripten*>& liveContexts()
+     return contexts;
+ }
+ 
++// The state a page context sets on its host context. Page contexts share host
++// contexts, so each keeps this shadow and the host is brought from one shadow
++// to the next when another context becomes current (only what differs is
++// set). Object state (textures, buffers, vertex arrays, programs...) lives in
++// the objects and needs no shadow; each context owns its objects, which WebGL
++// already enforces.
++static constexpr unsigned maxTextureUnits = 96;
++static constexpr unsigned maxUniformBufferBindings = 96;
++static constexpr unsigned maxVertexAttribs = 32;
++static constexpr unsigned maxDrawBuffers = 8;
++
++// Capabilities a page can toggle, as indices into a bit set.
++static constexpr std::array<GLenum, 20> shadowedCapabilities {
++    GL_BLEND, GL_CULL_FACE, GL_DEPTH_TEST, GL_DITHER, GL_POLYGON_OFFSET_FILL,
++    GL_SAMPLE_ALPHA_TO_COVERAGE, GL_SAMPLE_COVERAGE, GL_SCISSOR_TEST, GL_STENCIL_TEST,
++    GL_RASTERIZER_DISCARD, 0x864F /* DEPTH_CLAMP_EXT */, 0x2A02 /* POLYGON_OFFSET_LINE_ANGLE */,
++    0x3000, 0x3001, 0x3002, 0x3003, 0x3004, 0x3005, 0x3006, 0x3007, // CLIP_DISTANCE0-7_WEBGL
++};
++
++static std::optional<unsigned> capabilityIndex(GLenum capability)
++{
++    for (unsigned i = 0; i < shadowedCapabilities.size(); ++i) {
++        if (shadowedCapabilities[i] == capability)
++            return i;
++    }
++    return std::nullopt;
++}
++
++// Pixel storage parameters, standard and WebGL ones.
++static constexpr std::array<GLenum, 13> shadowedPixelStore {
++    GL_PACK_ALIGNMENT, GL_UNPACK_ALIGNMENT, GL_PACK_ROW_LENGTH, GL_PACK_SKIP_PIXELS, GL_PACK_SKIP_ROWS,
++    GL_UNPACK_ROW_LENGTH, GL_UNPACK_IMAGE_HEIGHT, GL_UNPACK_SKIP_PIXELS, GL_UNPACK_SKIP_ROWS, GL_UNPACK_SKIP_IMAGES,
++    0x9240 /* UNPACK_FLIP_Y_WEBGL */, 0x9241 /* UNPACK_PREMULTIPLY_ALPHA_WEBGL */,
++    0x9243 /* UNPACK_COLORSPACE_CONVERSION_WEBGL */,
++};
++
++// WebGL 1 has only the alignments and the WebGL parameters.
++static bool isWebGL1PixelStore(GLenum pname)
++{
++    return pname == GL_PACK_ALIGNMENT || pname == GL_UNPACK_ALIGNMENT || pname >= 0x9240;
++}
++
++struct ShadowBlend {
++    bool enabled { false };
++    GLenum equationRGB { GL_FUNC_ADD };
++    GLenum equationAlpha { GL_FUNC_ADD };
++    GLenum sourceRGB { GL_ONE };
++    GLenum destinationRGB { GL_ZERO };
++    GLenum sourceAlpha { GL_ONE };
++    GLenum destinationAlpha { GL_ZERO };
++    std::array<GLboolean, 4> colorMask { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
++
++    bool operator==(const ShadowBlend&) const = default;
++};
++
++struct ShadowStencilFace {
++    GLenum function { GL_ALWAYS };
++    GLint reference { 0 };
++    GLuint valueMask { ~0u };
++    GLuint writeMask { ~0u };
++    GLenum fail { GL_KEEP };
++    GLenum depthFail { GL_KEEP };
++    GLenum depthPass { GL_KEEP };
++
++    bool operator==(const ShadowStencilFace&) const = default;
++};
++
++struct ShadowTextureUnit {
++    GLuint texture2D { 0 };
++    GLuint textureCubeMap { 0 };
++    GLuint texture3D { 0 };
++    GLuint texture2DArray { 0 };
++    GLuint sampler { 0 };
++
++    bool operator==(const ShadowTextureUnit&) const = default;
++};
++
++struct ShadowBufferRange {
++    GLuint buffer { 0 };
++    // A size of -1 marks a whole-buffer binding (bindBufferBase).
++    GLintptr offset { 0 };
++    GLsizeiptr size { -1 };
++
++    bool operator==(const ShadowBufferRange&) const = default;
++};
++
++struct ShadowVertexAttrib {
++    enum class Kind : uint8_t { Float, Int, UnsignedInt };
++    Kind kind { Kind::Float };
++    std::array<uint32_t, 4> bits { 0, 0, 0, 0x3f800000 }; // (0, 0, 0, 1.0f)
++
++    bool operator==(const ShadowVertexAttrib&) const = default;
++};
++
++struct GLStateShadow {
++    uint32_t enabled { 1u << 3 }; // DITHER starts enabled
++    std::array<GLfloat, 4> blendColor { 0, 0, 0, 0 };
++    ShadowBlend blend;
++    // Per draw buffer (OES_draw_buffers_indexed); used once a context sets one.
++    bool indexedBlendUsed { false };
++    std::array<ShadowBlend, maxDrawBuffers> blendPerDrawBuffer;
++    GLenum depthFunction { GL_LESS };
++    GLboolean depthMask { GL_TRUE };
++    std::array<GLfloat, 2> depthRange { 0, 1 };
++    std::array<GLfloat, 4> clearColor { 0, 0, 0, 0 };
++    GLfloat clearDepth { 1 };
++    GLint clearStencil { 0 };
++    ShadowStencilFace stencilFront;
++    ShadowStencilFace stencilBack;
++    GLenum cullFace { GL_BACK };
++    GLenum frontFace { GL_CCW };
++    GLfloat lineWidth { 1 };
++    std::array<GLfloat, 3> polygonOffset { 0, 0, 0 };
++    bool polygonOffsetClampUsed { false };
++    GLfloat sampleCoverageValue { 1 };
++    GLboolean sampleCoverageInvert { GL_FALSE };
++    GLenum generateMipmapHint { GL_DONT_CARE };
++    GLenum derivativeHint { GL_DONT_CARE };
++    std::array<GLint, 4> viewport { 0, 0, 1, 1 };
++    std::array<GLint, 4> scissor { 0, 0, 1, 1 };
++    bool clipControlUsed { false };
++    GLenum clipOrigin { 0x8CA1 }; // LOWER_LEFT_EXT
++    GLenum clipDepth { 0x935E }; // NEGATIVE_ONE_TO_ONE_EXT
++    GLuint program { 0 };
++    GLenum activeTexture { GL_TEXTURE0 };
++    unsigned textureUnitsUsed { 0 };
++    std::array<ShadowTextureUnit, maxTextureUnits> textureUnits;
++    GLuint arrayBuffer { 0 };
++    GLuint copyReadBuffer { 0 };
++    GLuint copyWriteBuffer { 0 };
++    GLuint pixelPackBuffer { 0 };
++    GLuint pixelUnpackBuffer { 0 };
++    GLuint uniformBuffer { 0 };
++    GLuint transformFeedbackBuffer { 0 };
++    unsigned uniformBindingsUsed { 0 };
++    std::array<ShadowBufferRange, maxUniformBufferBindings> uniformBindings;
++    GLuint renderbuffer { 0 };
++    GLuint drawFramebuffer { 0 };
++    GLuint readFramebuffer { 0 };
++    // Host names: 0 stands for the context's own default objects until it has them.
++    GLuint vertexArray { 0 };
++    GLuint transformFeedback { 0 };
++    bool transformFeedbackActive { false };
++    bool transformFeedbackPaused { false };
++    std::array<GLint, shadowedPixelStore.size()> pixelStore { 4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x9244 };
++    unsigned vertexAttribsUsed { 0 };
++    std::array<ShadowVertexAttrib, maxVertexAttribs> vertexAttribs;
++};
++
++struct VirtualGLContextState {
++    GLStateShadow gl;
++    // Errors the host reported while this context was current, kept for its
++    // own getError when another context becomes current.
++    Vector<GLenum> pendingErrors;
++    // Objects this context created; deleted with it, since its host context
++    // outlives it.
++    HashSet<GLuint> buffers, framebuffers, queries, renderbuffers, samplers, textures, transformFeedbacks, vertexArrays, programs, shaders;
++    // Programs deleted while current: a deleted program stays usable where it
++    // is current, so the host only deletes it once no context uses it.
++    bool programDeletePending { false };
++};
++
++// The host context all page contexts share. The engine is built for WebGL 2
++// only, so page WebGL 1 contexts run on WebGL 2 host contexts too.
++struct SharedHostContext {
++    int handle { 0 };
++    bool failed { false };
++    bool isWebGL2 { false };
++    // What the host context's state currently is, and whose.
++    GLStateShadow applied;
++    GraphicsContextGLEmscripten* owner { nullptr };
++    Vector<GraphicsContextGLEmscripten*> members;
++    unsigned textureUnits { 16 };
++    unsigned uniformBufferBindings { 0 };
++    unsigned vertexAttribs { 16 };
++    // Programs deleted by pages but still current in some context.
++    HashSet<GLuint> pendingProgramDeletes;
++};
++
++static SharedHostContext& sharedHost(bool)
++{
++    static NeverDestroyed<SharedHostContext> host;
++    host->isWebGL2 = true;
++    return host.get();
++}
++
++static void applyBlend(const ShadowBlend& from, const ShadowBlend& to, std::optional<GLuint> drawBuffer)
++{
++    if (from.enabled != to.enabled) {
++        if (drawBuffer)
++            to.enabled ? glEnableiOES(GL_BLEND, *drawBuffer) : glDisableiOES(GL_BLEND, *drawBuffer);
++        else
++            to.enabled ? glEnable(GL_BLEND) : glDisable(GL_BLEND);
++    }
++    if (from.equationRGB != to.equationRGB || from.equationAlpha != to.equationAlpha) {
++        if (drawBuffer)
++            glBlendEquationSeparateiOES(*drawBuffer, to.equationRGB, to.equationAlpha);
++        else
++            glBlendEquationSeparate(to.equationRGB, to.equationAlpha);
++    }
++    if (from.sourceRGB != to.sourceRGB || from.destinationRGB != to.destinationRGB || from.sourceAlpha != to.sourceAlpha || from.destinationAlpha != to.destinationAlpha) {
++        if (drawBuffer)
++            glBlendFuncSeparateiOES(*drawBuffer, to.sourceRGB, to.destinationRGB, to.sourceAlpha, to.destinationAlpha);
++        else
++            glBlendFuncSeparate(to.sourceRGB, to.destinationRGB, to.sourceAlpha, to.destinationAlpha);
++    }
++    if (from.colorMask != to.colorMask) {
++        auto& m = to.colorMask;
++        if (drawBuffer)
++            glColorMaskiOES(*drawBuffer, m[0], m[1], m[2], m[3]);
++        else
++            glColorMask(m[0], m[1], m[2], m[3]);
++    }
++}
++
++static void applyStencilFace(GLenum face, const ShadowStencilFace& from, const ShadowStencilFace& to)
++{
++    if (from.function != to.function || from.reference != to.reference || from.valueMask != to.valueMask)
++        glStencilFuncSeparate(face, to.function, to.reference, to.valueMask);
++    if (from.writeMask != to.writeMask)
++        glStencilMaskSeparate(face, to.writeMask);
++    if (from.fail != to.fail || from.depthFail != to.depthFail || from.depthPass != to.depthPass)
++        glStencilOpSeparate(face, to.fail, to.depthFail, to.depthPass);
++}
++
++static void applyVertexAttrib(GLuint index, const ShadowVertexAttrib& attrib)
++{
++    switch (attrib.kind) {
++    case ShadowVertexAttrib::Kind::Float:
++        glVertexAttrib4fv(index, reinterpret_cast<const GLfloat*>(attrib.bits.data()));
++        break;
++    case ShadowVertexAttrib::Kind::Int:
++        glVertexAttribI4iv(index, reinterpret_cast<const GLint*>(attrib.bits.data()));
++        break;
++    case ShadowVertexAttrib::Kind::UnsignedInt:
++        glVertexAttribI4uiv(index, attrib.bits.data());
++        break;
++    }
++}
++
++// Brings the host context from the state `from` to the state `to`.
++static void applyState(const SharedHostContext& host, const GLStateShadow& from, const GLStateShadow& to)
++{
++    bool webGL2 = host.isWebGL2;
++
++    // Objects that carry state of their own first.
++    if (from.vertexArray != to.vertexArray)
++        glBindVertexArray(to.vertexArray);
++    if (webGL2 && from.transformFeedback != to.transformFeedback)
++        glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, to.transformFeedback);
++
++    for (unsigned i = 0; i < shadowedCapabilities.size(); ++i) {
++        uint32_t bit = 1u << i;
++        if ((from.enabled & bit) == (to.enabled & bit) || shadowedCapabilities[i] == GL_BLEND)
++            continue;
++        (to.enabled & bit) ? glEnable(shadowedCapabilities[i]) : glDisable(shadowedCapabilities[i]);
++    }
++
++    if (from.blendColor != to.blendColor)
++        glBlendColor(to.blendColor[0], to.blendColor[1], to.blendColor[2], to.blendColor[3]);
++    applyBlend(from.blend, to.blend, std::nullopt);
++    if (from.indexedBlendUsed || to.indexedBlendUsed) {
++        // The calls above set every draw buffer; bring each to its own state.
++        for (GLuint i = 0; i < maxDrawBuffers; ++i)
++            applyBlend(to.blend, to.blendPerDrawBuffer[i], i);
++    }
++
++    if (from.depthFunction != to.depthFunction)
++        glDepthFunc(to.depthFunction);
++    if (from.depthMask != to.depthMask)
++        glDepthMask(to.depthMask);
++    if (from.depthRange != to.depthRange)
++        glDepthRangef(to.depthRange[0], to.depthRange[1]);
++    if (from.clearColor != to.clearColor)
++        glClearColor(to.clearColor[0], to.clearColor[1], to.clearColor[2], to.clearColor[3]);
++    if (from.clearDepth != to.clearDepth)
++        glClearDepthf(to.clearDepth);
++    if (from.clearStencil != to.clearStencil)
++        glClearStencil(to.clearStencil);
++    applyStencilFace(GL_FRONT, from.stencilFront, to.stencilFront);
++    applyStencilFace(GL_BACK, from.stencilBack, to.stencilBack);
++    if (from.cullFace != to.cullFace)
++        glCullFace(to.cullFace);
++    if (from.frontFace != to.frontFace)
++        glFrontFace(to.frontFace);
++    if (from.lineWidth != to.lineWidth)
++        glLineWidth(to.lineWidth);
++    if (from.polygonOffset != to.polygonOffset) {
++        if (from.polygonOffsetClampUsed || to.polygonOffsetClampUsed)
++            glPolygonOffsetClampEXT(to.polygonOffset[0], to.polygonOffset[1], to.polygonOffset[2]);
++        else
++            glPolygonOffset(to.polygonOffset[0], to.polygonOffset[1]);
++    }
++    if (from.sampleCoverageValue != to.sampleCoverageValue || from.sampleCoverageInvert != to.sampleCoverageInvert)
++        glSampleCoverage(to.sampleCoverageValue, to.sampleCoverageInvert);
++    if (from.generateMipmapHint != to.generateMipmapHint)
++        glHint(GL_GENERATE_MIPMAP_HINT, to.generateMipmapHint);
++    if (from.derivativeHint != to.derivativeHint)
++        glHint(GL_FRAGMENT_SHADER_DERIVATIVE_HINT, to.derivativeHint);
++    if (from.viewport != to.viewport)
++        glViewport(to.viewport[0], to.viewport[1], to.viewport[2], to.viewport[3]);
++    if (from.scissor != to.scissor)
++        glScissor(to.scissor[0], to.scissor[1], to.scissor[2], to.scissor[3]);
++    if ((from.clipControlUsed || to.clipControlUsed) && (from.clipOrigin != to.clipOrigin || from.clipDepth != to.clipDepth))
++        glClipControlEXT(to.clipOrigin, to.clipDepth);
++
++    if (from.program != to.program)
++        glUseProgram(to.program);
++
++    GLenum activeTexture = from.activeTexture;
++    unsigned units = std::min(std::max(from.textureUnitsUsed, to.textureUnitsUsed), host.textureUnits);
++    for (unsigned unit = 0; unit < units; ++unit) {
++        auto& a = from.textureUnits[unit];
++        auto& b = to.textureUnits[unit];
++        if (a == b)
++            continue;
++        if (activeTexture != GL_TEXTURE0 + unit) {
++            activeTexture = GL_TEXTURE0 + unit;
++            glActiveTexture(activeTexture);
++        }
++        if (a.texture2D != b.texture2D)
++            glBindTexture(GL_TEXTURE_2D, b.texture2D);
++        if (a.textureCubeMap != b.textureCubeMap)
++            glBindTexture(GL_TEXTURE_CUBE_MAP, b.textureCubeMap);
++        if (webGL2) {
++            if (a.texture3D != b.texture3D)
++                glBindTexture(GL_TEXTURE_3D, b.texture3D);
++            if (a.texture2DArray != b.texture2DArray)
++                glBindTexture(GL_TEXTURE_2D_ARRAY, b.texture2DArray);
++            if (a.sampler != b.sampler)
++                glBindSampler(unit, b.sampler);
++        }
++    }
++    if (activeTexture != to.activeTexture)
++        glActiveTexture(to.activeTexture);
++
++    if (webGL2) {
++        // Indexed bindings also set the generic binding, so they go first.
++        unsigned bindings = std::min(std::max(from.uniformBindingsUsed, to.uniformBindingsUsed), host.uniformBufferBindings);
++        for (unsigned index = 0; index < bindings; ++index) {
++            auto& b = to.uniformBindings[index];
++            if (from.uniformBindings[index] == b)
++                continue;
++            if (b.size < 0)
++                glBindBufferBase(GL_UNIFORM_BUFFER, index, b.buffer);
++            else
++                glBindBufferRange(GL_UNIFORM_BUFFER, index, b.buffer, b.offset, b.size);
++        }
++        if (bindings || from.uniformBuffer != to.uniformBuffer)
++            glBindBuffer(GL_UNIFORM_BUFFER, to.uniformBuffer);
++        if (from.copyReadBuffer != to.copyReadBuffer)
++            glBindBuffer(GL_COPY_READ_BUFFER, to.copyReadBuffer);
++        if (from.copyWriteBuffer != to.copyWriteBuffer)
++            glBindBuffer(GL_COPY_WRITE_BUFFER, to.copyWriteBuffer);
++        if (from.pixelPackBuffer != to.pixelPackBuffer)
++            glBindBuffer(GL_PIXEL_PACK_BUFFER, to.pixelPackBuffer);
++        if (from.pixelUnpackBuffer != to.pixelUnpackBuffer)
++            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, to.pixelUnpackBuffer);
++        if (from.transformFeedbackBuffer != to.transformFeedbackBuffer)
++            glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, to.transformFeedbackBuffer);
++    }
++    if (from.arrayBuffer != to.arrayBuffer)
++        glBindBuffer(GL_ARRAY_BUFFER, to.arrayBuffer);
++
++    if (from.renderbuffer != to.renderbuffer)
++        glBindRenderbuffer(GL_RENDERBUFFER, to.renderbuffer);
++    if (webGL2) {
++        if (from.drawFramebuffer != to.drawFramebuffer)
++            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, to.drawFramebuffer);
++        if (from.readFramebuffer != to.readFramebuffer)
++            glBindFramebuffer(GL_READ_FRAMEBUFFER, to.readFramebuffer);
++    } else if (from.drawFramebuffer != to.drawFramebuffer)
++        glBindFramebuffer(GL_FRAMEBUFFER, to.drawFramebuffer);
++
++    for (unsigned i = 0; i < shadowedPixelStore.size(); ++i) {
++        if (from.pixelStore[i] != to.pixelStore[i] && (webGL2 || isWebGL1PixelStore(shadowedPixelStore[i])))
++            glPixelStorei(shadowedPixelStore[i], to.pixelStore[i]);
++    }
++
++    unsigned attribs = std::min(std::max(from.vertexAttribsUsed, to.vertexAttribsUsed), host.vertexAttribs);
++    for (GLuint index = 0; index < attribs; ++index) {
++        if (!(from.vertexAttribs[index] == to.vertexAttribs[index]))
++            applyVertexAttrib(index, to.vertexAttribs[index]);
++    }
++}
++
++// Moves the shared host context to `next`'s state. The outgoing context keeps
++// the errors the host collected for it, and a transform feedback it had running
++// is paused, to resume when it is current again.
++static void switchSharedHost(SharedHostContext& host, GraphicsContextGLEmscripten& next)
++{
++    if (auto* previous = host.owner) {
++        auto& state = previous->state();
++        for (GLenum error = glGetError(); error != GL_NO_ERROR; error = glGetError())
++            state.pendingErrors.append(error);
++        if (state.gl.transformFeedbackActive && !state.gl.transformFeedbackPaused)
++            glPauseTransformFeedback();
++        host.applied = state.gl;
++    }
++    auto& target = next.state().gl;
++    applyState(host, host.applied, target);
++    if (target.transformFeedbackActive && !target.transformFeedbackPaused)
++        glResumeTransformFeedback();
++    host.applied = target;
++    host.owner = &next;
++}
++
++static bool programInUse(SharedHostContext& host, GLuint program)
++{
++    for (auto* member : host.members) {
++        if (member->state().gl.program == program)
++            return true;
++    }
++    return false;
++}
++
++// Deletes programs the pages deleted, once no context has them current.
++static void deleteUnusedPrograms(SharedHostContext& host)
++{
++    Vector<GLuint> unused;
++    for (auto program : host.pendingProgramDeletes) {
++        if (!programInUse(host, program))
++            unused.append(program);
++    }
++    for (auto program : unused) {
++        host.pendingProgramDeletes.remove(program);
++        glDeleteProgram(program);
++    }
++}
++
++static bool createSharedHost(SharedHostContext& host)
++{
++    if (host.handle)
++        return true;
++    if (host.failed)
++        return false;
++    host.handle = inception_webgl_create_guest_context(2);
++    if (!host.handle || emscripten_webgl_make_context_current(host.handle) != EMSCRIPTEN_RESULT_SUCCESS) {
++        host.failed = true;
++        host.handle = 0;
++        return false;
++    }
++    GLint value = 0;
++    glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &value);
++    host.textureUnits = std::clamp<GLint>(value, 1, maxTextureUnits);
++    glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, &value);
++    host.vertexAttribs = std::clamp<GLint>(value, 1, maxVertexAttribs);
++    if (host.isWebGL2) {
++        glGetIntegerv(GL_MAX_UNIFORM_BUFFER_BINDINGS, &value);
++        host.uniformBufferBindings = std::clamp<GLint>(value, 0, maxUniformBufferBindings);
++    }
++    host.applied = { };
++    host.owner = nullptr;
++    return true;
++}
++
++bool GraphicsContextGLEmscripten::attachToSharedHost()
++{
++    auto& host = sharedHost(m_isForWebGL2);
++    if (!createSharedHost(host))
++        return false;
++    m_shared = true;
++    host.members.append(this);
++    if (!makeContextCurrent()) {
++        detachFromSharedHost();
++        return false;
++    }
++    // Stand-ins for the default vertex array and transform feedback, created
++    // through the entry points so they are this context's to delete.
++    GL_GenVertexArrays(1, &m_defaultVertexArray);
++    GL_GenTransformFeedbacks(1, &m_defaultTransformFeedback);
++    GL_BindTransformFeedback(GL_TRANSFORM_FEEDBACK, 0);
++    GL_BindVertexArray(0);
++    return true;
++}
++
++// Deletes what the context still owns and leaves the shared host context.
++void GraphicsContextGLEmscripten::detachFromSharedHost()
++{
++    if (!m_shared)
++        return;
++    auto& host = sharedHost(m_isForWebGL2);
++    if (host.handle && makeContextCurrent()) {
++        auto& state = *m_state;
++        auto deleteAll = [](HashSet<GLuint>& names, auto&& deleteOne) {
++            for (auto name : names)
++                deleteOne(name);
++            names.clear();
++        };
++        if (state.gl.transformFeedbackActive) {
++            if (state.gl.transformFeedbackPaused)
++                glResumeTransformFeedback();
++            glEndTransformFeedback();
++            state.gl.transformFeedbackActive = false;
++        }
++        // Unbind everything first, so deleting leaves no binding behind and the
++        // host is left in a neutral state.
++        GLStateShadow neutral;
++        applyState(host, state.gl, neutral);
++        host.applied = neutral;
++        state.gl = neutral;
++        deleteAll(state.queries, [](GLuint name) { glDeleteQueries(1, &name); });
++        deleteAll(state.vertexArrays, [](GLuint name) { glDeleteVertexArrays(1, &name); });
++        deleteAll(state.transformFeedbacks, [](GLuint name) { glDeleteTransformFeedbacks(1, &name); });
++        deleteAll(state.framebuffers, [](GLuint name) { glDeleteFramebuffers(1, &name); });
++        deleteAll(state.renderbuffers, [](GLuint name) { glDeleteRenderbuffers(1, &name); });
++        deleteAll(state.textures, [](GLuint name) { glDeleteTextures(1, &name); });
++        deleteAll(state.samplers, [](GLuint name) { glDeleteSamplers(1, &name); });
++        deleteAll(state.buffers, [](GLuint name) { glDeleteBuffers(1, &name); });
++        deleteAll(state.shaders, [](GLuint name) { glDeleteShader(name); });
++        for (auto program : state.programs)
++            host.pendingProgramDeletes.remove(program);
++        deleteAll(state.programs, [](GLuint name) { glDeleteProgram(name); });
++        deleteUnusedPrograms(host);
++        while (glGetError() != GL_NO_ERROR) { }
++        m_defaultVertexArray = 0;
++        m_defaultTransformFeedback = 0;
++    }
++    if (host.owner == this)
++        host.owner = nullptr;
++    host.members.removeFirst(this);
++    if (s_current == this)
++        s_current = nullptr;
++    if (isCurrent())
++        didUnmakeContextCurrent();
++    m_shared = false;
++}
++
++int GraphicsContextGLEmscripten::hostHandle() const
++{
++    return m_shared ? sharedHost(m_isForWebGL2).handle : m_handle;
++}
++
++VirtualGLContextState* GraphicsContextGLEmscripten::currentState()
++{
++    return s_current ? s_current->m_state.get() : nullptr;
++}
++
++
+ enum WebGLVersions : uint8_t { WebGL1 = 1, WebGL2 = 2, BothVersions = 3 };
+ 
+ struct ExtensionName {
+@@ -201,6 +742,7 @@ RefPtr<GraphicsContextGLEmscripten> GraphicsContextGLEmscripten::create(Graphics
+ 
+ GraphicsContextGLEmscripten::GraphicsContextGLEmscripten(GraphicsContextGLAttributes&& attributes)
+     : GraphicsContextGLANGLE(WTF::move(attributes))
++    , m_state(std::make_unique<VirtualGLContextState>())
+ {
+ }
+ 
+@@ -218,6 +760,10 @@ GraphicsContextGLEmscripten::~GraphicsContextGLEmscripten()
+ 
+ void GraphicsContextGLEmscripten::releaseHostContext()
+ {
++    if (m_shared) {
++        detachFromSharedHost();
++        return;
++    }
+     liveContexts().removeFirst(this);
+     if (!m_handle)
+         return;
+@@ -234,18 +780,25 @@ void GraphicsContextGLEmscripten::releaseHostContext()
+ 
+ void GraphicsContextGLEmscripten::forceContextLost()
+ {
+-    releaseHostContext();
++    // A shared host context stays for the other contexts; this one's objects
++    // go when it is destroyed.
++    if (!m_shared)
++        releaseHostContext();
+     GraphicsContextGLANGLE::forceContextLost();
+ }
+ 
+ bool GraphicsContextGLEmscripten::platformInitializeContext()
+ {
+     m_isForWebGL2 = contextAttributes().isWebGL2;
+-    if (liveContexts().size() >= maxPageContexts())
+-        liveContexts().first()->forceContextLost();
+-    m_handle = inception_webgl_create_guest_context(m_isForWebGL2 ? 2 : 1);
+-    if (!m_handle || !makeContextCurrent())
+-        return false;
++    // A host context of its own only when the shared one is unavailable; those
++    // count against the browser's cap.
++    if (!attachToSharedHost()) {
++        if (liveContexts().size() >= maxPageContexts())
++            liveContexts().first()->forceContextLost();
++        m_handle = inception_webgl_create_guest_context(m_isForWebGL2 ? 2 : 1);
++        if (!m_handle || !makeContextCurrent())
++            return false;
++    }
+     // The shared code keeps a set of the displays it used; there is no EGL
+     // display here, so all contexts share one stand-in.
+     static int display;
+@@ -290,12 +843,22 @@ bool GraphicsContextGLEmscripten::platformInitializeContext()
+     };
+     m_renderer = unmasked(true);
+     m_vendor = unmasked(false);
+-    liveContexts().append(this);
++    if (!m_shared)
++        liveContexts().append(this);
+     return true;
+ }
+ 
+ bool GraphicsContextGLEmscripten::makeCurrentImpl()
+ {
++    if (m_shared) {
++        auto& host = sharedHost(m_isForWebGL2);
++        if (!host.handle || emscripten_webgl_make_context_current(host.handle) != EMSCRIPTEN_RESULT_SUCCESS)
++            return false;
++        s_current = this;
++        if (host.owner != this)
++            switchSharedHost(host, *this);
++        return true;
++    }
+     if (!m_handle || emscripten_webgl_make_context_current(m_handle) != EMSCRIPTEN_RESULT_SUCCESS)
+         return false;
+     s_current = this;
+@@ -324,7 +887,7 @@ void GraphicsContextGLEmscripten::requestExtension(const char* glName)
+     if (it == m_webGLNames.end())
+         return;
+     for (auto& webGLName : it->value)
+-        emscripten_webgl_enable_extension(m_handle, webGLName.data());
++        emscripten_webgl_enable_extension(hostHandle(), webGLName.data());
+ }
+ 
+ // The drawing buffer's color texture; WebCore attaches it and its depth and
+@@ -459,17 +1022,6 @@ static bool passesToHost(GLenum capability)
+     return context && context->isEnabledCapability(capability);
+ }
+ 
+-void GL_Enable(GLenum capability)
+-{
+-    if (passesToHost(capability))
+-        glEnable(capability);
+-}
+-
+-void GL_Disable(GLenum capability)
+-{
+-    if (passesToHost(capability))
+-        glDisable(capability);
+-}
+ 
+ GLboolean GL_IsEnabled(GLenum capability)
+ {
+@@ -565,4 +1117,771 @@ void GL_GetQueryObjectui64vRobustANGLE(GLuint id, GLenum pname, GLsizei bufSize,
+     *params = value;
+ }
+ 
++using namespace WebCore;
++
++// The entry points that record into the current context's shadow before
++// calling the host.
++
++static GLStateShadow* shadow()
++{
++    auto* state = GraphicsContextGLEmscripten::currentState();
++    return state ? &state->gl : nullptr;
++}
++
++static void recordCapability(GLenum capability, bool enabled)
++{
++    auto* gl = shadow();
++    if (!gl)
++        return;
++    if (capability == GL_BLEND) {
++        gl->blend.enabled = enabled;
++        for (auto& blend : gl->blendPerDrawBuffer)
++            blend.enabled = enabled;
++        return;
++    }
++    if (auto index = capabilityIndex(capability)) {
++        if (enabled)
++            gl->enabled |= 1u << *index;
++        else
++            gl->enabled &= ~(1u << *index);
++    }
++}
++
++void GL_Enable(GLenum capability)
++{
++    if (!passesToHost(capability))
++        return;
++    recordCapability(capability, true);
++    glEnable(capability);
++}
++
++void GL_Disable(GLenum capability)
++{
++    if (!passesToHost(capability))
++        return;
++    recordCapability(capability, false);
++    glDisable(capability);
++}
++
++void GL_EnableiOES(GLenum target, GLuint index)
++{
++    if (auto* gl = shadow(); gl && target == GL_BLEND && index < maxDrawBuffers) {
++        gl->indexedBlendUsed = true;
++        gl->blendPerDrawBuffer[index].enabled = true;
++    }
++    glEnableiOES(target, index);
++}
++
++void GL_DisableiOES(GLenum target, GLuint index)
++{
++    if (auto* gl = shadow(); gl && target == GL_BLEND && index < maxDrawBuffers) {
++        gl->indexedBlendUsed = true;
++        gl->blendPerDrawBuffer[index].enabled = false;
++    }
++    glDisableiOES(target, index);
++}
++
++// Sets a blend field everywhere (non-indexed call) or for one draw buffer.
++template<typename Setter>
++static void recordBlend(std::optional<GLuint> drawBuffer, Setter&& set)
++{
++    auto* gl = shadow();
++    if (!gl)
++        return;
++    if (drawBuffer) {
++        if (*drawBuffer < maxDrawBuffers) {
++            gl->indexedBlendUsed = true;
++            set(gl->blendPerDrawBuffer[*drawBuffer]);
++        }
++        return;
++    }
++    set(gl->blend);
++    for (auto& blend : gl->blendPerDrawBuffer)
++        set(blend);
++}
++
++void GL_BlendColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha)
++{
++    if (auto* gl = shadow())
++        gl->blendColor = { red, green, blue, alpha };
++    glBlendColor(red, green, blue, alpha);
++}
++
++void GL_BlendEquation(GLenum mode)
++{
++    recordBlend(std::nullopt, [&](ShadowBlend& blend) { blend.equationRGB = blend.equationAlpha = mode; });
++    glBlendEquation(mode);
++}
++
++void GL_BlendEquationSeparate(GLenum modeRGB, GLenum modeAlpha)
++{
++    recordBlend(std::nullopt, [&](ShadowBlend& blend) { blend.equationRGB = modeRGB; blend.equationAlpha = modeAlpha; });
++    glBlendEquationSeparate(modeRGB, modeAlpha);
++}
++
++void GL_BlendFunc(GLenum sfactor, GLenum dfactor)
++{
++    recordBlend(std::nullopt, [&](ShadowBlend& blend) {
++        blend.sourceRGB = blend.sourceAlpha = sfactor;
++        blend.destinationRGB = blend.destinationAlpha = dfactor;
++    });
++    glBlendFunc(sfactor, dfactor);
++}
++
++void GL_BlendFuncSeparate(GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha)
++{
++    recordBlend(std::nullopt, [&](ShadowBlend& blend) {
++        blend.sourceRGB = srcRGB;
++        blend.destinationRGB = dstRGB;
++        blend.sourceAlpha = srcAlpha;
++        blend.destinationAlpha = dstAlpha;
++    });
++    glBlendFuncSeparate(srcRGB, dstRGB, srcAlpha, dstAlpha);
++}
++
++void GL_BlendEquationiOES(GLuint buf, GLenum mode)
++{
++    recordBlend(buf, [&](ShadowBlend& blend) { blend.equationRGB = blend.equationAlpha = mode; });
++    glBlendEquationiOES(buf, mode);
++}
++
++void GL_BlendEquationSeparateiOES(GLuint buf, GLenum modeRGB, GLenum modeAlpha)
++{
++    recordBlend(buf, [&](ShadowBlend& blend) { blend.equationRGB = modeRGB; blend.equationAlpha = modeAlpha; });
++    glBlendEquationSeparateiOES(buf, modeRGB, modeAlpha);
++}
++
++void GL_BlendFunciOES(GLuint buf, GLenum src, GLenum dst)
++{
++    recordBlend(buf, [&](ShadowBlend& blend) {
++        blend.sourceRGB = blend.sourceAlpha = src;
++        blend.destinationRGB = blend.destinationAlpha = dst;
++    });
++    glBlendFunciOES(buf, src, dst);
++}
++
++void GL_BlendFuncSeparateiOES(GLuint buf, GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha)
++{
++    recordBlend(buf, [&](ShadowBlend& blend) {
++        blend.sourceRGB = srcRGB;
++        blend.destinationRGB = dstRGB;
++        blend.sourceAlpha = srcAlpha;
++        blend.destinationAlpha = dstAlpha;
++    });
++    glBlendFuncSeparateiOES(buf, srcRGB, dstRGB, srcAlpha, dstAlpha);
++}
++
++void GL_ColorMask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha)
++{
++    recordBlend(std::nullopt, [&](ShadowBlend& blend) { blend.colorMask = { red, green, blue, alpha }; });
++    glColorMask(red, green, blue, alpha);
++}
++
++void GL_ColorMaskiOES(GLuint index, GLboolean r, GLboolean g, GLboolean b, GLboolean a)
++{
++    recordBlend(index, [&](ShadowBlend& blend) { blend.colorMask = { r, g, b, a }; });
++    glColorMaskiOES(index, r, g, b, a);
++}
++
++void GL_ClearColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha)
++{
++    if (auto* gl = shadow())
++        gl->clearColor = { red, green, blue, alpha };
++    glClearColor(red, green, blue, alpha);
++}
++
++void GL_ClearDepthf(GLfloat depth)
++{
++    if (auto* gl = shadow())
++        gl->clearDepth = depth;
++    glClearDepthf(depth);
++}
++
++void GL_ClearStencil(GLint s)
++{
++    if (auto* gl = shadow())
++        gl->clearStencil = s;
++    glClearStencil(s);
++}
++
++void GL_ClipControlEXT(GLenum origin, GLenum depth)
++{
++    if (auto* gl = shadow()) {
++        gl->clipControlUsed = true;
++        gl->clipOrigin = origin;
++        gl->clipDepth = depth;
++    }
++    glClipControlEXT(origin, depth);
++}
++
++void GL_CullFace(GLenum mode)
++{
++    if (auto* gl = shadow())
++        gl->cullFace = mode;
++    glCullFace(mode);
++}
++
++void GL_DepthFunc(GLenum func)
++{
++    if (auto* gl = shadow())
++        gl->depthFunction = func;
++    glDepthFunc(func);
++}
++
++void GL_DepthMask(GLboolean flag)
++{
++    if (auto* gl = shadow())
++        gl->depthMask = flag;
++    glDepthMask(flag);
++}
++
++void GL_DepthRangef(GLfloat n, GLfloat f)
++{
++    if (auto* gl = shadow())
++        gl->depthRange = { n, f };
++    glDepthRangef(n, f);
++}
++
++void GL_FrontFace(GLenum mode)
++{
++    if (auto* gl = shadow())
++        gl->frontFace = mode;
++    glFrontFace(mode);
++}
++
++void GL_Hint(GLenum target, GLenum mode)
++{
++    if (auto* gl = shadow()) {
++        if (target == GL_GENERATE_MIPMAP_HINT)
++            gl->generateMipmapHint = mode;
++        else if (target == GL_FRAGMENT_SHADER_DERIVATIVE_HINT)
++            gl->derivativeHint = mode;
++    }
++    glHint(target, mode);
++}
++
++void GL_LineWidth(GLfloat width)
++{
++    if (auto* gl = shadow())
++        gl->lineWidth = width;
++    glLineWidth(width);
++}
++
++void GL_PixelStorei(GLenum pname, GLint param)
++{
++    if (auto* gl = shadow()) {
++        for (unsigned i = 0; i < shadowedPixelStore.size(); ++i) {
++            if (shadowedPixelStore[i] == pname)
++                gl->pixelStore[i] = param;
++        }
++    }
++    glPixelStorei(pname, param);
++}
++
++void GL_PolygonOffset(GLfloat factor, GLfloat units)
++{
++    if (auto* gl = shadow())
++        gl->polygonOffset = { factor, units, 0 };
++    glPolygonOffset(factor, units);
++}
++
++void GL_PolygonOffsetClampEXT(GLfloat factor, GLfloat units, GLfloat clamp)
++{
++    if (auto* gl = shadow()) {
++        gl->polygonOffsetClampUsed = true;
++        gl->polygonOffset = { factor, units, clamp };
++    }
++    glPolygonOffsetClampEXT(factor, units, clamp);
++}
++
++void GL_SampleCoverage(GLfloat value, GLboolean invert)
++{
++    if (auto* gl = shadow()) {
++        gl->sampleCoverageValue = value;
++        gl->sampleCoverageInvert = invert;
++    }
++    glSampleCoverage(value, invert);
++}
++
++void GL_Scissor(GLint x, GLint y, GLsizei width, GLsizei height)
++{
++    if (auto* gl = shadow())
++        gl->scissor = { x, y, width, height };
++    glScissor(x, y, width, height);
++}
++
++void GL_Viewport(GLint x, GLint y, GLsizei width, GLsizei height)
++{
++    if (auto* gl = shadow())
++        gl->viewport = { x, y, width, height };
++    glViewport(x, y, width, height);
++}
++
++template<typename Apply>
++static void recordStencil(GLenum face, Apply&& apply)
++{
++    auto* gl = shadow();
++    if (!gl)
++        return;
++    if (face == GL_FRONT || face == GL_FRONT_AND_BACK)
++        apply(gl->stencilFront);
++    if (face == GL_BACK || face == GL_FRONT_AND_BACK)
++        apply(gl->stencilBack);
++}
++
++void GL_StencilFunc(GLenum func, GLint ref, GLuint mask)
++{
++    recordStencil(GL_FRONT_AND_BACK, [&](ShadowStencilFace& face) { face.function = func; face.reference = ref; face.valueMask = mask; });
++    glStencilFunc(func, ref, mask);
++}
++
++void GL_StencilFuncSeparate(GLenum face, GLenum func, GLint ref, GLuint mask)
++{
++    recordStencil(face, [&](ShadowStencilFace& stencil) { stencil.function = func; stencil.reference = ref; stencil.valueMask = mask; });
++    glStencilFuncSeparate(face, func, ref, mask);
++}
++
++void GL_StencilMask(GLuint mask)
++{
++    recordStencil(GL_FRONT_AND_BACK, [&](ShadowStencilFace& face) { face.writeMask = mask; });
++    glStencilMask(mask);
++}
++
++void GL_StencilMaskSeparate(GLenum face, GLuint mask)
++{
++    recordStencil(face, [&](ShadowStencilFace& stencil) { stencil.writeMask = mask; });
++    glStencilMaskSeparate(face, mask);
++}
++
++void GL_StencilOp(GLenum fail, GLenum zfail, GLenum zpass)
++{
++    recordStencil(GL_FRONT_AND_BACK, [&](ShadowStencilFace& face) { face.fail = fail; face.depthFail = zfail; face.depthPass = zpass; });
++    glStencilOp(fail, zfail, zpass);
++}
++
++void GL_StencilOpSeparate(GLenum face, GLenum sfail, GLenum dpfail, GLenum dppass)
++{
++    recordStencil(face, [&](ShadowStencilFace& stencil) { stencil.fail = sfail; stencil.depthFail = dpfail; stencil.depthPass = dppass; });
++    glStencilOpSeparate(face, sfail, dpfail, dppass);
++}
++
++void GL_UseProgram(GLuint program)
++{
++    auto* context = GraphicsContextGLEmscripten::current();
++    if (auto* gl = shadow())
++        gl->program = program;
++    glUseProgram(program);
++    if (context && context->isShared())
++        deleteUnusedPrograms(sharedHost(context->isWebGL2()));
++}
++
++void GL_ActiveTexture(GLenum texture)
++{
++    if (auto* gl = shadow())
++        gl->activeTexture = texture;
++    glActiveTexture(texture);
++}
++
++static ShadowTextureUnit* currentTextureUnit(GLStateShadow& gl)
++{
++    unsigned unit = gl.activeTexture - GL_TEXTURE0;
++    if (unit >= maxTextureUnits)
++        return nullptr;
++    gl.textureUnitsUsed = std::max(gl.textureUnitsUsed, unit + 1);
++    return &gl.textureUnits[unit];
++}
++
++void GL_BindTexture(GLenum target, GLuint texture)
++{
++    if (auto* gl = shadow()) {
++        if (auto* unit = currentTextureUnit(*gl)) {
++            switch (target) {
++            case GL_TEXTURE_2D: unit->texture2D = texture; break;
++            case GL_TEXTURE_CUBE_MAP: unit->textureCubeMap = texture; break;
++            case GL_TEXTURE_3D: unit->texture3D = texture; break;
++            case GL_TEXTURE_2D_ARRAY: unit->texture2DArray = texture; break;
++            default: break;
++            }
++        }
++    }
++    glBindTexture(target, texture);
++}
++
++void GL_BindSampler(GLuint unit, GLuint sampler)
++{
++    if (auto* gl = shadow(); gl && unit < maxTextureUnits) {
++        gl->textureUnitsUsed = std::max(gl->textureUnitsUsed, unit + 1);
++        gl->textureUnits[unit].sampler = sampler;
++    }
++    glBindSampler(unit, sampler);
++}
++
++static void recordBufferBinding(GLStateShadow& gl, GLenum target, GLuint buffer)
++{
++    switch (target) {
++    case GL_ARRAY_BUFFER: gl.arrayBuffer = buffer; break;
++    case GL_COPY_READ_BUFFER: gl.copyReadBuffer = buffer; break;
++    case GL_COPY_WRITE_BUFFER: gl.copyWriteBuffer = buffer; break;
++    case GL_PIXEL_PACK_BUFFER: gl.pixelPackBuffer = buffer; break;
++    case GL_PIXEL_UNPACK_BUFFER: gl.pixelUnpackBuffer = buffer; break;
++    case GL_UNIFORM_BUFFER: gl.uniformBuffer = buffer; break;
++    case GL_TRANSFORM_FEEDBACK_BUFFER: gl.transformFeedbackBuffer = buffer; break;
++    default: break; // ELEMENT_ARRAY_BUFFER belongs to the vertex array.
++    }
++}
++
++void GL_BindBuffer(GLenum target, GLuint buffer)
++{
++    if (auto* gl = shadow())
++        recordBufferBinding(*gl, target, buffer);
++    glBindBuffer(target, buffer);
++}
++
++static void recordIndexedBinding(GLenum target, GLuint index, ShadowBufferRange range)
++{
++    auto* gl = shadow();
++    if (!gl)
++        return;
++    recordBufferBinding(*gl, target, range.buffer);
++    // Transform feedback bindings belong to the transform feedback object.
++    if (target != GL_UNIFORM_BUFFER || index >= maxUniformBufferBindings)
++        return;
++    gl->uniformBindingsUsed = std::max(gl->uniformBindingsUsed, index + 1);
++    gl->uniformBindings[index] = range;
++}
++
++void GL_BindBufferBase(GLenum target, GLuint index, GLuint buffer)
++{
++    recordIndexedBinding(target, index, { buffer, 0, -1 });
++    glBindBufferBase(target, index, buffer);
++}
++
++void GL_BindBufferRange(GLenum target, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size)
++{
++    recordIndexedBinding(target, index, { buffer, offset, size });
++    glBindBufferRange(target, index, buffer, offset, size);
++}
++
++void GL_BindFramebuffer(GLenum target, GLuint framebuffer)
++{
++    if (auto* gl = shadow()) {
++        if (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER)
++            gl->drawFramebuffer = framebuffer;
++        if (target == GL_FRAMEBUFFER || target == GL_READ_FRAMEBUFFER)
++            gl->readFramebuffer = framebuffer;
++    }
++    glBindFramebuffer(target, framebuffer);
++}
++
++void GL_BindRenderbuffer(GLenum target, GLuint renderbuffer)
++{
++    if (auto* gl = shadow())
++        gl->renderbuffer = renderbuffer;
++    glBindRenderbuffer(target, renderbuffer);
++}
++
++// Vertex array 0 and transform feedback 0 are the context's own stand-ins.
++void GL_BindVertexArray(GLuint array)
++{
++    auto* context = GraphicsContextGLEmscripten::current();
++    if (!array && context)
++        array = context->defaultVertexArray();
++    if (auto* gl = shadow())
++        gl->vertexArray = array;
++    glBindVertexArray(array);
++}
++
++void GL_BindVertexArrayOES(GLuint array)
++{
++    GL_BindVertexArray(array);
++}
++
++void GL_BindTransformFeedback(GLenum target, GLuint id)
++{
++    auto* context = GraphicsContextGLEmscripten::current();
++    if (!id && context)
++        id = context->defaultTransformFeedback();
++    if (auto* gl = shadow())
++        gl->transformFeedback = id;
++    glBindTransformFeedback(target, id);
++}
++
++void GL_BeginTransformFeedback(GLenum primitiveMode)
++{
++    if (auto* gl = shadow()) {
++        gl->transformFeedbackActive = true;
++        gl->transformFeedbackPaused = false;
++    }
++    glBeginTransformFeedback(primitiveMode);
++}
++
++void GL_EndTransformFeedback()
++{
++    if (auto* gl = shadow()) {
++        gl->transformFeedbackActive = false;
++        gl->transformFeedbackPaused = false;
++    }
++    glEndTransformFeedback();
++}
++
++void GL_PauseTransformFeedback()
++{
++    if (auto* gl = shadow())
++        gl->transformFeedbackPaused = true;
++    glPauseTransformFeedback();
++}
++
++void GL_ResumeTransformFeedback()
++{
++    if (auto* gl = shadow())
++        gl->transformFeedbackPaused = false;
++    glResumeTransformFeedback();
++}
++
++static void recordVertexAttrib(GLuint index, ShadowVertexAttrib::Kind kind, std::array<uint32_t, 4> bits)
++{
++    auto* gl = shadow();
++    if (!gl || index >= maxVertexAttribs)
++        return;
++    gl->vertexAttribsUsed = std::max(gl->vertexAttribsUsed, index + 1);
++    gl->vertexAttribs[index] = { kind, bits };
++}
++
++static std::array<uint32_t, 4> floatBits(GLfloat x, GLfloat y, GLfloat z, GLfloat w)
++{
++    return { std::bit_cast<uint32_t>(x), std::bit_cast<uint32_t>(y), std::bit_cast<uint32_t>(z), std::bit_cast<uint32_t>(w) };
++}
++
++void GL_VertexAttrib1f(GLuint index, GLfloat x) { GL_VertexAttrib4f(index, x, 0, 0, 1); }
++void GL_VertexAttrib2f(GLuint index, GLfloat x, GLfloat y) { GL_VertexAttrib4f(index, x, y, 0, 1); }
++void GL_VertexAttrib3f(GLuint index, GLfloat x, GLfloat y, GLfloat z) { GL_VertexAttrib4f(index, x, y, z, 1); }
++void GL_VertexAttrib1fv(GLuint index, const GLfloat* v) { GL_VertexAttrib4f(index, v[0], 0, 0, 1); }
++void GL_VertexAttrib2fv(GLuint index, const GLfloat* v) { GL_VertexAttrib4f(index, v[0], v[1], 0, 1); }
++void GL_VertexAttrib3fv(GLuint index, const GLfloat* v) { GL_VertexAttrib4f(index, v[0], v[1], v[2], 1); }
++void GL_VertexAttrib4fv(GLuint index, const GLfloat* v) { GL_VertexAttrib4f(index, v[0], v[1], v[2], v[3]); }
++
++void GL_VertexAttrib4f(GLuint index, GLfloat x, GLfloat y, GLfloat z, GLfloat w)
++{
++    recordVertexAttrib(index, ShadowVertexAttrib::Kind::Float, floatBits(x, y, z, w));
++    glVertexAttrib4f(index, x, y, z, w);
++}
++
++void GL_VertexAttribI4i(GLuint index, GLint x, GLint y, GLint z, GLint w)
++{
++    recordVertexAttrib(index, ShadowVertexAttrib::Kind::Int, { static_cast<uint32_t>(x), static_cast<uint32_t>(y), static_cast<uint32_t>(z), static_cast<uint32_t>(w) });
++    glVertexAttribI4i(index, x, y, z, w);
++}
++
++void GL_VertexAttribI4iv(GLuint index, const GLint* v) { GL_VertexAttribI4i(index, v[0], v[1], v[2], v[3]); }
++
++void GL_VertexAttribI4ui(GLuint index, GLuint x, GLuint y, GLuint z, GLuint w)
++{
++    recordVertexAttrib(index, ShadowVertexAttrib::Kind::UnsignedInt, { x, y, z, w });
++    glVertexAttribI4ui(index, x, y, z, w);
++}
++
++void GL_VertexAttribI4uiv(GLuint index, const GLuint* v) { GL_VertexAttribI4ui(index, v[0], v[1], v[2], v[3]); }
++
++GLenum GL_GetError()
++{
++    if (auto* state = GraphicsContextGLEmscripten::currentState(); state && !state->pendingErrors.isEmpty())
++    {
++        GLenum error = state->pendingErrors.first();
++        state->pendingErrors.removeAt(0);
++        return error;
++    }
++    return glGetError();
++}
++
++// The stand-ins report as the default objects they replace.
++void GL_GetIntegerv(GLenum pname, GLint* data)
++{
++    glGetIntegerv(pname, data);
++    auto* context = GraphicsContextGLEmscripten::current();
++    if (!context || !data)
++        return;
++    if (pname == GL_VERTEX_ARRAY_BINDING && static_cast<GLuint>(*data) == context->defaultVertexArray())
++        *data = 0;
++    else if (pname == GL_TRANSFORM_FEEDBACK_BINDING && static_cast<GLuint>(*data) == context->defaultTransformFeedback())
++        *data = 0;
++}
++
++// Object lifetimes: each context remembers what it created, and bindings to
++// deleted objects revert to 0 in its shadow as they do on the host.
++static void addOwned(HashSet<GLuint> VirtualGLContextState::* set, GLsizei n, const GLuint* names)
++{
++    auto* state = GraphicsContextGLEmscripten::currentState();
++    if (!state || !names)
++        return;
++    for (GLsizei i = 0; i < n; ++i) {
++        if (names[i])
++            (state->*set).add(names[i]);
++    }
++}
++
++static void removeOwned(HashSet<GLuint> VirtualGLContextState::* set, GLsizei n, const GLuint* names, const Function<void(GLStateShadow&, GLuint)>& unbind)
++{
++    auto* state = GraphicsContextGLEmscripten::currentState();
++    if (!state || !names)
++        return;
++    for (GLsizei i = 0; i < n; ++i) {
++        if (!names[i])
++            continue;
++        (state->*set).remove(names[i]);
++        unbind(state->gl, names[i]);
++    }
++}
++
++static void clear(GLuint& binding, GLuint name)
++{
++    if (binding == name)
++        binding = 0;
++}
++
++void GL_GenBuffers(GLsizei n, GLuint* buffers) { glGenBuffers(n, buffers); addOwned(&VirtualGLContextState::buffers, n, buffers); }
++void GL_GenFramebuffers(GLsizei n, GLuint* framebuffers) { glGenFramebuffers(n, framebuffers); addOwned(&VirtualGLContextState::framebuffers, n, framebuffers); }
++void GL_GenQueries(GLsizei n, GLuint* ids) { glGenQueries(n, ids); addOwned(&VirtualGLContextState::queries, n, ids); }
++void GL_GenQueriesEXT(GLsizei n, GLuint* ids) { glGenQueriesEXT(n, ids); addOwned(&VirtualGLContextState::queries, n, ids); }
++void GL_GenRenderbuffers(GLsizei n, GLuint* renderbuffers) { glGenRenderbuffers(n, renderbuffers); addOwned(&VirtualGLContextState::renderbuffers, n, renderbuffers); }
++void GL_GenSamplers(GLsizei n, GLuint* samplers) { glGenSamplers(n, samplers); addOwned(&VirtualGLContextState::samplers, n, samplers); }
++void GL_GenTextures(GLsizei n, GLuint* textures) { glGenTextures(n, textures); addOwned(&VirtualGLContextState::textures, n, textures); }
++void GL_GenTransformFeedbacks(GLsizei n, GLuint* ids) { glGenTransformFeedbacks(n, ids); addOwned(&VirtualGLContextState::transformFeedbacks, n, ids); }
++void GL_GenVertexArrays(GLsizei n, GLuint* arrays) { glGenVertexArrays(n, arrays); addOwned(&VirtualGLContextState::vertexArrays, n, arrays); }
++void GL_GenVertexArraysOES(GLsizei n, GLuint* arrays) { glGenVertexArraysOES(n, arrays); addOwned(&VirtualGLContextState::vertexArrays, n, arrays); }
++
++GLuint GL_CreateProgram()
++{
++    GLuint program = glCreateProgram();
++    addOwned(&VirtualGLContextState::programs, 1, &program);
++    return program;
++}
++
++GLuint GL_CreateShader(GLenum type)
++{
++    GLuint shader = glCreateShader(type);
++    addOwned(&VirtualGLContextState::shaders, 1, &shader);
++    return shader;
++}
++
++void GL_DeleteBuffers(GLsizei n, const GLuint* buffers)
++{
++    removeOwned(&VirtualGLContextState::buffers, n, buffers, [](GLStateShadow& gl, GLuint name) {
++        for (auto* binding : { &gl.arrayBuffer, &gl.copyReadBuffer, &gl.copyWriteBuffer, &gl.pixelPackBuffer, &gl.pixelUnpackBuffer, &gl.uniformBuffer, &gl.transformFeedbackBuffer })
++            clear(*binding, name);
++        for (auto& range : gl.uniformBindings) {
++            if (range.buffer == name)
++                range = { };
++        }
++    });
++    glDeleteBuffers(n, buffers);
++}
++
++void GL_DeleteFramebuffers(GLsizei n, const GLuint* framebuffers)
++{
++    removeOwned(&VirtualGLContextState::framebuffers, n, framebuffers, [](GLStateShadow& gl, GLuint name) {
++        clear(gl.drawFramebuffer, name);
++        clear(gl.readFramebuffer, name);
++    });
++    glDeleteFramebuffers(n, framebuffers);
++}
++
++void GL_DeleteRenderbuffers(GLsizei n, const GLuint* renderbuffers)
++{
++    removeOwned(&VirtualGLContextState::renderbuffers, n, renderbuffers, [](GLStateShadow& gl, GLuint name) {
++        clear(gl.renderbuffer, name);
++    });
++    glDeleteRenderbuffers(n, renderbuffers);
++}
++
++void GL_DeleteSamplers(GLsizei n, const GLuint* samplers)
++{
++    removeOwned(&VirtualGLContextState::samplers, n, samplers, [](GLStateShadow& gl, GLuint name) {
++        for (auto& unit : gl.textureUnits)
++            clear(unit.sampler, name);
++    });
++    glDeleteSamplers(n, samplers);
++}
++
++void GL_DeleteTextures(GLsizei n, const GLuint* textures)
++{
++    removeOwned(&VirtualGLContextState::textures, n, textures, [](GLStateShadow& gl, GLuint name) {
++        for (auto& unit : gl.textureUnits) {
++            for (auto* binding : { &unit.texture2D, &unit.textureCubeMap, &unit.texture3D, &unit.texture2DArray })
++                clear(*binding, name);
++        }
++    });
++    glDeleteTextures(n, textures);
++}
++
++void GL_DeleteQueries(GLsizei n, const GLuint* ids)
++{
++    removeOwned(&VirtualGLContextState::queries, n, ids, [](GLStateShadow&, GLuint) { });
++    glDeleteQueries(n, ids);
++}
++
++void GL_DeleteQueriesEXT(GLsizei n, const GLuint* ids)
++{
++    removeOwned(&VirtualGLContextState::queries, n, ids, [](GLStateShadow&, GLuint) { });
++    glDeleteQueriesEXT(n, ids);
++}
++
++// Deleting the bound vertex array or transform feedback reverts to the
++// default one, which here is the context's stand-in.
++void GL_DeleteVertexArrays(GLsizei n, const GLuint* arrays)
++{
++    auto* context = GraphicsContextGLEmscripten::current();
++    bool wasBound = false;
++    removeOwned(&VirtualGLContextState::vertexArrays, n, arrays, [&](GLStateShadow& gl, GLuint name) {
++        if (gl.vertexArray == name) {
++            wasBound = true;
++            gl.vertexArray = 0;
++        }
++    });
++    glDeleteVertexArrays(n, arrays);
++    if (wasBound && context)
++        GL_BindVertexArray(0);
++}
++
++void GL_DeleteVertexArraysOES(GLsizei n, const GLuint* arrays)
++{
++    GL_DeleteVertexArrays(n, arrays);
++}
++
++void GL_DeleteTransformFeedbacks(GLsizei n, const GLuint* ids)
++{
++    auto* context = GraphicsContextGLEmscripten::current();
++    bool wasBound = false;
++    removeOwned(&VirtualGLContextState::transformFeedbacks, n, ids, [&](GLStateShadow& gl, GLuint name) {
++        if (gl.transformFeedback == name) {
++            wasBound = true;
++            gl.transformFeedback = 0;
++        }
++    });
++    glDeleteTransformFeedbacks(n, ids);
++    if (wasBound && context)
++        GL_BindTransformFeedback(GL_TRANSFORM_FEEDBACK, 0);
++}
++
++void GL_DeleteShader(GLuint shader)
++{
++    removeOwned(&VirtualGLContextState::shaders, 1, &shader, [](GLStateShadow&, GLuint) { });
++    glDeleteShader(shader);
++}
++
++// A program deleted while current stays usable there; on a shared host the
++// next context's state would unbind it, so the host deletes it only once
++// unused.
++void GL_DeleteProgram(GLuint program)
++{
++    auto* context = GraphicsContextGLEmscripten::current();
++    auto* state = GraphicsContextGLEmscripten::currentState();
++    if (state)
++        state->programs.remove(program);
++    if (context && context->isShared() && state && state->gl.program == program && program) {
++        sharedHost(context->isWebGL2()).pendingProgramDeletes.add(program);
++        return;
++    }
++    glDeleteProgram(program);
++}
++
+ #endif // ENABLE(WEBGL)
+diff --git a/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.h b/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.h
+index 068a5ee..5457bb8 100644
+--- a/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.h
++++ b/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.h
+@@ -33,9 +33,14 @@
+ 
+ namespace WebCore {
+ 
+-// WebGL for pages, drawn by a WebGL context of the host browser. Each page
+-// context gets its own host context on an OffscreenCanvas in the engine
+-// thread; WebCore's shared WebGL code drives it through the GL entry points in
++struct VirtualGLContextState;
++
++// WebGL for pages, drawn by a WebGL context of the host browser. Page contexts
++// are virtual: they all share one host context, each keeping a shadow of its
++// own state that is swapped in when it becomes current (browsers cap live
++// contexts per worker, four on Chromium, and the engine's own context must
++// never be the one lost).
++// WebCore's shared WebGL code drives them through the GL entry points in
+ // ANGLE/WebGLOverHostWebGL.h. The page's canvas is painted from the drawing
+ // buffer's pixels, as for a non-composited canvas.
+ class GraphicsContextGLEmscripten final : public GLContextWrapper, public GraphicsContextGLANGLE {
+@@ -47,6 +52,9 @@ public:
+     // The context whose GL calls are being made, for the entry points that
+     // depend on its version or extensions.
+     static GraphicsContextGLEmscripten* current();
++    // The state shadow of the current context, for the entry points that record
++    // into it.
++    static VirtualGLContextState* currentState();
+ 
+     RefPtr<GraphicsLayerContentsDisplayDelegate> layerContentsDisplayDelegate() final { return nullptr; }
+ #if ENABLE(VIDEO)
+@@ -61,6 +69,10 @@ public:
+     void prepareForDisplay() final;
+ 
+     bool isWebGL2() const { return m_isForWebGL2; }
++    bool isShared() const { return m_shared; }
++    VirtualGLContextState& state() { return *m_state; }
++    PlatformGLObject defaultVertexArray() const { return m_defaultVertexArray; }
++    PlatformGLObject defaultTransformFeedback() const { return m_defaultTransformFeedback; }
+     bool isEnabledCapability(GCGLenum) const;
+     const char* glString(GCGLenum) const;
+     void requestExtension(const char* glName);
+@@ -73,6 +85,9 @@ private:
+     bool platformInitializeContext() final;
+     void forceContextLost() final;
+     void releaseHostContext();
++    bool attachToSharedHost();
++    void detachFromSharedHost();
++    int hostHandle() const;
+ 
+     // GLContextWrapper
+     GLContextWrapper::Type type() const final { return GLContextWrapper::Type::Angle; }
+@@ -80,7 +95,14 @@ private:
+     bool unmakeCurrentImpl() final { return true; }
+     unsigned glVersion() const final { return m_isForWebGL2 ? 300 : 200; }
+ 
++    // A context of its own, when the shared host contexts are unavailable.
+     int m_handle { 0 };
++    bool m_shared { false };
++    std::unique_ptr<VirtualGLContextState> m_state;
++    // Stand-ins for vertex array 0 and transform feedback 0, so that state never
++    // leaks between contexts sharing a host context.
++    PlatformGLObject m_defaultVertexArray { 0 };
++    PlatformGLObject m_defaultTransformFeedback { 0 };
+     CString m_extensions;
+     CString m_requestableExtensions;
+     CString m_renderer;
+diff --git a/Source/WebCore/platform/graphics/emscripten/angle/ANGLE/WebGLOverHostWebGL.h b/Source/WebCore/platform/graphics/emscripten/angle/ANGLE/WebGLOverHostWebGL.h
+index 8b870f5..a47bd8e 100644
+--- a/Source/WebCore/platform/graphics/emscripten/angle/ANGLE/WebGLOverHostWebGL.h
++++ b/Source/WebCore/platform/graphics/emscripten/angle/ANGLE/WebGLOverHostWebGL.h
+@@ -62,31 +62,10 @@
+ #define EGL_TEXTURE_RECTANGLE_ANGLE 0x345B
+ #endif
+ 
+-#define GL_ActiveTexture glActiveTexture
+ #define GL_AttachShader glAttachShader
+ #define GL_BeginQuery glBeginQuery
+ #define GL_BeginQueryEXT glBeginQueryEXT
+-#define GL_BeginTransformFeedback glBeginTransformFeedback
+ #define GL_BindAttribLocation glBindAttribLocation
+-#define GL_BindBuffer glBindBuffer
+-#define GL_BindBufferBase glBindBufferBase
+-#define GL_BindBufferRange glBindBufferRange
+-#define GL_BindFramebuffer glBindFramebuffer
+-#define GL_BindRenderbuffer glBindRenderbuffer
+-#define GL_BindSampler glBindSampler
+-#define GL_BindTexture glBindTexture
+-#define GL_BindTransformFeedback glBindTransformFeedback
+-#define GL_BindVertexArray glBindVertexArray
+-#define GL_BindVertexArrayOES glBindVertexArrayOES
+-#define GL_BlendColor glBlendColor
+-#define GL_BlendEquation glBlendEquation
+-#define GL_BlendEquationiOES glBlendEquationiOES
+-#define GL_BlendEquationSeparate glBlendEquationSeparate
+-#define GL_BlendEquationSeparateiOES glBlendEquationSeparateiOES
+-#define GL_BlendFunc glBlendFunc
+-#define GL_BlendFunciOES glBlendFunciOES
+-#define GL_BlendFuncSeparate glBlendFuncSeparate
+-#define GL_BlendFuncSeparateiOES glBlendFuncSeparateiOES
+ #define GL_BlitFramebuffer glBlitFramebuffer
+ #define GL_BlitFramebufferANGLE glBlitFramebufferANGLE
+ #define GL_BlitFramebufferNV glBlitFramebufferNV
+@@ -98,39 +77,14 @@
+ #define GL_ClearBufferfv glClearBufferfv
+ #define GL_ClearBufferiv glClearBufferiv
+ #define GL_ClearBufferuiv glClearBufferuiv
+-#define GL_ClearColor glClearColor
+-#define GL_ClearDepthf glClearDepthf
+-#define GL_ClearStencil glClearStencil
+ #define GL_ClientWaitSync glClientWaitSync
+-#define GL_ClipControlEXT glClipControlEXT
+-#define GL_ColorMask glColorMask
+-#define GL_ColorMaskiOES glColorMaskiOES
+ #define GL_CompileShader glCompileShader
+ #define GL_CopyBufferSubData glCopyBufferSubData
+ #define GL_CopyTexImage2D glCopyTexImage2D
+ #define GL_CopyTexSubImage2D glCopyTexSubImage2D
+ #define GL_CopyTexSubImage3D glCopyTexSubImage3D
+-#define GL_CreateProgram glCreateProgram
+-#define GL_CreateShader glCreateShader
+-#define GL_CullFace glCullFace
+-#define GL_DeleteBuffers glDeleteBuffers
+-#define GL_DeleteFramebuffers glDeleteFramebuffers
+-#define GL_DeleteProgram glDeleteProgram
+-#define GL_DeleteQueries glDeleteQueries
+-#define GL_DeleteQueriesEXT glDeleteQueriesEXT
+-#define GL_DeleteRenderbuffers glDeleteRenderbuffers
+-#define GL_DeleteSamplers glDeleteSamplers
+-#define GL_DeleteShader glDeleteShader
+ #define GL_DeleteSync glDeleteSync
+-#define GL_DeleteTextures glDeleteTextures
+-#define GL_DeleteTransformFeedbacks glDeleteTransformFeedbacks
+-#define GL_DeleteVertexArrays glDeleteVertexArrays
+-#define GL_DeleteVertexArraysOES glDeleteVertexArraysOES
+-#define GL_DepthFunc glDepthFunc
+-#define GL_DepthMask glDepthMask
+-#define GL_DepthRangef glDepthRangef
+ #define GL_DetachShader glDetachShader
+-#define GL_DisableiOES glDisableiOES
+ #define GL_DisableVertexAttribArray glDisableVertexAttribArray
+ #define GL_DrawArrays glDrawArrays
+ #define GL_DrawArraysInstanced glDrawArraysInstanced
+@@ -141,39 +95,24 @@
+ #define GL_DrawElementsInstanced glDrawElementsInstanced
+ #define GL_DrawElementsInstancedANGLE glDrawElementsInstancedANGLE
+ #define GL_DrawRangeElements glDrawRangeElements
+-#define GL_EnableiOES glEnableiOES
+ #define GL_EnableVertexAttribArray glEnableVertexAttribArray
+ #define GL_EndQuery glEndQuery
+ #define GL_EndQueryEXT glEndQueryEXT
+-#define GL_EndTransformFeedback glEndTransformFeedback
+ #define GL_FenceSync glFenceSync
+ #define GL_Finish glFinish
+ #define GL_Flush glFlush
+ #define GL_FramebufferRenderbuffer glFramebufferRenderbuffer
+ #define GL_FramebufferTexture2D glFramebufferTexture2D
+ #define GL_FramebufferTextureLayer glFramebufferTextureLayer
+-#define GL_FrontFace glFrontFace
+-#define GL_GenBuffers glGenBuffers
+ #define GL_GenerateMipmap glGenerateMipmap
+-#define GL_GenFramebuffers glGenFramebuffers
+-#define GL_GenQueries glGenQueries
+-#define GL_GenQueriesEXT glGenQueriesEXT
+-#define GL_GenRenderbuffers glGenRenderbuffers
+-#define GL_GenSamplers glGenSamplers
+-#define GL_GenTextures glGenTextures
+-#define GL_GenTransformFeedbacks glGenTransformFeedbacks
+-#define GL_GenVertexArrays glGenVertexArrays
+-#define GL_GenVertexArraysOES glGenVertexArraysOES
+ #define GL_GetActiveAttrib glGetActiveAttrib
+ #define GL_GetActiveUniform glGetActiveUniform
+ #define GL_GetActiveUniformBlockName glGetActiveUniformBlockName
+ #define GL_GetActiveUniformsiv glGetActiveUniformsiv
+ #define GL_GetAttribLocation glGetAttribLocation
+ #define GL_GetBooleanv glGetBooleanv
+-#define GL_GetError glGetError
+ #define GL_GetFloatv glGetFloatv
+ #define GL_GetFragDataLocation glGetFragDataLocation
+-#define GL_GetIntegerv glGetIntegerv
+ #define GL_GetProgramInfoLog glGetProgramInfoLog
+ #define GL_GetProgramiv glGetProgramiv
+ #define GL_GetQueryiv glGetQueryiv
+@@ -185,7 +124,6 @@
+ #define GL_GetUniformBlockIndex glGetUniformBlockIndex
+ #define GL_GetUniformIndices glGetUniformIndices
+ #define GL_GetUniformLocation glGetUniformLocation
+-#define GL_Hint glHint
+ #define GL_InvalidateFramebuffer glInvalidateFramebuffer
+ #define GL_InvalidateSubFramebuffer glInvalidateSubFramebuffer
+ #define GL_IsBuffer glIsBuffer
+@@ -201,27 +139,13 @@
+ #define GL_IsTransformFeedback glIsTransformFeedback
+ #define GL_IsVertexArray glIsVertexArray
+ #define GL_IsVertexArrayOES glIsVertexArrayOES
+-#define GL_LineWidth glLineWidth
+ #define GL_LinkProgram glLinkProgram
+-#define GL_PauseTransformFeedback glPauseTransformFeedback
+-#define GL_PixelStorei glPixelStorei
+-#define GL_PolygonOffset glPolygonOffset
+-#define GL_PolygonOffsetClampEXT glPolygonOffsetClampEXT
+ #define GL_QueryCounterEXT glQueryCounterEXT
+ #define GL_ReadBuffer glReadBuffer
+ #define GL_RenderbufferStorageMultisample glRenderbufferStorageMultisample
+-#define GL_ResumeTransformFeedback glResumeTransformFeedback
+-#define GL_SampleCoverage glSampleCoverage
+ #define GL_SamplerParameterf glSamplerParameterf
+ #define GL_SamplerParameteri glSamplerParameteri
+-#define GL_Scissor glScissor
+ #define GL_ShaderSource glShaderSource
+-#define GL_StencilFunc glStencilFunc
+-#define GL_StencilFuncSeparate glStencilFuncSeparate
+-#define GL_StencilMask glStencilMask
+-#define GL_StencilMaskSeparate glStencilMaskSeparate
+-#define GL_StencilOp glStencilOp
+-#define GL_StencilOpSeparate glStencilOpSeparate
+ #define GL_TexImage2D glTexImage2D
+ #define GL_TexParameterf glTexParameterf
+ #define GL_TexParameteri glTexParameteri
+@@ -262,27 +186,108 @@
+ #define GL_UniformMatrix4fv glUniformMatrix4fv
+ #define GL_UniformMatrix4x2fv glUniformMatrix4x2fv
+ #define GL_UniformMatrix4x3fv glUniformMatrix4x3fv
+-#define GL_UseProgram glUseProgram
+ #define GL_ValidateProgram glValidateProgram
+-#define GL_VertexAttrib1f glVertexAttrib1f
+-#define GL_VertexAttrib1fv glVertexAttrib1fv
+-#define GL_VertexAttrib2f glVertexAttrib2f
+-#define GL_VertexAttrib2fv glVertexAttrib2fv
+-#define GL_VertexAttrib3f glVertexAttrib3f
+-#define GL_VertexAttrib3fv glVertexAttrib3fv
+-#define GL_VertexAttrib4f glVertexAttrib4f
+-#define GL_VertexAttrib4fv glVertexAttrib4fv
+ #define GL_VertexAttribDivisor glVertexAttribDivisor
+ #define GL_VertexAttribDivisorANGLE glVertexAttribDivisorANGLE
+-#define GL_VertexAttribI4i glVertexAttribI4i
+-#define GL_VertexAttribI4iv glVertexAttribI4iv
+-#define GL_VertexAttribI4ui glVertexAttribI4ui
+-#define GL_VertexAttribI4uiv glVertexAttribI4uiv
+ #define GL_VertexAttribIPointer glVertexAttribIPointer
+ #define GL_VertexAttribPointer glVertexAttribPointer
+-#define GL_Viewport glViewport
+ #define GL_WaitSync glWaitSync
+ 
++// Entry points that change context state, or create and delete objects. Page
++// contexts share host contexts (see GraphicsContextGLEmscripten.cpp), so each
++// keeps a shadow of the state it set and the objects it owns; these record into
++// it before calling the host. Defined in GraphicsContextGLEmscripten.cpp.
++void GL_ActiveTexture(GLenum texture);
++void GL_BindBuffer(GLenum target, GLuint buffer);
++void GL_BindBufferBase(GLenum target, GLuint index, GLuint buffer);
++void GL_BindBufferRange(GLenum target, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size);
++void GL_BindFramebuffer(GLenum target, GLuint framebuffer);
++void GL_BindRenderbuffer(GLenum target, GLuint renderbuffer);
++void GL_BindSampler(GLuint unit, GLuint sampler);
++void GL_BindTexture(GLenum target, GLuint texture);
++void GL_BindTransformFeedback(GLenum target, GLuint id);
++void GL_BindVertexArray(GLuint array);
++void GL_BindVertexArrayOES(GLuint array);
++void GL_BeginTransformFeedback(GLenum primitiveMode);
++void GL_EndTransformFeedback();
++void GL_PauseTransformFeedback();
++void GL_ResumeTransformFeedback();
++void GL_BlendColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha);
++void GL_BlendEquation(GLenum mode);
++void GL_BlendEquationSeparate(GLenum modeRGB, GLenum modeAlpha);
++void GL_BlendFunc(GLenum sfactor, GLenum dfactor);
++void GL_BlendFuncSeparate(GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha);
++void GL_BlendEquationiOES(GLuint buf, GLenum mode);
++void GL_BlendEquationSeparateiOES(GLuint buf, GLenum modeRGB, GLenum modeAlpha);
++void GL_BlendFunciOES(GLuint buf, GLenum src, GLenum dst);
++void GL_BlendFuncSeparateiOES(GLuint buf, GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha);
++void GL_ClearColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha);
++void GL_ClearDepthf(GLfloat depth);
++void GL_ClearStencil(GLint s);
++void GL_ClipControlEXT(GLenum origin, GLenum depth);
++void GL_ColorMask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha);
++void GL_ColorMaskiOES(GLuint index, GLboolean r, GLboolean g, GLboolean b, GLboolean a);
++void GL_CullFace(GLenum mode);
++void GL_DepthFunc(GLenum func);
++void GL_DepthMask(GLboolean flag);
++void GL_DepthRangef(GLfloat n, GLfloat f);
++void GL_EnableiOES(GLenum target, GLuint index);
++void GL_DisableiOES(GLenum target, GLuint index);
++void GL_FrontFace(GLenum mode);
++void GL_Hint(GLenum target, GLenum mode);
++void GL_LineWidth(GLfloat width);
++void GL_PixelStorei(GLenum pname, GLint param);
++void GL_PolygonOffset(GLfloat factor, GLfloat units);
++void GL_PolygonOffsetClampEXT(GLfloat factor, GLfloat units, GLfloat clamp);
++void GL_SampleCoverage(GLfloat value, GLboolean invert);
++void GL_Scissor(GLint x, GLint y, GLsizei width, GLsizei height);
++void GL_StencilFunc(GLenum func, GLint ref, GLuint mask);
++void GL_StencilFuncSeparate(GLenum face, GLenum func, GLint ref, GLuint mask);
++void GL_StencilMask(GLuint mask);
++void GL_StencilMaskSeparate(GLenum face, GLuint mask);
++void GL_StencilOp(GLenum fail, GLenum zfail, GLenum zpass);
++void GL_StencilOpSeparate(GLenum face, GLenum sfail, GLenum dpfail, GLenum dppass);
++void GL_UseProgram(GLuint program);
++void GL_Viewport(GLint x, GLint y, GLsizei width, GLsizei height);
++void GL_VertexAttrib1f(GLuint index, GLfloat x);
++void GL_VertexAttrib1fv(GLuint index, const GLfloat* v);
++void GL_VertexAttrib2f(GLuint index, GLfloat x, GLfloat y);
++void GL_VertexAttrib2fv(GLuint index, const GLfloat* v);
++void GL_VertexAttrib3f(GLuint index, GLfloat x, GLfloat y, GLfloat z);
++void GL_VertexAttrib3fv(GLuint index, const GLfloat* v);
++void GL_VertexAttrib4f(GLuint index, GLfloat x, GLfloat y, GLfloat z, GLfloat w);
++void GL_VertexAttrib4fv(GLuint index, const GLfloat* v);
++void GL_VertexAttribI4i(GLuint index, GLint x, GLint y, GLint z, GLint w);
++void GL_VertexAttribI4iv(GLuint index, const GLint* v);
++void GL_VertexAttribI4ui(GLuint index, GLuint x, GLuint y, GLuint z, GLuint w);
++void GL_VertexAttribI4uiv(GLuint index, const GLuint* v);
++GLenum GL_GetError();
++void GL_GetIntegerv(GLenum pname, GLint* data);
++void GL_GenBuffers(GLsizei n, GLuint* buffers);
++void GL_GenFramebuffers(GLsizei n, GLuint* framebuffers);
++void GL_GenQueries(GLsizei n, GLuint* ids);
++void GL_GenQueriesEXT(GLsizei n, GLuint* ids);
++void GL_GenRenderbuffers(GLsizei n, GLuint* renderbuffers);
++void GL_GenSamplers(GLsizei n, GLuint* samplers);
++void GL_GenTextures(GLsizei n, GLuint* textures);
++void GL_GenTransformFeedbacks(GLsizei n, GLuint* ids);
++void GL_GenVertexArrays(GLsizei n, GLuint* arrays);
++void GL_GenVertexArraysOES(GLsizei n, GLuint* arrays);
++GLuint GL_CreateProgram();
++GLuint GL_CreateShader(GLenum type);
++void GL_DeleteBuffers(GLsizei n, const GLuint* buffers);
++void GL_DeleteFramebuffers(GLsizei n, const GLuint* framebuffers);
++void GL_DeleteProgram(GLuint program);
++void GL_DeleteQueries(GLsizei n, const GLuint* ids);
++void GL_DeleteQueriesEXT(GLsizei n, const GLuint* ids);
++void GL_DeleteRenderbuffers(GLsizei n, const GLuint* renderbuffers);
++void GL_DeleteSamplers(GLsizei n, const GLuint* samplers);
++void GL_DeleteShader(GLuint shader);
++void GL_DeleteTextures(GLsizei n, const GLuint* textures);
++void GL_DeleteTransformFeedbacks(GLsizei n, const GLuint* ids);
++void GL_DeleteVertexArrays(GLsizei n, const GLuint* arrays);
++void GL_DeleteVertexArraysOES(GLsizei n, const GLuint* arrays);
++
+ // Entry points with no WebGL counterpart, or whose behavior must change on
+ // WebGL; defined in GraphicsContextGLEmscripten.cpp.
+ const GLubyte* GL_GetString(GLenum name);
+@@ -307,7 +312,7 @@ inline void inceptionSetLength(GLsizei* length, GLsizei value)
+         *length = value;
+ }
+ 
+-inline void GL_GetIntegervRobustANGLE(GLenum pname, GLsizei bufSize, GLsizei* length, GLint* data) { glGetIntegerv(pname, data); inceptionSetLength(length, bufSize); }
++inline void GL_GetIntegervRobustANGLE(GLenum pname, GLsizei bufSize, GLsizei* length, GLint* data) { GL_GetIntegerv(pname, data); inceptionSetLength(length, bufSize); }
+ inline void GL_GetIntegeri_vRobustANGLE(GLenum target, GLuint index, GLsizei bufSize, GLsizei* length, GLint* data) { glGetIntegeri_v(target, index, data); inceptionSetLength(length, bufSize); }
+ inline void GL_GetInteger64vRobustANGLE(GLenum pname, GLsizei bufSize, GLsizei* length, GLint64* data) { glGetInteger64v(pname, data); inceptionSetLength(length, bufSize); }
+ inline void GL_GetInteger64i_vRobustANGLE(GLenum target, GLuint index, GLsizei bufSize, GLsizei* length, GLint64* data) { glGetInteger64i_v(target, index, data); inceptionSetLength(length, bufSize); }
