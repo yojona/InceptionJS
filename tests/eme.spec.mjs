@@ -122,3 +122,35 @@ test('a key becoming usable ends the stall for a player holding rate 0', async (
   await expect.poll(() => evaluate(page, 'JSON.stringify(window.stall.filter((e) => e.startsWith("after:")))'), { timeout: 30_000 }).toContain('after:canplaythrough');
   await expect.poll(() => evaluate(page, 'String(window.stallVideo && window.stallVideo.currentTime > 0.5)'), { timeout: 20_000 }).toBe('true');
 });
+
+// A page that never sets MediaSource.duration gets the initialization
+// segment's duration (or +Infinity) once metadata loads, never NaN; players
+// wait for a valid duration before leaving their buffering state.
+test('MSE duration comes from the initialization segment when the page sets none', async ({ page }) => {
+  await page.goto(`${PAGE}?url=https://example.com/`);
+  await view(page).evaluate((el) => el.ready);
+  await expect.poll(() => evaluate(page, 'location.host + " " + document.readyState'), { timeout: 30_000 }).toBe('example.com complete');
+  await evaluate(page, `(async () => {
+    const access = await navigator.requestMediaKeySystemAccess('org.w3.clearkey', [{ initDataTypes: ['keyids'], audioCapabilities: [{ contentType: 'audio/mp4; codecs="mp4a.40.5"' }] }]);
+    const audio = document.createElement('audio');
+    await audio.setMediaKeys(await access.createMediaKeys());
+    const source = new MediaSource();
+    audio.src = URL.createObjectURL(source);
+    await new Promise((r) => source.addEventListener('sourceopen', r, { once: true }));
+    const metadata = new Promise((r) => audio.addEventListener('loadedmetadata', r, { once: true }));
+    const sb = source.addSourceBuffer('audio/mp4; codecs="mp4a.40.5"');
+    const base = 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_a64k/bbb_a64k_';
+    for (const part of ['0.m4a', '1.m4a']) {
+      sb.appendBuffer(await (await fetch(base + part)).arrayBuffer());
+      await new Promise((r) => sb.addEventListener('updateend', r, { once: true }));
+    }
+    await metadata;
+    await new Promise((r) => setTimeout(r, 500));
+    window.mseDuration = String(audio.duration) + ' ' + String(source.duration);
+  })(), 'x'`);
+  await expect.poll(() => evaluate(page, 'String(window.mseDuration)'), { timeout: 30_000 }).not.toBe('undefined');
+  const [element, mediaSource] = (await evaluate(page, 'mseDuration')).split(' ');
+  expect(element).not.toBe('NaN');
+  expect(mediaSource).not.toBe('NaN');
+  expect(element).toBe(mediaSource);
+});
