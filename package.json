@@ -1,15 +1,21 @@
 {
-  "name": "inceptionjs",
+  "name": "inceptionjs-workspace",
   "private": true,
   "type": "module",
   "scripts": {
     "serve": "node tests/serve.mjs",
-    "test": "playwright test -c tests/playwright.config.mjs"
+    "test": "playwright test -c tests/playwright.config.mjs",
+    "perf": "node tests/perf/run.mjs",
+    "build:packages": "npm run build -w inceptionjs"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0"
   },
   "dependencies": {
     "binaryen": "132.0.0"
-  }
+  },
+  "workspaces": [
+    "packages/*",
+    "examples/react-vite"
+  ]
 }
