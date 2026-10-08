@@ -65,7 +65,7 @@ export const InceptionView = forwardRef(function InceptionView(props, ref) {
 
   useEffect(() => {
     let alive = true;
-    load({ engineUrl, wispUrl: relayUrl, binaryenUrl, webglContexts, modules, policy })
+    load({ engineUrl, relayUrl, binaryenUrl, webglContexts, modules, policy })
       .then(() => alive && setDefined(true))
       .catch((error) => handlers.current.onCrash?.(new CustomEvent('crash', { detail: { reason: String(error?.message ?? error) } })));
     return () => {

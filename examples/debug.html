@@ -29,7 +29,7 @@
   setMediaLog(params.get('medialog') === '1');
   Inception.configure({
     engineUrl: new URL('../engine/inception-engine.js', import.meta.url).href,
-    wispUrl: params.get('wisp') ?? `ws://${location.hostname}:5001/`,
+    relayUrl: params.get('relay') ?? params.get('wisp') ?? `ws://${location.hostname}:5001/`,
   });
 
   const view = document.getElementById('view');

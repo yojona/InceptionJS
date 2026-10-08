@@ -4,8 +4,10 @@ export interface InceptionConfig {
   /** URL of inception-engine.js (the .wasm and .data sit next to it). */
   engineUrl: string;
   /** The relay (ws:// or wss://), with ?token= when the relay requires one. */
-  wispUrl: string;
-  /** URL of binaryen's index.js, loaded the first time a page uses WebAssembly. */
+  relayUrl: string;
+  /** @deprecated The earlier name of relayUrl. */
+  wispUrl?: string;
+  /** URL of binaryen's index.js, loaded the first time a page uses WebAssembly (default: next to the host modules). */
   binaryenUrl?: string;
   /** User-Agent override for every view. */
   userAgent?: string;

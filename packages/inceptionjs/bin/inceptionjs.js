@@ -67,7 +67,7 @@ Next steps:
   2. In your page:
        import config from 'virtual:inceptionjs/config';
        import { Inception } from 'inceptionjs';
-       Inception.configure({ engineUrl: config.engineUrl, wispUrl: config.relayUrl, binaryenUrl: config.binaryenUrl });
+       Inception.configure({ engineUrl: config.engineUrl, relayUrl: config.relayUrl, binaryenUrl: config.binaryenUrl });
      or with React: <InceptionView src="https://example.com" {...config} />
   3. In production, run a relay (npx inceptionjs relay) or use a hosted one.`);
 }

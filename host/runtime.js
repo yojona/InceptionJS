@@ -12,10 +12,10 @@ export class EngineRuntime extends EventTarget {
   #pixelContext = null;
   #pending = [];
 
-  constructor({ engineUrl, wispUrl, canvas }) {
+  constructor({ engineUrl, relayUrl, canvas }) {
     super();
     this.engineUrl = engineUrl;
-    this.wispUrl = wispUrl;
+    this.relayUrl = relayUrl;
     this.#canvas = canvas;
   }
 

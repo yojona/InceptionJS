@@ -13,17 +13,19 @@ import { EngineRuntime } from './runtime.js';
 import { WasmTranslator } from './wasm-translator.js';
 import { ProtocolClient, ProtocolServer, createInPagePair } from './protocol.js';
 
-const config = { engineUrl: null, wispUrl: null, binaryenUrl: null, storage: null, policy: null, webglContexts: 0, modules: {} };
+const config = { engineUrl: null, relayUrl: null, binaryenUrl: null, storage: null, policy: null, webglContexts: 0, modules: {} };
 let translator = null;
 
 export const Inception = {
-  // engineUrl: URL of inception-engine.js; wispUrl: the Wisp relay (ws:// or
+  // engineUrl: URL of inception-engine.js; relayUrl: the network relay (ws:// or
   // wss://); binaryenUrl: binaryen.js, loaded when a page first uses WebAssembly;
   // webglContexts: how many WebGL contexts pages may hold (default: derived
   // from the browser's renderer); modules: what pages get for geolocation and
   // notifications (host/modules.js).
   configure(options) {
-    Object.assign(config, options);
+    const { wispUrl, ...rest } = options;
+    // wispUrl: the earlier name of relayUrl, still accepted.
+    Object.assign(config, wispUrl !== undefined && rest.relayUrl === undefined ? { relayUrl: wispUrl } : {}, rest);
   },
 };
 
@@ -174,7 +176,7 @@ export class InceptionView extends HTMLElement {
   }
 
   async #start() {
-    if (!config.engineUrl) throw new Error('Inception.configure({engineUrl, wispUrl}) first');
+    if (!config.engineUrl) throw new Error('Inception.configure({engineUrl, relayUrl}) first');
     // A profile's files are open by one engine at a time: the second tab would
     // get read-only file handles. Held for the life of this page.
     const profile = this.getAttribute('profile') ?? config.storage?.profile ?? 'default';
@@ -186,7 +188,7 @@ export class InceptionView extends HTMLElement {
       if (!acquired) throw new Error(`The profile "${profile}" is already open in another tab or window. Close it there, or open this page with a different profile.`);
     }
     navigator.storage?.persist?.().catch(() => {});
-    this.#runtime = new EngineRuntime({ engineUrl: config.engineUrl, wispUrl: config.wispUrl, canvas: this.#canvas });
+    this.#runtime = new EngineRuntime({ engineUrl: config.engineUrl, relayUrl: config.relayUrl, canvas: this.#canvas });
     this.#server = this.#createServer();
     const [serverSide, clientSide] = createInPagePair();
     this.#server.connect(serverSide);
@@ -251,7 +253,7 @@ export class InceptionView extends HTMLElement {
 
     const { width, height } = this.#cssSize();
     const gpu = this.getAttribute('gpu') ?? 'auto';
-    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: await probeMediaCapabilities(), wasmPolyfill, pageShims, wispUrl: config.wispUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? defaultUserAgent(), preferences: this.#preferences.resolved(), webglContexts: config.webglContexts | 0, url: this.getAttribute('src') ?? '' });
+    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: await probeMediaCapabilities(), wasmPolyfill, pageShims, wispUrl: config.relayUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? defaultUserAgent(), preferences: this.#preferences.resolved(), webglContexts: config.webglContexts | 0, url: this.getAttribute('src') ?? '' });
     const ready = await engineReady;
     this.#tabs.started(ready.tab ?? 1);
     this.#runtime.addEventListener('crash', (e) => this.dispatchEvent(new CustomEvent('crash', { detail: { reason: e.detail.message, stack: e.detail.stack } })));
