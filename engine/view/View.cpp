@@ -28,7 +28,9 @@
 #include "net/WebSocketChannel.h"
 #include "storage/IndexedDB.h"
 #include "storage/WebStorage.h"
+#include "view/BackForward.h"
 #include "view/Clients.h"
+#include "view/Navigation.h"
 #include <emscripten/em_macros.h>
 #include <pal/SessionID.h>
 #include <wtf/text/MakeString.h>
@@ -67,6 +69,9 @@ View::View(IntSize cssSize, float deviceScaleFactor)
     configuration.databaseProvider = createDatabaseProvider();
     configuration.storageNamespaceProvider = createStorageNamespaceProvider();
     configuration.editorClient = makeUniqueRef<EditorClientImpl>();
+    configuration.backForwardClient = BackForwardList::create([] {
+        emitNavigationState();
+    });
     configuration.mainFrameCreationParameters = PageConfiguration::LocalMainFrameCreationParameters {
         CompletionHandler<UniqueRef<LocalFrameLoaderClient>(LocalFrame&, FrameLoader&)> { [this](auto& frame, auto& frameLoader) {
             return makeUniqueRefWithoutRefCountedCheck<FrameLoaderClientImpl>(frameLoader, frame, *this);

@@ -27,7 +27,10 @@ export const Inception = {
 };
 
 // Events the engine reports that the view re-dispatches as DOM events.
-const VIEW_EVENTS = ['navigate', 'title', 'loading', 'popup', 'console', 'crash', 'cursor'];
+const VIEW_EVENTS = ['navigate', 'title', 'loading', 'popup', 'console', 'crash', 'cursor', 'navigation.state', 'find.result', 'zoom'];
+// Names the view dispatches them under where the engine's would clash with
+// the element's own DOM events.
+const DOM_EVENT_NAMES = { 'navigation.state': 'navigationstate', 'find.result': 'findresult' };
 
 // <inception-view src gpu="auto|on|off" muted media profile fresh-profile user-agent
 //                 provenance-corner>
@@ -50,7 +53,7 @@ export class InceptionView extends HTMLElement {
   #media = null;
   #debugRequests = 0;
   #ready = null;
-  #state = { url: '', title: '', loading: false };
+  #state = { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, zoom: 1 };
 
   constructor() {
     super();
@@ -73,6 +76,8 @@ export class InceptionView extends HTMLElement {
   get url() { return this.#state.url; }
   get title() { return this.#state.title; }
   get loading() { return this.#state.loading; }
+  get canGoBack() { return this.#state.canGoBack; }
+  get canGoForward() { return this.#state.canGoForward; }
   get ready() { return this.#ready ??= this.#start(); }
 
   // See host/preferences.js. Setting merges: {colorScheme: 'dark'} keeps the
@@ -95,6 +100,21 @@ export class InceptionView extends HTMLElement {
     await this.ready;
     return this.#client.request('view.navigate', { url });
   }
+
+  async back() { await this.ready; return this.#client.request('view.back'); }
+  async forward() { await this.ready; return this.#client.request('view.forward'); }
+  async reload({ bypassCache = false } = {}) { await this.ready; return this.#client.request('view.reload', { bypassCache }); }
+  async stop() { await this.ready; return this.#client.request('view.stop'); }
+  // Highlights every match and selects the next one: {found, matches}.
+  async find(text, { backwards = false, caseSensitive = false } = {}) { await this.ready; return this.#client.request('view.find', { text, backwards, caseSensitive }); }
+  async findClear() { await this.ready; return this.#client.request('view.findClear'); }
+  // 1 = 100%.
+  async zoom(factor) { await this.ready; return this.#client.request('view.zoom', { factor }); }
+
+  // The profile's browsing history, newest first: [{url, title, visited}].
+  async history({ text = '', limit = 100, before } = {}) { await this.ready; return this.#client.request('history.query', { text, limit, before }); }
+  // {url} or {from, to} (ms since the epoch).
+  async deleteHistory(range) { await this.ready; return this.#client.request('history.delete', range); }
 
   // Development aid: evaluates script in the engine's main frame.
   async debugEvaluate(source) {
@@ -148,7 +168,7 @@ export class InceptionView extends HTMLElement {
     this.#server.connect(serverSide);
     this.#client = new ProtocolClient(clientSide);
     for (const name of VIEW_EVENTS)
-      this.#client.addEventListener(name, (e) => this.dispatchEvent(new CustomEvent(name, { detail: e.detail })));
+      this.#client.addEventListener(name, (e) => this.dispatchEvent(new CustomEvent(DOM_EVENT_NAMES[name] ?? name, { detail: e.detail })));
 
     // Videos play in the host page, under the canvas (host/media.js).
     // `autoplay-sound`: the embedder knows playback with sound is allowed here.
@@ -232,13 +252,38 @@ export class InceptionView extends HTMLElement {
   }
 
   #createServer() {
-    const server = new ProtocolServer(['view']);
+    const server = new ProtocolServer(['view', 'history']);
     const runtime = this.#runtime;
     server.handle('view.navigate', ({ url }) => {
       if (typeof url !== 'string' || !url) throw new TypeError('url must be a non-empty string');
       runtime.send('load', { url });
     });
     server.handle('view.state', () => ({ ...this.#state }));
+    server.handle('view.back', () => runtime.send('back'));
+    server.handle('view.forward', () => runtime.send('forward'));
+    server.handle('view.reload', ({ bypassCache } = {}) => runtime.send('reload', { bypassCache: !!bypassCache }));
+    server.handle('view.stop', () => runtime.send('stop'));
+    server.handle('view.find', ({ text, backwards, caseSensitive } = {}) => new Promise((resolve) => {
+      runtime.addEventListener('find.result', (e) => resolve({ found: e.detail.found, matches: e.detail.matches }), { once: true });
+      runtime.send('find', { text: String(text ?? ''), backwards: !!backwards, caseSensitive: !!caseSensitive });
+    }));
+    server.handle('view.findClear', () => runtime.send('find.clear'));
+    let historyRequests = 0;
+    server.handle('history.query', (args = {}) => new Promise((resolve) => {
+      const id = ++historyRequests;
+      const listener = (e) => {
+        if (e.detail.id !== id) return;
+        runtime.removeEventListener('history.result', listener);
+        resolve(e.detail.entries);
+      };
+      runtime.addEventListener('history.result', listener);
+      runtime.send('history.query', { id, text: String(args.text ?? ''), limit: args.limit | 0 || 100, ...(args.before ? { before: Number(args.before) } : {}) });
+    }));
+    server.handle('history.delete', (args = {}) => runtime.send('history.delete', args.url ? { url: String(args.url) } : { from: Number(args.from ?? 0), to: Number(args.to ?? Number.MAX_VALUE) }));
+    server.handle('view.zoom', ({ factor } = {}) => {
+      if (!(factor > 0)) throw new TypeError('factor must be a positive number');
+      runtime.send('zoom', { factor });
+    });
     for (const name of VIEW_EVENTS) {
       runtime.addEventListener(name, (e) => {
         if (name === 'navigate') {
@@ -247,6 +292,8 @@ export class InceptionView extends HTMLElement {
         }
         if (name === 'title') this.#state.title = e.detail.title;
         if (name === 'loading') this.#state.loading = e.detail.loading;
+        if (name === 'navigation.state') Object.assign(this.#state, e.detail);
+        if (name === 'zoom') this.#state.zoom = e.detail.factor;
         server.emit(name, e.detail);
       });
     }

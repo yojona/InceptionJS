@@ -19,6 +19,8 @@
 #include "HTMLNames.h"
 #include "SecurityOrigin.h"
 #include "HTMLFrameOwnerElement.h"
+#include "HistoryController.h"
+#include "HistoryItem.h"
 #include "LocalFrameInlines.h"
 #include "LocalFrameView.h"
 #include "MIMETypeRegistry.h"
@@ -29,7 +31,6 @@
 #include "UserAgent.h"
 #include "bridge/Bridge.h"
 #include "modules/Modules.h"
-#include "net/Download.h"
 #include "storage/History.h"
 #include "view/SelectMenu.h"
 #include "view/View.h"
@@ -388,6 +389,14 @@ void FrameLoaderClientImpl::dispatchDecidePolicyForResponse(const ResourceRespon
     function(canShowMIMEType(response.mimeType()) ? PolicyAction::Use : PolicyAction::Ignore);
 }
 
+// Session history entries: the tree of the whole page, rooted at the main
+// frame, with this frame as the target.
+RefPtr<HistoryItem> FrameLoaderClientImpl::createHistoryItemTree(bool clipAtTarget, BackForwardItemIdentifier itemID) const
+{
+    Ref root = m_frame->rootFrame();
+    return root->loader().history().createItemTree(m_frame.get(), clipAtTarget, itemID);
+}
+
 void FrameLoaderClientImpl::dispatchDecidePolicyForNewWindowAction(const NavigationAction&, const ResourceRequest& request, FormState*, const String&, std::optional<HitTestResult>&&, FramePolicyFunction&& function)
 {
     auto data = JSON::Object::create();
@@ -454,6 +463,8 @@ void FrameLoaderClientImpl::dispatchDidReceiveTitle(const StringWithDirection& t
     auto data = JSON::Object::create();
     data->setString("title"_s, title.string);
     emitEvent("title"_s, WTF::move(data));
+    if (RefPtr loader = m_frame->loader().documentLoader())
+        History::updateTitle(loader->url(), title.string);
 }
 
 void FrameLoaderClientImpl::dispatchDidCommitLoad(std::optional<HasInsecureContent>, std::optional<UsedLegacyTLS>, std::optional<WasPrivateRelayed>)
@@ -461,8 +472,10 @@ void FrameLoaderClientImpl::dispatchDidCommitLoad(std::optional<HasInsecureConte
     if (!isMainFrame())
         return;
     auto data = JSON::Object::create();
-    data->setString("url"_s, m_frame->loader().documentLoader()->url().string());
+    auto& url = m_frame->loader().documentLoader()->url();
+    data->setString("url"_s, url.string());
     emitEvent("navigate"_s, WTF::move(data));
+    History::recordVisit(url);
 }
 
 static void emitLoadFinished(const ResourceError* error)

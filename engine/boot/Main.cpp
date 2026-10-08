@@ -9,7 +9,6 @@
 #include "input/Input.h"
 #include "media/MediaBridge.h"
 #include "modules/Modules.h"
-#include "net/Download.h"
 #include "net/Sockets.h"
 #include "storage/Disk.h"
 #include "storage/History.h"
@@ -17,6 +16,7 @@
 #include "wasm/GuestWasm.h"
 #include "platform/Strategies.h"
 #include "view/Preferences.h"
+#include "view/Navigation.h"
 #include "view/View.h"
 #include "CurlContext.h"
 #include "CurlRequestScheduler.h"
@@ -170,6 +170,9 @@ int main()
     Inception::registerPreferenceCommands();
     Inception::Media::install();
     Inception::registerDebugCommands();
+    Inception::registerModuleCommands();
+    Inception::registerNavigationCommands();
+    Inception::History::registerCommands();
 
     // The host listens on every worker it creates and recognizes the engine's
     // by this event; "hello" repeats it on request.
