@@ -95,3 +95,35 @@ test('plain-src media from another origin plays, fetched by the engine', async (
   await settle(page, 'String(window.plainResult)', 30_000).toBe('metadata 10');
   await settle(page, 'String(window.plain.currentTime > 1)', 20_000).toBe('true');
 });
+
+// Media Source data the page fetched with CORS is the page's own: unlike
+// cross-origin media without CORS, which feeds silence, as the spec requires.
+test('a media element feeds the page\'s audio graph', async ({ page }) => {
+  const box = await view(page).boundingBox();
+  await page.mouse.click(box.x + 50, box.y + 50);
+  await evaluate(page, `(async () => {
+    const audio = document.createElement('audio');
+    const context = new AudioContext();
+    const analyser = new AnalyserNode(context, { fftSize: 2048 });
+    context.createMediaElementSource(audio).connect(analyser);
+    analyser.connect(context.destination);
+    window.graph = { audio, context, analyser, peak: 0 };
+    setInterval(() => {
+      const samples = new Float32Array(analyser.fftSize);
+      analyser.getFloatTimeDomainData(samples);
+      for (const s of samples) graph.peak = Math.max(graph.peak, Math.abs(s));
+    }, 100);
+    const source = new MediaSource();
+    audio.src = URL.createObjectURL(source);
+    await new Promise((r) => source.addEventListener('sourceopen', r, { once: true }));
+    const sb = source.addSourceBuffer('audio/mp4; codecs="mp4a.40.5"');
+    const base = 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_a64k/bbb_a64k_';
+    for (const part of ['0.m4a', '1.m4a', '2.m4a']) {
+      sb.appendBuffer(await (await fetch(base + part)).arrayBuffer());
+      await new Promise((r) => sb.addEventListener('updateend', r, { once: true }));
+    }
+    await context.resume();
+    await audio.play();
+  })(), 'x'`);
+  await settle(page, 'String(graph.peak > 0.01)', 30_000).toBe('true');
+});
