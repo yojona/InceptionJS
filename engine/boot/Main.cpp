@@ -9,6 +9,7 @@
 #include "input/Input.h"
 #include "media/MediaBridge.h"
 #include "modules/Modules.h"
+#include "net/Download.h"
 #include "net/Sockets.h"
 #include "storage/Disk.h"
 #include "storage/History.h"
@@ -173,6 +174,7 @@ int main()
     Inception::registerModuleCommands();
     Inception::registerNavigationCommands();
     Inception::History::registerCommands();
+    Inception::Download::registerCommands();
 
     // The host listens on every worker it creates and recognizes the engine's
     // by this event; "hello" repeats it on request.

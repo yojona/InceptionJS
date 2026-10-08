@@ -114,6 +114,9 @@ export class InceptionView extends HTMLElement {
   // The profile's browsing history, newest first: [{url, title, visited}].
   async history({ text = '', limit = 100, before } = {}) { await this.ready; return this.#client.request('history.query', { text, limit, before }); }
   // {url} or {from, to} (ms since the epoch).
+  // Downloads a URL with the page's cookies, as "Save link as" does.
+  async download(url) { await this.ready; this.#runtime.send('download.start', { url: String(url) }); }
+  async cancelDownload(id) { await this.ready; this.#runtime.send('download.cancel', { id }); }
   async deleteHistory(range) { await this.ready; return this.#client.request('history.delete', range); }
 
   // Development aid: evaluates script in the engine's main frame.

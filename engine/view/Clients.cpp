@@ -31,6 +31,7 @@
 #include "UserAgent.h"
 #include "bridge/Bridge.h"
 #include "modules/Modules.h"
+#include "net/Download.h"
 #include "storage/History.h"
 #include "view/SelectMenu.h"
 #include "view/View.h"
@@ -382,11 +383,17 @@ void FrameLoaderClientImpl::dispatchDecidePolicyForNavigationAction(const Naviga
     function(PolicyAction::Use);
 }
 
-void FrameLoaderClientImpl::dispatchDecidePolicyForResponse(const ResourceResponse& response, const ResourceRequest&, const String&, FramePolicyFunction&& function)
+void FrameLoaderClientImpl::dispatchDecidePolicyForResponse(const ResourceResponse& response, const ResourceRequest& request, const String& downloadAttribute, FramePolicyFunction&& function)
 {
-    // Downloads arrive with the download milestone; until then anything the
-    // engine cannot render is dropped.
-    function(canShowMIMEType(response.mimeType()) ? PolicyAction::Use : PolicyAction::Ignore);
+    // Attachments, and what the engine cannot show, become downloads: this
+    // load stops and the engine fetches the file again for the host.
+    if (!response.isAttachment() && downloadAttribute.isNull() && canShowMIMEType(response.mimeType())) {
+        function(PolicyAction::Use);
+        return;
+    }
+    function(PolicyAction::Ignore);
+    if (request.url().protocolIsInHTTPFamily())
+        Download::start(request, downloadAttribute);
 }
 
 // Session history entries: the tree of the whole page, rooted at the main
@@ -395,6 +402,13 @@ RefPtr<HistoryItem> FrameLoaderClientImpl::createHistoryItemTree(bool clipAtTarg
 {
     Ref root = m_frame->rootFrame();
     return root->loader().history().createItemTree(m_frame.get(), clipAtTarget, itemID);
+}
+
+// <a download> and similar: straight to a download.
+void FrameLoaderClientImpl::startDownload(const ResourceRequest& request, const String& suggestedName, FromDownloadAttribute)
+{
+    if (request.url().protocolIsInHTTPFamily())
+        Download::start(request, suggestedName);
 }
 
 void FrameLoaderClientImpl::dispatchDecidePolicyForNewWindowAction(const NavigationAction&, const ResourceRequest& request, FormState*, const String&, std::optional<HitTestResult>&&, FramePolicyFunction&& function)
