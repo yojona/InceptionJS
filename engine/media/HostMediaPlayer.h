@@ -2,6 +2,7 @@
 
 #include "FloatRect.h"
 #include "MediaPlayerPrivate.h"
+#include "media/HostAudioSource.h"
 #include "PlatformTimeRanges.h"
 #include "VideoPlaybackQualityMetrics.h"
 #include <wtf/RefCounted.h>
@@ -31,6 +32,11 @@ public:
     void encrypted(JSON::Object&);
     // The host's CDM made a key usable for this element's media.
     void keysUsable();
+#if ENABLE(WEB_AUDIO)
+    // The host started capturing the element's audio for the page's graph.
+    void audioCaptureFormat(unsigned channels, float sampleRate);
+    WebCore::AudioSourceProvider* audioSourceProvider() final;
+#endif
     void sendToHost(const String& event, Ref<JSON::Object>&& data = JSON::Object::create());
 
     // Where the page painted the video during the frame, in CSS pixels of the
@@ -91,6 +97,9 @@ private:
     unsigned m_id;
     // The engine's fetch of a plain src, which the host plays (0: none).
     uint64_t m_sourceFetch { 0 };
+#if ENABLE(WEB_AUDIO)
+    std::unique_ptr<HostAudioSource> m_audioSource;
+#endif
     void stopSourceFetch();
     RefPtr<HostMediaSource> m_mediaSource;
     bool m_isMediaSource { false };

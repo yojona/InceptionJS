@@ -195,6 +195,14 @@ void install()
             player->update(args);
     });
 
+#if ENABLE(WEB_AUDIO)
+    // {id, channels, sampleRate}: the host started capturing the element's audio.
+    registerCommand("media.captureFormat"_s, [](JSON::Object& args) {
+        if (auto* player = HostMediaPlayer::fromID(args.getInteger("id"_s).value_or(0)))
+            player->audioCaptureFormat(args.getInteger("channels"_s).value_or(2), args.getDouble("sampleRate"_s).value_or(48000));
+    });
+#endif
+
     // {id}: see HostMediaPlayer::keysUsable.
     registerCommand("media.keysUsable"_s, [](JSON::Object& args) {
         if (auto* player = HostMediaPlayer::fromID(args.getInteger("id"_s).value_or(0)))

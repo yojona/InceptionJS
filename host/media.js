@@ -68,7 +68,11 @@ export class MediaHost {
   // `soundAllowed`: the embedder knows autoplay with sound is permitted (a
   // kiosk policy, an iframe allow="autoplay"); never fall back to muted.
   // `eme`: the EncryptedMedia whose MediaKeys the videos decrypt with.
-  constructor(layer, send, { soundAllowed = false, eme = null } = {}) {
+  #audio;
+
+  // `audio`: the AudioHost that captures elements' sound for Web Audio.
+  constructor(layer, send, { soundAllowed = false, eme = null, audio = null } = {}) {
+    this.#audio = audio;
     this.#layer = layer;
     this.#send = send;
     this.#soundAllowed = soundAllowed;
@@ -137,6 +141,20 @@ export class MediaHost {
       return;
     case 'media.layout': return this.#layout(player, data.rect);
     case 'media.setMediaKeys': return this.#setMediaKeys(player, data.keys);
+    case 'media.captureAudio': return this.#captureAudio(player, data);
+    }
+  }
+
+  // The page made the element a Web Audio source: its sound goes to the
+  // engine's graph from now on.
+  async #captureAudio(player, ring) {
+    if (!this.#audio) return;
+    try {
+      const format = await this.#audio.capture(player.video, ring);
+      mediaLog(`video ${player.id} audio captured`, format);
+      this.#send('media.captureFormat', { id: player.id, ...format });
+    } catch (error) {
+      console.warn(`[media] capturing the audio of video ${player.id}:`, error);
     }
   }
 

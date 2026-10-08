@@ -87,6 +87,29 @@ void HostMediaPlayer::load(const String& url)
     sendToHost("media.load"_s, WTF::move(data));
 }
 
+#if ENABLE(WEB_AUDIO)
+AudioSourceProvider* HostMediaPlayer::audioSourceProvider()
+{
+    if (!m_audioSource) {
+        m_audioSource = std::make_unique<HostAudioSource>([this](int header, int samples, int capacity, int channels) {
+            auto data = JSON::Object::create();
+            data->setInteger("header"_s, header);
+            data->setInteger("samples"_s, samples);
+            data->setInteger("capacity"_s, capacity);
+            data->setInteger("channels"_s, channels);
+            sendToHost("media.captureAudio"_s, WTF::move(data));
+        });
+    }
+    return m_audioSource.get();
+}
+
+void HostMediaPlayer::audioCaptureFormat(unsigned channels, float sampleRate)
+{
+    if (m_audioSource)
+        m_audioSource->setFormat(channels, sampleRate);
+}
+#endif
+
 void HostMediaPlayer::stopSourceFetch()
 {
     if (auto fetch = std::exchange(m_sourceFetch, 0))

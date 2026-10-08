@@ -34,6 +34,40 @@ class InceptionOutput extends AudioWorkletProcessor {
   }
 }
 registerProcessor('inception-output', InceptionOutput);
+
+// The reverse: a media element's sound, written into a ring the engine's
+// audio graph reads ([0] frames written, [1] frames read).
+class InceptionCapture extends AudioWorkletProcessor {
+  constructor({ processorOptions: o }) {
+    super();
+    this.indexes = new Int32Array(o.memory, o.header, 2);
+    this.capacity = o.capacity;
+    this.mask = o.capacity - 1;
+    this.channels = [];
+    for (let c = 0; c < o.channels; c++) this.channels.push(new Float32Array(o.memory, o.samples + c * o.capacity * 4, o.capacity));
+    this.open = true;
+    this.port.onmessage = () => { this.open = false; };
+  }
+  process(inputs) {
+    if (!this.open) return false;
+    const input = inputs[0];
+    if (!input || !input.length) return true;
+    const frames = input[0].length;
+    const written = Atomics.load(this.indexes, 0);
+    const read = Atomics.load(this.indexes, 1);
+    // The engine stopped reading: drop the oldest instead of overrunning it.
+    if (((written - read) | 0) + frames > this.capacity) Atomics.store(this.indexes, 1, (written + frames - this.capacity) | 0);
+    const at = written & this.mask;
+    for (let c = 0; c < this.channels.length; c++) {
+      const source = input[Math.min(c, input.length - 1)];
+      const target = this.channels[c];
+      for (let i = 0; i < frames; i++) target[(at + i) & this.mask] = source[i];
+    }
+    Atomics.store(this.indexes, 0, (written + frames) | 0);
+    return true;
+  }
+}
+registerProcessor('inception-capture', InceptionCapture);
 `;
 
 export class AudioHost {
@@ -77,6 +111,25 @@ export class AudioHost {
   // context may play.
   userGesture() {
     for (const context of this.#contexts.values()) context.resume().catch(() => {});
+  }
+
+  // Routes a host media element's sound into the engine (see the engine's
+  // HostAudioSource) instead of the speakers; returns the capture's format.
+  async capture(video, { header, samples, capacity, channels }) {
+    const context = await this.#context(48000);
+    const source = context.createMediaElementSource(video);
+    const node = new AudioWorkletNode(context, 'inception-capture', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      processorOptions: { memory: this.#memory(), header, samples, capacity, channels },
+    });
+    source.connect(node);
+    // Silent, but connected, so the worklet keeps processing.
+    const silent = new GainNode(context, { gain: 0 });
+    node.connect(silent).connect(context.destination);
+    this.#tryResume(context);
+    return { channels, sampleRate: context.sampleRate };
   }
 
   async #context(sampleRate) {

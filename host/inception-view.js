@@ -198,8 +198,8 @@ export class InceptionView extends HTMLElement {
     // `autoplay-sound`: the embedder knows playback with sound is allowed here.
     const soundAllowed = this.hasAttribute('autoplay-sound') || config.policy?.autoplaySound === true;
     const eme = new EncryptedMedia((command, args) => this.#runtime.send(command, args), { onKeysUsable: (mediaKeys) => this.#media.keysUsable(mediaKeys) });
-    this.#media = new MediaHost(this.#mediaLayer, (command, args) => this.#runtime.send(command, args), { soundAllowed, eme });
     const audio = new AudioHost(() => this.#runtime.memory(), { soundAllowed });
+    this.#media = new MediaHost(this.#mediaLayer, (command, args) => this.#runtime.send(command, args), { soundAllowed, eme, audio });
     const modules = new Modules(this, (command, args) => this.#runtime.send(command, args), config.modules);
     const downloads = new Downloads(this);
     this.#runtime.onDownloadChunk = (chunk) => (this.#media.ownsFetch(chunk.id) ? this.#media.fetchChunk(chunk) : downloads.chunk(chunk));
