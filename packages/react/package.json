@@ -1,0 +1,20 @@
+{
+  "name": "@inceptionjs/react",
+  "version": "0.1.0",
+  "description": "React component for InceptionJS: a browser inside your app.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./src/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "index.d.ts"
+  ],
+  "peerDependencies": {
+    "inceptionjs": "^0.1.0",
+    "react": ">=18"
+  }
+}
