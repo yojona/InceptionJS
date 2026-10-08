@@ -6,6 +6,7 @@
 #   /usr/share/icu       ICU data archive (ICU_DATA points here)
 #   /etc/ssl/cacert.pem  trust store for TLS, which terminates in the engine
 #   /usr/share/inception/resources  WebKit's built-in images (broken image...)
+#   /usr/share/inception/audio      WebKit's HRTF database for Web Audio panning
 source "$(dirname "$0")/lib.sh"
 
 FS="$WORK/fs"
@@ -39,6 +40,8 @@ resources="$WORK/webkit/Source/WebCore/Resources"
 [ -d "$resources" ] || fail "no WebKit checkout at $WORK/webkit; run build/webkit.sh first"
 mkdir -p "$FS/usr/share/inception/resources"
 cp "$resources"/missingImage*.png "$resources"/panIcon.png "$FS/usr/share/inception/resources/"
+mkdir -p "$FS/usr/share/inception/audio"
+cp "$WORK/webkit/Source/WebCore/platform/audio/resources/Composite.wav" "$FS/usr/share/inception/audio/"
 
 bundle=/etc/ssl/certs/ca-certificates.crt
 [ -f "$bundle" ] || fail "no CA bundle at $bundle"

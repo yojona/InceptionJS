@@ -102,6 +102,17 @@ View::View(IntSize cssSize, float deviceScaleFactor)
     settings.setAsyncClipboardAPIEnabled(true);
     settings.setPermissionsAPIEnabled(true);
     settings.setFullScreenEnabled(true);
+#if ENABLE(WEB_AUDIO)
+    settings.setWebAudioEnabled(true);
+#endif
+#if ENABLE(OFFSCREEN_CANVAS)
+    settings.setOffscreenCanvasEnabled(true);
+#endif
+    // Present and answered as a browser that declined: share() rejects until
+    // the embedder provides a share sheet, and caches.open() rejects until
+    // the profile stores them.
+    settings.setWebShareEnabled(true);
+    settings.setCacheAPIEnabled(true);
 #if ENABLE(WEBGL)
     settings.setWebGLEnabled(true);
 #endif

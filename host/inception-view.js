@@ -5,6 +5,9 @@ import { defaultUserAgent } from './identity.js';
 import { PROVENANCE_STYLE, Provenance } from './provenance.js';
 import { MediaHost, probeMediaCapabilities } from './media.js';
 import { EncryptedMedia } from './eme.js';
+import { AudioHost } from './audio.js';
+import { Modules } from './modules.js';
+import { Downloads } from './downloads.js';
 import { EngineRuntime } from './runtime.js';
 import { WasmTranslator } from './wasm-translator.js';
 import { ProtocolClient, ProtocolServer, createInPagePair } from './protocol.js';
@@ -151,11 +154,20 @@ export class InceptionView extends HTMLElement {
     const soundAllowed = this.hasAttribute('autoplay-sound') || config.policy?.autoplaySound === true;
     const eme = new EncryptedMedia((command, args) => this.#runtime.send(command, args));
     this.#media = new MediaHost(this.#mediaLayer, (command, args) => this.#runtime.send(command, args), { soundAllowed, eme });
+    const audio = new AudioHost(() => this.#runtime.memory(), { soundAllowed });
+    const modules = new Modules(this, (command, args) => this.#runtime.send(command, args), config.modules);
+    const downloads = new Downloads(this);
+    this.#runtime.onDownloadChunk = (chunk) => downloads.chunk(chunk);
+    this.#runtime.onAudioDecode = (request) => audio.decode(request, (size) => this.#runtime.malloc(size));
     this.#runtime.onEngineEvent = (name, data) => {
       if (name === 'cursor') this.#canvas.style.cursor = data.cursor;
       if (name === 'fullscreen') this.#setFullscreen(data.active);
       if (name.startsWith('media.')) this.#media.handleEvent(name, data);
       if (name.startsWith('eme.')) eme.handleEvent(name, data);
+      if (name.startsWith('download.')) downloads.handleEvent(name, data);
+      if (name === 'audio.open') audio.open(data);
+      if (name === 'audio.close') audio.close(data);
+      if (name.startsWith('permission.') || name.startsWith('geolocation.') || name.startsWith('notification.')) modules.handleEvent(name, data);
       if (name === 'select.show') this.#selectMenu.show(this, data);
       if (name === 'select.update') this.#selectMenu.update(data);
       if (name === 'select.hide') this.#selectMenu.hide(data.id);
@@ -168,10 +180,13 @@ export class InceptionView extends HTMLElement {
     this.#runtime.onMediaAppend = ({ id, sb, seq, bytes }) => this.#media.append(id, sb, seq, bytes);
     translator ??= new WasmTranslator(config.binaryenUrl ?? new URL('../node_modules/binaryen/index.js', import.meta.url).href);
     this.#runtime.wasmTranslator = translator;
-    const wasmPolyfill = await fetch(new URL('./guest-wasm.js', import.meta.url)).then((r) => r.text());
+    const [wasmPolyfill, pageShims] = await Promise.all(['./guest-wasm.js', './page-shims.js'].map((path) => fetch(new URL(path, import.meta.url)).then((r) => r.text())));
     // Activation is sticky for the host page's lifetime: the first gesture
     // anywhere in it lets every later video play with sound.
-    const gesture = () => this.#media.userGesture();
+    const gesture = () => {
+      this.#media.userGesture();
+      audio.userGesture();
+    };
     for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, gesture, { capture: true });
 
     const engineReady = new Promise((resolve, reject) => {

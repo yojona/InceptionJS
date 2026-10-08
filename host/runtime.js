@@ -62,6 +62,8 @@ export class EngineRuntime extends EventTarget {
     if (data.inceptionPixels) return this.#presentPixels(data.inceptionPixels);
     if (data.inceptionCrash) return this.#crashed(data.inceptionCrash);
     if (data.inceptionAsk) return this.#answer(data.inceptionAsk);
+    if (data.inceptionAudioDecode) return this.onAudioDecode?.(data.inceptionAudioDecode);
+    if (data.inceptionDownload) return this.onDownloadChunk?.(data.inceptionDownload);
     if (typeof data.inception !== 'string') return;
     const { event, data: payload } = JSON.parse(data.inception);
     if (event === 'started') {
@@ -117,6 +119,16 @@ export class EngineRuntime extends EventTarget {
     Atomics.store(words, (slot >> 2) + 1, pointer);
     Atomics.store(words, slot >> 2, 1);
     Atomics.notify(words, slot >> 2);
+  }
+
+  // The engine's shared memory, as it is now (it grows).
+  memory() {
+    return this.#module.wasmMemory.buffer;
+  }
+
+  // Allocates engine memory the engine frees; 0 when it cannot.
+  malloc(size) {
+    return this.#module._malloc(size) >>> 0;
   }
 
   // Copies a file into the engine's file system; the bytes are transferred.

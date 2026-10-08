@@ -1,6 +1,7 @@
 #include "config.h"
 #include "platform/Strategies.h"
 
+#include "AudioDestination.h"
 #include "BlobRegistry.h"
 #include "BlobRegistryImpl.h"
 #include "CachedResource.h"
@@ -185,6 +186,12 @@ private:
 };
 
 class MediaStrategyImpl final : public MediaStrategy {
+#if ENABLE(WEB_AUDIO)
+    Ref<AudioDestination> createAudioDestination(const AudioDestinationCreationOptions& options) final
+    {
+        return AudioDestination::create(options);
+    }
+#endif
 };
 
 class BlobRegistryBridge final : public BlobRegistry {

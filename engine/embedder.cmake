@@ -30,8 +30,9 @@ target_link_options(inception-engine PRIVATE
     # WebKit runs on one pthread; the page's main thread stays free for the host.
     -pthread
     -sPROXY_TO_PTHREAD=1
-    # The engine's thread, the OPFS backend's thread, and spares.
-    -sPTHREAD_POOL_SIZE=6
+    # The engine's thread, the OPFS backend's thread, Web Audio's output and
+    # decoding threads, and spares.
+    -sPTHREAD_POOL_SIZE=8
     -sDEFAULT_PTHREAD_STACK_SIZE=8MB
     -sSTACK_SIZE=8MB
 
