@@ -17,6 +17,11 @@ namespace Inception {
 class Download final : public RefCounted<Download>, public WebCore::CurlRequestClient {
 public:
     static void start(const WebCore::ResourceRequest&, const String& suggestedFilename);
+    // The same fetch for a media element's own src: events are media.fetch.*
+    // with the element's player id, and the host plays the bytes instead of
+    // saving them. Returns the fetch's id.
+    static uint64_t startForMedia(const WebCore::ResourceRequest&, unsigned mediaID);
+    static void cancelMedia(uint64_t id);
     static void registerCommands();
 
     void ref() const final { RefCounted::ref(); }
@@ -36,6 +41,8 @@ private:
     void curlDidFailWithError(WebCore::CurlRequest&, WebCore::ResourceError&&, WebCore::CertificateInfo&&) final;
 
     void finish(const String& error);
+    String eventName(ASCIILiteral what) const;
+    Ref<JSON::Object> eventData() const;
 
     uint64_t m_id;
     WebCore::ResourceRequest m_request;
@@ -46,6 +53,7 @@ private:
     uint64_t m_size { 0 };
     uint64_t m_reported { 0 };
     bool m_started { false };
+    unsigned m_mediaID { 0 };
     bool m_paused { false };
     bool m_resuming { false };
 };

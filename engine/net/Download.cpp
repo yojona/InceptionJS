@@ -36,6 +36,35 @@ static HashMap<uint64_t, Ref<Download>>& active()
     return downloads;
 }
 
+String Download::eventName(ASCIILiteral what) const
+{
+    return makeString(m_mediaID ? "media.fetch."_s : "download."_s, what);
+}
+
+Ref<JSON::Object> Download::eventData() const
+{
+    auto data = JSON::Object::create();
+    data->setDouble("id"_s, m_id);
+    if (m_mediaID)
+        data->setInteger("media"_s, m_mediaID);
+    return data;
+}
+
+uint64_t Download::startForMedia(const ResourceRequest& request, unsigned mediaID)
+{
+    Ref download = adoptRef(*new Download(request, { }));
+    download->m_mediaID = mediaID;
+    active().add(download->m_id, download);
+    download->begin();
+    return download->m_id;
+}
+
+void Download::cancelMedia(uint64_t id)
+{
+    if (auto it = active().find(id); it != active().end())
+        Ref { it->value }->cancel();
+}
+
 void Download::start(const ResourceRequest& request, const String& suggestedFilename)
 {
     Ref download = adoptRef(*new Download(request, suggestedFilename));
@@ -87,16 +116,15 @@ void Download::curlDidReceiveResponse(CurlRequest& curl, CurlResponse&& curlResp
         return;
     }
     if (std::exchange(m_resuming, false)) {
-        auto data = JSON::Object::create();
-        data->setDouble("id"_s, m_id);
+        auto data = eventData();
         if (response.httpStatusCode() == 206) {
             data->setDouble("received"_s, m_received);
-            emitEvent("download.resumed"_s, WTF::move(data));
+            emitEvent(eventName("resumed"_s), WTF::move(data));
         } else {
             // The server ignored the range: the file starts over.
             m_received = 0;
             m_reported = 0;
-            emitEvent("download.restarted"_s, WTF::move(data));
+            emitEvent(eventName("restarted"_s), WTF::move(data));
         }
         curl.completeDidReceiveResponse();
         return;
@@ -110,13 +138,12 @@ void Download::curlDidReceiveResponse(CurlRequest& curl, CurlResponse&& curlResp
         filename = "download"_s;
     m_size = response.expectedContentLength() > 0 ? response.expectedContentLength() : 0;
     m_started = true;
-    auto data = JSON::Object::create();
-    data->setDouble("id"_s, m_id);
+    auto data = eventData();
     data->setString("url"_s, response.url().string());
     data->setString("filename"_s, filename);
     data->setString("mime"_s, response.mimeType());
     data->setDouble("size"_s, m_size);
-    emitEvent("download.started"_s, WTF::move(data));
+    emitEvent(eventName("started"_s), WTF::move(data));
     curl.completeDidReceiveResponse();
 }
 
@@ -129,11 +156,10 @@ void Download::curlDidReceiveData(CurlRequest&, Ref<SharedBuffer>&& buffer)
     m_received += span.size();
     if (m_received - m_reported >= progressStep) {
         m_reported = m_received;
-        auto data = JSON::Object::create();
-        data->setDouble("id"_s, m_id);
+        auto data = eventData();
         data->setDouble("received"_s, m_received);
         data->setDouble("size"_s, m_size);
-        emitEvent("download.progress"_s, WTF::move(data));
+        emitEvent(eventName("progress"_s), WTF::move(data));
     }
 }
 
@@ -163,10 +189,9 @@ void Download::pause()
         curl->invalidateClient();
         curl->cancel();
     }
-    auto data = JSON::Object::create();
-    data->setDouble("id"_s, m_id);
+    auto data = eventData();
     data->setDouble("received"_s, m_received);
-    emitEvent("download.paused"_s, WTF::move(data));
+    emitEvent(eventName("paused"_s), WTF::move(data));
 }
 
 void Download::resume()
@@ -187,12 +212,11 @@ void Download::finish(const String& error)
         curl->invalidateClient();
         curl->cancel();
     }
-    auto data = JSON::Object::create();
-    data->setDouble("id"_s, m_id);
+    auto data = eventData();
     data->setDouble("received"_s, m_received);
     if (!error.isEmpty())
         data->setString("error"_s, error);
-    emitEvent("download.finished"_s, WTF::move(data));
+    emitEvent(eventName("finished"_s), WTF::move(data));
     // Last: this may be the final reference.
     active().remove(m_id);
 }
