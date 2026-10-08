@@ -43,7 +43,8 @@ target_link_options(inception-engine PRIVATE
     -sINITIAL_MEMORY=256MB
     -sMAXIMUM_MEMORY=4GB
 
-    -sMIN_WEBGL_VERSION=2
+    # Pages get real WebGL 1 contexts; the engine itself uses WebGL 2.
+    -sMIN_WEBGL_VERSION=1
     -sMAX_WEBGL_VERSION=2
     -sGL_ENABLE_GET_PROC_ADDRESS=1
 

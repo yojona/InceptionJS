@@ -1,0 +1,218 @@
+WebGL 1 page contexts get a WebGL 1 host context.
+
+The engine was linked for WebGL 2 only, so WebGL 1 page contexts ran on WebGL
+2 host contexts: pages lost the WebGL 1 extensions (standard derivatives,
+float textures, vertex array objects...) and GLSL ES 1.00 shaders could not
+enable them. WebGL 1 page contexts now share a host WebGL 1 context of their
+own, alongside the WebGL 2 one (still at most three host contexts per worker
+with the engine's). Internal formats WebCore sizes for ES 3 drivers (float,
+half-float, depth and sRGB textures) reach the WebGL 1 host unsized.
+
+diff --git a/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.cpp b/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.cpp
+index 6b05764..b4f73f9 100644
+--- a/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.cpp
++++ b/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.cpp
+@@ -283,8 +283,9 @@ struct VirtualGLContextState {
+     bool programDeletePending { false };
+ };
+ 
+-// The host context all page contexts share. The engine is built for WebGL 2
+-// only, so page WebGL 1 contexts run on WebGL 2 host contexts too.
++// The host context shared by all page contexts of a WebGL version. WebGL 1
++// pages get a real WebGL 1 context, so its extensions, shader language and
++// errors are WebGL 1's.
+ struct SharedHostContext {
+     int handle { 0 };
+     bool failed { false };
+@@ -300,11 +301,13 @@ struct SharedHostContext {
+     HashSet<GLuint> pendingProgramDeletes;
+ };
+ 
+-static SharedHostContext& sharedHost(bool)
++static SharedHostContext& sharedHost(bool isWebGL2)
+ {
+-    static NeverDestroyed<SharedHostContext> host;
+-    host->isWebGL2 = true;
+-    return host.get();
++    static NeverDestroyed<SharedHostContext> webGL1Host;
++    static NeverDestroyed<SharedHostContext> webGL2Host;
++    auto& host = isWebGL2 ? webGL2Host.get() : webGL1Host.get();
++    host.isWebGL2 = isWebGL2;
++    return host;
+ }
+ 
+ static void applyBlend(const ShadowBlend& from, const ShadowBlend& to, std::optional<GLuint> drawBuffer)
+@@ -557,12 +560,21 @@ static bool createSharedHost(SharedHostContext& host)
+         return true;
+     if (host.failed)
+         return false;
+-    host.handle = inception_webgl_create_guest_context(2);
++    host.handle = inception_webgl_create_guest_context(host.isWebGL2 ? 2 : 1);
+     if (!host.handle || emscripten_webgl_make_context_current(host.handle) != EMSCRIPTEN_RESULT_SUCCESS) {
+         host.failed = true;
+         host.handle = 0;
+         return false;
+     }
++    // Without vertex array objects there is no way to keep one context's
++    // attribute state from another's: such a host is not shared.
++    if (!host.isWebGL2 && !emscripten_webgl_enable_extension(host.handle, "OES_vertex_array_object")) {
++        emscripten_webgl_make_context_current(0);
++        emscripten_webgl_destroy_context(host.handle);
++        host.handle = 0;
++        host.failed = true;
++        return false;
++    }
+     GLint value = 0;
+     glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &value);
+     host.textureUnits = std::clamp<GLint>(value, 1, maxTextureUnits);
+@@ -590,9 +602,12 @@ bool GraphicsContextGLEmscripten::attachToSharedHost()
+     }
+     // Stand-ins for the default vertex array and transform feedback, created
+     // through the entry points so they are this context's to delete.
+-    GL_GenVertexArrays(1, &m_defaultVertexArray);
+-    GL_GenTransformFeedbacks(1, &m_defaultTransformFeedback);
+-    GL_BindTransformFeedback(GL_TRANSFORM_FEEDBACK, 0);
++    if (m_isForWebGL2) {
++        GL_GenVertexArrays(1, &m_defaultVertexArray);
++        GL_GenTransformFeedbacks(1, &m_defaultTransformFeedback);
++        GL_BindTransformFeedback(GL_TRANSFORM_FEEDBACK, 0);
++    } else
++        GL_GenVertexArraysOES(1, &m_defaultVertexArray);
+     GL_BindVertexArray(0);
+     return true;
+ }
+@@ -622,7 +637,7 @@ void GraphicsContextGLEmscripten::detachFromSharedHost()
+         applyState(host, state.gl, neutral);
+         host.applied = neutral;
+         state.gl = neutral;
+-        deleteAll(state.queries, [](GLuint name) { glDeleteQueries(1, &name); });
++        deleteAll(state.queries, [&](GLuint name) { m_isForWebGL2 ? glDeleteQueries(1, &name) : glDeleteQueriesEXT(1, &name); });
+         deleteAll(state.vertexArrays, [](GLuint name) { glDeleteVertexArrays(1, &name); });
+         deleteAll(state.transformFeedbacks, [](GLuint name) { glDeleteTransformFeedbacks(1, &name); });
+         deleteAll(state.framebuffers, [](GLuint name) { glDeleteFramebuffers(1, &name); });
+@@ -1682,6 +1697,67 @@ void GL_VertexAttribI4ui(GLuint index, GLuint x, GLuint y, GLuint z, GLuint w)
+ 
+ void GL_VertexAttribI4uiv(GLuint index, const GLuint* v) { GL_VertexAttribI4ui(index, v[0], v[1], v[2], v[3]); }
+ 
++// WebGL 1 takes unsized internal formats only. WebCore sizes the ones whose
++// format comes from an extension (float and half-float types, depth, sRGB)
++// for ES 3 drivers; those go back to the format. Anything else a page passes
++// reaches the host as is, so its errors are WebGL 1's.
++static GLenum webGL1BaseFormat(GLenum internalformat)
++{
++    switch (internalformat) {
++    case GL_RGBA8: case GL_RGBA32F: case GL_RGBA16F: case GL_RGBA4: case GL_RGB5_A1: return GL_RGBA;
++    case GL_RGB8: case GL_RGB32F: case GL_RGB16F: case GL_RGB565: return GL_RGB;
++    case 0x8C43 /* SRGB8_ALPHA8 */: return 0x8C42 /* SRGB_ALPHA_EXT */;
++    case 0x8C41 /* SRGB8 */: return 0x8C40 /* SRGB_EXT */;
++    case 0x8816 /* ALPHA32F_EXT */: case 0x881C /* ALPHA16F_EXT */: case 0x803C /* ALPHA8_EXT */: return GL_ALPHA;
++    case 0x8818 /* LUMINANCE32F_EXT */: case 0x881E /* LUMINANCE16F_EXT */: case 0x8040 /* LUMINANCE8_EXT */: return GL_LUMINANCE;
++    case 0x8819 /* LUMINANCE_ALPHA32F_EXT */: case 0x881F /* LUMINANCE_ALPHA16F_EXT */: case 0x8045 /* LUMINANCE8_ALPHA8_EXT */: return GL_LUMINANCE_ALPHA;
++    case GL_DEPTH_COMPONENT16: case GL_DEPTH_COMPONENT24: case GL_DEPTH_COMPONENT32F: return GL_DEPTH_COMPONENT;
++    case GL_DEPTH24_STENCIL8: return GL_DEPTH_STENCIL;
++    default: return internalformat;
++    }
++}
++
++static bool currentIsWebGL1()
++{
++    auto* context = GraphicsContextGLEmscripten::current();
++    return context && !context->isWebGL2();
++}
++
++static bool isSizedByWebCore(GLenum format, GLenum type)
++{
++    switch (type) {
++    case GL_FLOAT:
++    case GL_HALF_FLOAT:
++    case 0x8D61: // HALF_FLOAT_OES
++        return true;
++    default:
++        break;
++    }
++    switch (format) {
++    case GL_DEPTH_COMPONENT:
++    case GL_DEPTH_STENCIL:
++    case 0x8C40: // SRGB_EXT
++    case 0x8C42: // SRGB_ALPHA_EXT
++        return true;
++    default:
++        return false;
++    }
++}
++
++void GL_TexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void* pixels)
++{
++    if (currentIsWebGL1() && static_cast<GLenum>(internalformat) != format && webGL1BaseFormat(internalformat) == format && isSizedByWebCore(format, type))
++        internalformat = format;
++    glTexImage2D(target, level, internalformat, width, height, border, format, type, pixels);
++}
++
++void GL_CopyTexImage2D(GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border)
++{
++    if (currentIsWebGL1())
++        internalformat = webGL1BaseFormat(internalformat);
++    glCopyTexImage2D(target, level, internalformat, x, y, width, height, border);
++}
++
+ GLenum GL_GetError()
+ {
+     if (auto* state = GraphicsContextGLEmscripten::currentState(); state && !state->pendingErrors.isEmpty())
+diff --git a/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.h b/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.h
+index 5457bb8..43467c9 100644
+--- a/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.h
++++ b/Source/WebCore/platform/graphics/emscripten/GraphicsContextGLEmscripten.h
+@@ -35,9 +35,10 @@ namespace WebCore {
+ 
+ struct VirtualGLContextState;
+ 
+-// WebGL for pages, drawn by a WebGL context of the host browser. Page contexts
+-// are virtual: they all share one host context, each keeping a shadow of its
+-// own state that is swapped in when it becomes current (browsers cap live
++// WebGL for pages, drawn by WebGL contexts of the host browser. Page contexts
++// are virtual: all WebGL 1 contexts share one host WebGL 1 context and all
++// WebGL 2 contexts a host WebGL 2 context, each keeping a shadow of its own
++// state that is swapped in when it becomes current (browsers cap live
+ // contexts per worker, four on Chromium, and the engine's own context must
+ // never be the one lost).
+ // WebCore's shared WebGL code drives them through the GL entry points in
+diff --git a/Source/WebCore/platform/graphics/emscripten/angle/ANGLE/WebGLOverHostWebGL.h b/Source/WebCore/platform/graphics/emscripten/angle/ANGLE/WebGLOverHostWebGL.h
+index a47bd8e..f6176db 100644
+--- a/Source/WebCore/platform/graphics/emscripten/angle/ANGLE/WebGLOverHostWebGL.h
++++ b/Source/WebCore/platform/graphics/emscripten/angle/ANGLE/WebGLOverHostWebGL.h
+@@ -80,7 +80,6 @@
+ #define GL_ClientWaitSync glClientWaitSync
+ #define GL_CompileShader glCompileShader
+ #define GL_CopyBufferSubData glCopyBufferSubData
+-#define GL_CopyTexImage2D glCopyTexImage2D
+ #define GL_CopyTexSubImage2D glCopyTexSubImage2D
+ #define GL_CopyTexSubImage3D glCopyTexSubImage3D
+ #define GL_DeleteSync glDeleteSync
+@@ -146,7 +145,6 @@
+ #define GL_SamplerParameterf glSamplerParameterf
+ #define GL_SamplerParameteri glSamplerParameteri
+ #define GL_ShaderSource glShaderSource
+-#define GL_TexImage2D glTexImage2D
+ #define GL_TexParameterf glTexParameterf
+ #define GL_TexParameteri glTexParameteri
+ #define GL_TexStorage2D glTexStorage2D
+@@ -262,6 +260,10 @@ void GL_VertexAttribI4iv(GLuint index, const GLint* v);
+ void GL_VertexAttribI4ui(GLuint index, GLuint x, GLuint y, GLuint z, GLuint w);
+ void GL_VertexAttribI4uiv(GLuint index, const GLuint* v);
+ GLenum GL_GetError();
++// WebCore sizes WebGL 1 internal formats for ES 3 drivers; a WebGL 1 host
++// takes them unsized.
++void GL_TexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void* pixels);
++void GL_CopyTexImage2D(GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border);
+ void GL_GetIntegerv(GLenum pname, GLint* data);
+ void GL_GenBuffers(GLsizei n, GLuint* buffers);
+ void GL_GenFramebuffers(GLsizei n, GLuint* framebuffers);
+@@ -350,7 +352,7 @@ inline void GL_ReadnPixelsRobustANGLE(GLint x, GLint y, GLsizei width, GLsizei h
+     inceptionSetLength(rows, height);
+ }
+ 
+-inline void GL_TexImage2DRobustANGLE(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, GLsizei, const void* pixels) { glTexImage2D(target, level, internalformat, width, height, border, format, type, pixels); }
++inline void GL_TexImage2DRobustANGLE(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, GLsizei, const void* pixels) { GL_TexImage2D(target, level, internalformat, width, height, border, format, type, pixels); }
+ inline void GL_TexSubImage2DRobustANGLE(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei, const void* pixels) { glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels); }
+ inline void GL_TexImage3DRobustANGLE(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, GLsizei, const void* pixels) { glTexImage3D(target, level, internalformat, width, height, depth, border, format, type, pixels); }
+ inline void GL_TexSubImage3DRobustANGLE(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, GLsizei, const void* pixels) { glTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels); }
