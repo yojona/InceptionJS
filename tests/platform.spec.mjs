@@ -127,3 +127,22 @@ test('a media element feeds the page\'s audio graph', async ({ page }) => {
   })(), 'x'`);
   await settle(page, 'String(graph.peak > 0.01)', 30_000).toBe('true');
 });
+
+// In WebAssembly the stack pointer does not see most native recursion; deep
+// recursion must still end in a RangeError the page can catch, quickly, and
+// leave the engine running.
+test('runaway recursion throws a catchable RangeError and the engine survives', async ({ page }) => {
+  const started = Date.now();
+  const result = JSON.parse(await evaluate(page, `(() => {
+    const out = {};
+    const run = (name, fn) => { try { fn(); out[name] = 'returned'; } catch (e) { out[name] = e.name; } };
+    run('js', () => { const f = () => f() + 1; f(); });
+    run('proxy', () => { const p = new Proxy({}, { get(t, k, r) { return r[k]; } }); p.x; });
+    run('getter', () => { const o = {}; Object.defineProperty(o, 'x', { get() { return o.x; } }); o.x; });
+    run('json', () => { let a = []; for (let i = 0; i < 100000; i++) a = [a]; JSON.stringify(a); });
+    return JSON.stringify(out);
+  })()`));
+  expect(result).toEqual({ js: 'RangeError', proxy: 'RangeError', getter: 'RangeError', json: 'RangeError' });
+  expect(Date.now() - started).toBeLessThan(15_000);
+  expect(await evaluate(page, 'String(1 + 1)')).toBe('2');
+});
