@@ -62,6 +62,7 @@ export class MediaHost {
   #soundAllowed;
   #eme;
   #releasing = new Set();
+  #fetches = new Map();
 
   // `layer` is the element that holds the videos, under the canvas.
   // `soundAllowed`: the embedder knows autoplay with sound is permitted (a
@@ -97,7 +98,7 @@ export class MediaHost {
     if (!player) return;
     switch (name) {
     case 'media.attachSource': return this.#attachSource(player);
-    case 'media.load': player.video.src = data.url; return;
+    case 'media.load': return this.#load(player, data);
     case 'media.addSourceBuffer': return this.#addSourceBuffer(player, data);
     case 'media.removeSourceBuffer': return this.#withSource(player, () => {
       const buffer = player.buffers.get(data.sb);
@@ -149,6 +150,57 @@ export class MediaHost {
     }
   }
 
+  // A plain src. The engine fetches http(s) sources itself (the host page,
+  // cross-origin isolated, could not) and streams them here; the video plays
+  // them once complete. Other URLs load directly.
+  #load(player, { url, fetch }) {
+    this.#dropFetch(player);
+    if (!fetch) {
+      player.video.src = url;
+      return;
+    }
+    player.fetch = { id: fetch, url, chunks: [], mime: '' };
+    this.#fetches.set(fetch, player);
+  }
+
+  #dropFetch(player) {
+    if (!player.fetch) return;
+    this.#fetches.delete(player.fetch.id);
+    player.fetch = null;
+  }
+
+  // media.fetch.started / finished; chunks arrive through fetchChunk().
+  handleFetchEvent(name, data) {
+    const player = this.#fetches.get(data.id);
+    if (!player) return;
+    if (name === 'media.fetch.started') {
+      player.fetch.mime = data.mime || '';
+      mediaLog(`video ${player.id} fetch started`, { mime: data.mime, size: data.size });
+      return;
+    }
+    if (name !== 'media.fetch.finished') return;
+    const { chunks, mime, url } = player.fetch;
+    this.#dropFetch(player);
+    mediaLog(`video ${player.id} fetch finished`, { bytes: chunks.reduce((n, c) => n + c.byteLength, 0), error: data.error ?? null });
+    if (data.error) {
+      // The video reports the failure as a browser would for this source.
+      player.video.src = url;
+      return;
+    }
+    if (player.objectUrl) URL.revokeObjectURL(player.objectUrl);
+    player.objectUrl = URL.createObjectURL(new Blob(chunks, { type: mime || 'application/octet-stream' }));
+    player.video.src = player.objectUrl;
+    if (player.wantsPlay) this.#play(player);
+  }
+
+  ownsFetch(id) {
+    return this.#fetches.has(id);
+  }
+
+  fetchChunk({ id, bytes }) {
+    this.#fetches.get(id)?.fetch.chunks.push(bytes);
+  }
+
   append(id, sb, seq, bytes) {
     const player = this.#players.get(id);
     mediaLog('append', { id, sb, seq, bytes: bytes.byteLength, known: !!player });
@@ -185,6 +237,7 @@ export class MediaHost {
     const player = this.#players.get(id);
     if (!player) return;
     this.#players.delete(id);
+    this.#dropFetch(player);
     player.video.pause();
     player.video.removeAttribute('src');
     player.video.load();

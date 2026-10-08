@@ -81,3 +81,17 @@ test('a second view on an open profile says so in the view', async ({ page, cont
   await expect(message).toContainText('already open in another tab', { timeout: 20_000 });
   await second.close();
 });
+
+test('plain-src media from another origin plays, fetched by the engine', async ({ page }) => {
+  await evaluate(page, `(() => {
+    const audio = new Audio('https://www.w3schools.com/html/mov_bbb.mp4');
+    audio.muted = true;
+    window.plain = audio;
+    window.plainResult = 'pending';
+    audio.addEventListener('error', () => { window.plainResult = 'error ' + (audio.error && audio.error.code); });
+    audio.addEventListener('loadedmetadata', () => { window.plainResult = 'metadata ' + Math.round(audio.duration); audio.play(); });
+    return 'x';
+  })()`);
+  await settle(page, 'String(window.plainResult)', 30_000).toBe('metadata 10');
+  await settle(page, 'String(window.plain.currentTime > 1)', 20_000).toBe('true');
+});

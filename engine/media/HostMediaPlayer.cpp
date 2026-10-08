@@ -1,4 +1,5 @@
 #include "config.h"
+#include "ResourceRequest.h"
 #include "media/HostMediaPlayer.h"
 
 #include "DestinationColorSpace.h"
@@ -6,6 +7,7 @@
 #include "MediaPlayer.h"
 #include "MediaSourcePrivateClient.h"
 #include "bridge/Bridge.h"
+#include "net/Download.h"
 #include "media/HostCDM.h"
 #include "media/HostMediaSource.h"
 #include "media/MediaBridge.h"
@@ -49,6 +51,7 @@ HostMediaPlayer::HostMediaPlayer(MediaPlayer& player)
 
 HostMediaPlayer::~HostMediaPlayer()
 {
+    stopSourceFetch();
     players().remove(m_id);
     if (m_mediaSource)
         m_mediaSource->detachPlayer();
@@ -68,7 +71,26 @@ void HostMediaPlayer::load(const String& url)
         player->networkStateChanged();
     auto data = JSON::Object::create();
     data->setString("url"_s, url);
+    // A plain http(s) src is fetched by the engine, as any of the page's loads,
+    // and handed to the host: the host page could not load it itself, since
+    // it is cross-origin isolated and media servers rarely send the headers
+    // that would allow it.
+    stopSourceFetch();
+    URL parsed { url };
+    if (parsed.protocolIsInHTTPFamily()) {
+        ResourceRequest request { WTF::move(parsed) };
+        if (RefPtr player = m_player.get())
+            request.setHTTPReferrer(player->referrer());
+        m_sourceFetch = Download::startForMedia(request, m_id);
+        data->setDouble("fetch"_s, m_sourceFetch);
+    }
     sendToHost("media.load"_s, WTF::move(data));
+}
+
+void HostMediaPlayer::stopSourceFetch()
+{
+    if (auto fetch = std::exchange(m_sourceFetch, 0))
+        Download::cancelMedia(fetch);
 }
 
 void HostMediaPlayer::load(const URL&, const LoadOptions&, MediaSourcePrivateClient& client)

@@ -202,14 +202,15 @@ export class InceptionView extends HTMLElement {
     const audio = new AudioHost(() => this.#runtime.memory(), { soundAllowed });
     const modules = new Modules(this, (command, args) => this.#runtime.send(command, args), config.modules);
     const downloads = new Downloads(this);
-    this.#runtime.onDownloadChunk = (chunk) => downloads.chunk(chunk);
+    this.#runtime.onDownloadChunk = (chunk) => (this.#media.ownsFetch(chunk.id) ? this.#media.fetchChunk(chunk) : downloads.chunk(chunk));
     this.#runtime.onAudioDecode = (request) => audio.decode(request, (size) => this.#runtime.malloc(size));
     this.#runtime.onEngineEvent = (name, data) => {
       if (name === 'cursor') this.#canvas.style.cursor = data.cursor;
       if (name === 'fullscreen') this.#setFullscreen(data.active);
-      if (name.startsWith('media.')) this.#media.handleEvent(name, data);
+      if (name.startsWith('media.') && !name.startsWith('media.fetch.')) this.#media.handleEvent(name, data);
       if (name.startsWith('eme.')) eme.handleEvent(name, data);
       if (name.startsWith('download.')) downloads.handleEvent(name, data);
+      if (name.startsWith('media.fetch.')) this.#media.handleFetchEvent(name, data);
       if (name.startsWith('tab.')) {
         this.#tabs.handleEvent(name, data);
         if (name === 'tab.activated') this.#showTab(data.tab);

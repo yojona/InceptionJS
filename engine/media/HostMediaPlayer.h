@@ -89,6 +89,9 @@ private:
 
     ThreadSafeWeakPtr<WebCore::MediaPlayer> m_player;
     unsigned m_id;
+    // The engine's fetch of a plain src, which the host plays (0: none).
+    uint64_t m_sourceFetch { 0 };
+    void stopSourceFetch();
     RefPtr<HostMediaSource> m_mediaSource;
     bool m_isMediaSource { false };
 
