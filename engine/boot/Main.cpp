@@ -103,6 +103,7 @@ static void registerCommands()
         ready->setString("renderer"_s, mode == Renderer::Mode::GPU ? "gpu"_s : "cpu"_s);
         ready->setBoolean("persistent"_s, persistent);
         ready->setInteger("webglContexts"_s, inception_gfx_page_context_cap());
+        ready->setInteger("tab"_s, View::singleton()->id());
         emitEvent("ready"_s, WTF::move(ready));
 
         auto url = args.getString("url"_s);

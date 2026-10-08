@@ -48,31 +48,49 @@ static ForcedAccessibilityValue forced(std::optional<bool> value)
     return *value ? ForcedAccessibilityValue::On : ForcedAccessibilityValue::Off;
 }
 
+// The page-level part of the preferences, kept for tabs opened later.
+struct PagePreferences {
+    std::optional<bool> dark;
+    std::optional<bool> reducedMotion;
+    std::optional<bool> moreContrast;
+};
+
+static PagePreferences& pagePreferences()
+{
+    static NeverDestroyed<PagePreferences> preferences;
+    return preferences;
+}
+
+void applyPagePreferences(Page& page)
+{
+    auto& preferences = pagePreferences();
+    auto& settings = page.settings();
+    if (preferences.dark)
+        page.setUseColorAppearance(*preferences.dark, false);
+    if (preferences.reducedMotion)
+        settings.setForcedPrefersReducedMotionAccessibilityValue(forced(preferences.reducedMotion));
+    if (preferences.moreContrast)
+        settings.setForcedPrefersContrastAccessibilityValue(forced(preferences.moreContrast));
+    if (preferences.reducedMotion || preferences.moreContrast)
+        page.accessibilitySettingsDidChange();
+}
+
 // {colorScheme: "light"|"dark", reducedMotion, contrast: "more"|"no-preference",
-// languages: [...], timeZone}. Absent fields keep their value.
+// languages: [...], timeZone}. Absent fields keep their value. Applies to every
+// tab.
 void applyPreferences(JSON::Object& args)
 {
-    auto* view = View::singleton();
-    if (!view)
-        return;
-    Ref page = view->page();
-    auto& settings = page->settings();
-    bool accessibilityChanged = false;
-
+    auto& preferences = pagePreferences();
     auto colorScheme = args.getString("colorScheme"_s);
     if (!colorScheme.isNull())
-        page->setUseColorAppearance(colorScheme == "dark"_s, false);
-    if (auto reducedMotion = args.getBoolean("reducedMotion"_s)) {
-        settings.setForcedPrefersReducedMotionAccessibilityValue(forced(*reducedMotion));
-        accessibilityChanged = true;
-    }
+        preferences.dark = colorScheme == "dark"_s;
+    if (auto reducedMotion = args.getBoolean("reducedMotion"_s))
+        preferences.reducedMotion = *reducedMotion;
     auto contrast = args.getString("contrast"_s);
-    if (!contrast.isNull()) {
-        settings.setForcedPrefersContrastAccessibilityValue(forced(contrast == "more"_s));
-        accessibilityChanged = true;
-    }
-    if (accessibilityChanged)
-        page->accessibilitySettingsDidChange();
+    if (!contrast.isNull())
+        preferences.moreContrast = contrast == "more"_s;
+    for (auto* view : View::all())
+        applyPagePreferences(view->page());
 
     if (auto list = args.getArray("languages"_s)) {
         Vector<String> languages;
