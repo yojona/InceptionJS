@@ -5,13 +5,23 @@
 <style>
   body { margin: 0; font: 14px system-ui, sans-serif; background: #f4f4f5; }
   form { display: flex; gap: 8px; padding: 8px; }
+  #menu { position: fixed; display: none; background: #fff; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 16px #0002; padding: 4px 0; z-index: 10; }
+  #menu button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 6px 14px; font: inherit; }
+  #menu button:hover { background: #eef; }
   input { flex: 1; padding: 6px 8px; font: inherit; }
   inception-view { width: 100vw; height: calc(100vh - 50px); background: #fff; }
 </style>
 <form id="bar">
+  <button type="button" id="back" title="Back" disabled>&larr;</button>
+  <button type="button" id="forward" title="Forward" disabled>&rarr;</button>
+  <button type="button" id="reload" title="Reload">&#x21bb;</button>
   <input id="address" value="https://example.com/" autocomplete="off" spellcheck="false">
   <button>Go</button>
+  <input id="find" placeholder="Find" style="flex: 0 0 140px">
+  <button type="button" id="zoomOut" title="Zoom out">&minus;</button>
+  <button type="button" id="zoomIn" title="Zoom in">+</button>
 </form>
+<div id="menu"></div>
 <inception-view id="view" src="https://example.com/"></inception-view>
 <script type="module">
   import { Inception } from '../host/inception-view.js';
@@ -35,5 +45,36 @@
   });
   view.addEventListener('navigate', (e) => (address.value = e.detail.url));
   view.addEventListener('title', (e) => (document.title = e.detail.title || 'InceptionJS'));
+  const $ = (id) => document.getElementById(id);
+  $('back').onclick = () => view.back();
+  $('forward').onclick = () => view.forward();
+  $('reload').onclick = () => view.reload();
+  view.addEventListener('navigationstate', (e) => {
+    $('back').disabled = !e.detail.canGoBack;
+    $('forward').disabled = !e.detail.canGoForward;
+  });
+  $('find').addEventListener('keydown', async (e) => {
+    if (e.key !== 'Enter') return;
+    const { matches } = await view.find($('find').value, { backwards: e.shiftKey });
+    $('find').title = `${matches} matches`;
+  });
+  let zoom = 1;
+  $('zoomIn').onclick = () => view.zoom(zoom = Math.min(5, zoom + 0.1));
+  $('zoomOut').onclick = () => view.zoom(zoom = Math.max(0.25, zoom - 0.1));
+
+  // A plain context menu from what the engine reports under the pointer.
+  const menu = $('menu');
+  const hideMenu = () => (menu.style.display = 'none');
+  document.addEventListener('pointerdown', (e) => { if (!menu.contains(e.target)) hideMenu(); });
+  view.addEventListener('contextmenurequest', (e) => {
+    const d = e.detail, items = [];
+    if (d.link) items.push(['Open link', () => view.navigate(d.link)], ['Copy link', () => navigator.clipboard.writeText(d.link)], ['Save link as', () => view.download(d.link)]);
+    if (d.image) items.push(['Open image', () => view.navigate(d.image)], ['Save image', () => view.download(d.image)]);
+    if (d.selection) items.push(['Copy', () => navigator.clipboard.writeText(d.selection)]);
+    items.push(['Back', () => view.back()], ['Reload', () => view.reload()]);
+    menu.replaceChildren(...items.map(([label, run]) => Object.assign(document.createElement('button'), { textContent: label, onclick: () => { hideMenu(); run(); } })));
+    const rect = view.getBoundingClientRect();
+    Object.assign(menu.style, { display: 'block', left: `${rect.left + d.x}px`, top: `${rect.top + d.y}px` });
+  });
   view.addEventListener('crash', (e) => console.error('engine crashed:', e.detail.reason));
 </script>
