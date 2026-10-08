@@ -19,7 +19,8 @@
     "./next": {
       "types": "./types/next.d.ts",
       "default": "./dist/next/index.js"
-    }
+    },
+    "./types/*": "./types/*.d.ts"
   },
   "bin": {
     "inceptionjs": "./bin/inceptionjs.js"
