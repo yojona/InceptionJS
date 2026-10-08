@@ -8,6 +8,11 @@
 #include "LocalFrameInlines.h"
 #include "HandleUserInputEventResult.h"
 #include "FocusController.h"
+#include "Document.h"
+#include "DocumentView.h"
+#include "HitTestResult.h"
+#include "HTMLAnchorElement.h"
+#include "LocalFrameView.h"
 #include "LocalFrame.h"
 #include "Page.h"
 #include "PlatformKeyboardEvent.h"
@@ -68,6 +73,37 @@ static MouseButton buttonFrom(int button)
     }
 }
 
+// The page did not take the context menu itself: tell the host what is under
+// the pointer, and it shows a menu of its own ("contextmenu").
+static void emitContextMenu(LocalFrame& frame, const DoublePoint& position)
+{
+    RefPtr view = frame.view();
+    if (!view)
+        return;
+    auto point = view->windowToContents(flooredIntPoint(position));
+    constexpr OptionSet<HitTestRequest::Type> hitType { HitTestRequest::Type::ReadOnly, HitTestRequest::Type::Active, HitTestRequest::Type::DisallowUserAgentShadowContent, HitTestRequest::Type::AllowChildFrameContent };
+    auto result = frame.eventHandler().hitTestResultAtPoint(point, hitType);
+    auto data = JSON::Object::create();
+    data->setDouble("x"_s, position.x());
+    data->setDouble("y"_s, position.y());
+    if (auto link = result.absoluteLinkURL(); !link.isEmpty()) {
+        data->setString("link"_s, link.string());
+        data->setString("linkText"_s, result.textContent());
+    }
+    if (auto image = result.absoluteImageURL(); !image.isEmpty())
+        data->setString("image"_s, image.string());
+    if (auto media = result.absoluteMediaURL(); !media.isEmpty())
+        data->setString("media"_s, media.string());
+    RefPtr focused = focusedFrame();
+    auto selection = focused ? focused->editor().selectedText() : String { };
+    if (!selection.isEmpty())
+        data->setString("selection"_s, selection);
+    data->setBoolean("editable"_s, result.isContentEditable());
+    if (RefPtr document = frame.document())
+        data->setString("pageURL"_s, document->url().string());
+    emitEvent("contextmenu"_s, WTF::move(data));
+}
+
 // {type: "down"|"up"|"move", x, y, button, clickCount, modifiers}
 static void handleMouse(JSON::Object& args)
 {
@@ -96,6 +132,10 @@ static void handleMouse(JSON::Object& args)
     switch (eventType) {
     case PlatformEvent::Type::MousePressed:
         handler.handleMousePressEvent(event);
+        // As on macOS and Linux, the context menu follows the press; a page
+        // that handles "contextmenu" itself keeps the host's menu away.
+        if (button == MouseButton::Right && !handler.sendContextMenuEvent(event))
+            emitContextMenu(*frame, position);
         break;
     case PlatformEvent::Type::MouseReleased:
         handler.handleMouseReleaseEvent(event);

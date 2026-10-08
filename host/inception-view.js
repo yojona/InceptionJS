@@ -27,10 +27,10 @@ export const Inception = {
 };
 
 // Events the engine reports that the view re-dispatches as DOM events.
-const VIEW_EVENTS = ['navigate', 'title', 'loading', 'popup', 'console', 'crash', 'cursor', 'navigation.state', 'find.result', 'zoom'];
+const VIEW_EVENTS = ['navigate', 'title', 'loading', 'popup', 'console', 'crash', 'cursor', 'navigation.state', 'find.result', 'zoom', 'contextmenu'];
 // Names the view dispatches them under where the engine's would clash with
 // the element's own DOM events.
-const DOM_EVENT_NAMES = { 'navigation.state': 'navigationstate', 'find.result': 'findresult' };
+const DOM_EVENT_NAMES = { contextmenu: 'contextmenurequest', 'navigation.state': 'navigationstate', 'find.result': 'findresult' };
 
 // <inception-view src gpu="auto|on|off" muted media profile fresh-profile user-agent
 //                 provenance-corner>
