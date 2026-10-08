@@ -1,7 +1,7 @@
 // What keeps a view from passing for the person's own browser. Drawn by the
 // host above the canvas, so the page inside can neither cover nor detect it.
 //
-// - A small badge in a corner: "InceptionJS en <site>", where <site> is the
+// - A small badge in a corner: "InceptionJS on <site>", where <site> is the
 //   page embedding the view, not the page loaded inside it.
 // - A notice while the page inside shows a password or payment field, or a
 //   major sign-in page: the moment a phishing page would do its harm.
@@ -19,16 +19,12 @@ const SIGN_IN_HOSTS = [
   'idmsa.apple.com',
 ];
 
-const spanish = () => (navigator.language || '').toLowerCase().startsWith('es');
-
+// English, as everything this library shows; localized text will follow the
+// view's languages preference.
 const text = {
-  badge: (site) => (spanish() ? `InceptionJS en ${site}` : `InceptionJS on ${site}`),
-  password: (site) => (spanish()
-    ? `Esta página se muestra dentro de ${site}, no en tu navegador. Verifica antes de escribir tu contraseña.`
-    : `This page is shown inside ${site}, not in your browser. Check before you type your password.`),
-  payment: (site) => (spanish()
-    ? `Esta página se muestra dentro de ${site}, no en tu navegador. Verifica antes de escribir los datos de tu tarjeta.`
-    : `This page is shown inside ${site}, not in your browser. Check before you type your card details.`),
+  badge: (site) => `InceptionJS on ${site}`,
+  password: (site) => `This page is shown inside ${site}, not in your browser. Check before you type your password.`,
+  payment: (site) => `This page is shown inside ${site}, not in your browser. Check before you type your card details.`,
 };
 
 export const PROVENANCE_STYLE = `
