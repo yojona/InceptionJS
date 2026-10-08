@@ -1,0 +1,26 @@
+Build geolocation, notifications and OffscreenCanvas.
+
+Pages see these APIs as they would in a browser. What they get is the
+embedder's call: the engine installs the clients, which forward to host
+providers or answer per the embedder's policy (by default, a denial).
+
+diff --git a/Source/cmake/OptionsEmscripten.cmake b/Source/cmake/OptionsEmscripten.cmake
+index 8e69d04..d8dd9da 100644
+--- a/Source/cmake/OptionsEmscripten.cmake
++++ b/Source/cmake/OptionsEmscripten.cmake
+@@ -63,8 +63,13 @@ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_DRAG_SUPPORT PRIVATE ON)
+ # prefers-color-scheme and dark native controls follow the embedder's preference.
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_DARK_MODE_CSS PRIVATE ON)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GAMEPAD PRIVATE OFF)
+-WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GEOLOCATION PRIVATE OFF)
+-WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_NOTIFICATIONS PRIVATE OFF)
++# Exposed to pages as browsers do; the embedder decides what they get (host
++# providers, a policy, or a denial), through clients the engine installs.
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GEOLOCATION PRIVATE ON)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_NOTIFICATIONS PRIVATE ON)
++# OffscreenCanvas on the page's thread; its WebGL draws through the host's.
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_OFFSCREEN_CANVAS PRIVATE ON)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_OFFSCREEN_CANVAS_IN_WORKERS PRIVATE OFF)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_SPEECH_SYNTHESIS PRIVATE OFF)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEBXR PRIVATE OFF)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_XSLT PRIVATE OFF)

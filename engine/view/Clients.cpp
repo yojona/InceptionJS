@@ -28,6 +28,9 @@
 #include "SharedBuffer.h"
 #include "UserAgent.h"
 #include "bridge/Bridge.h"
+#include "modules/Modules.h"
+#include "net/Download.h"
+#include "storage/History.h"
 #include "view/SelectMenu.h"
 #include "view/View.h"
 #include "wasm/GuestWasm.h"
@@ -357,6 +360,7 @@ FrameLoaderClientImpl::FrameLoaderClientImpl(FrameLoader& loader, LocalFrame& fr
 void FrameLoaderClientImpl::dispatchDidClearWindowObjectInWorld(DOMWrapperWorld& world)
 {
     GuestWasm::installInWindow(m_frame.get(), world);
+    installPageShims(m_frame.get(), world);
     runInjectedScript(m_frame.get(), world);
 }
 

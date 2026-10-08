@@ -12,14 +12,15 @@ import { EngineRuntime } from './runtime.js';
 import { WasmTranslator } from './wasm-translator.js';
 import { ProtocolClient, ProtocolServer, createInPagePair } from './protocol.js';
 
-const config = { engineUrl: null, wispUrl: null, binaryenUrl: null, storage: null, policy: null, webglContexts: 0 };
+const config = { engineUrl: null, wispUrl: null, binaryenUrl: null, storage: null, policy: null, webglContexts: 0, modules: {} };
 let translator = null;
 
 export const Inception = {
   // engineUrl: URL of inception-engine.js; wispUrl: the Wisp relay (ws:// or
   // wss://); binaryenUrl: binaryen.js, loaded when a page first uses WebAssembly;
   // webglContexts: how many WebGL contexts pages may hold (default: derived
-  // from the browser's renderer).
+  // from the browser's renderer); modules: what pages get for geolocation and
+  // notifications (host/modules.js).
   configure(options) {
     Object.assign(config, options);
   },
@@ -198,7 +199,7 @@ export class InceptionView extends HTMLElement {
 
     const { width, height } = this.#cssSize();
     const gpu = this.getAttribute('gpu') ?? 'auto';
-    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: await probeMediaCapabilities(), wasmPolyfill, wispUrl: config.wispUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? defaultUserAgent(), preferences: this.#preferences.resolved(), webglContexts: config.webglContexts | 0, url: this.getAttribute('src') ?? '' });
+    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: await probeMediaCapabilities(), wasmPolyfill, pageShims, wispUrl: config.wispUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? defaultUserAgent(), preferences: this.#preferences.resolved(), webglContexts: config.webglContexts | 0, url: this.getAttribute('src') ?? '' });
     const ready = await engineReady;
     this.#runtime.addEventListener('crash', (e) => this.dispatchEvent(new CustomEvent('crash', { detail: { reason: e.detail.message, stack: e.detail.stack } })));
     if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');

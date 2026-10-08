@@ -8,8 +8,11 @@
 #include "gfx/Renderer.h"
 #include "input/Input.h"
 #include "media/MediaBridge.h"
+#include "modules/Modules.h"
+#include "net/Download.h"
 #include "net/Sockets.h"
 #include "storage/Disk.h"
+#include "storage/History.h"
 #include "storage/Profile.h"
 #include "wasm/GuestWasm.h"
 #include "platform/Strategies.h"
@@ -81,6 +84,7 @@ static void registerCommands()
         if (auto media = args.getObject("media"_s))
             Media::setCapabilities(*media);
         GuestWasm::setPolyfill(args.getString("wasmPolyfill"_s));
+        setPageShims(args.getString("pageShims"_s));
         Sockets::configure(args.getString("wispUrl"_s));
         // Before the page exists: storage opens its files on first use.
         bool persistent = Disk::mount();

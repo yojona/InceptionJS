@@ -23,6 +23,7 @@
 #include "input/EditingClient.h"
 #include "media/HostCDM.h"
 #include "media/MediaBridge.h"
+#include "modules/Modules.h"
 #include "net/Session.h"
 #include "net/WebSocketChannel.h"
 #include "storage/IndexedDB.h"
@@ -78,6 +79,7 @@ View::View(IntSize cssSize, float deviceScaleFactor)
 #if ENABLE(ENCRYPTED_MEDIA)
     Media::provideMediaKeySystem(*m_page);
 #endif
+    installModules(*m_page);
 
     // Raw WebCore defaults are off for most of what a browser turns on; each of
     // these is a feature pages expect.
