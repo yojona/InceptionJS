@@ -1,0 +1,699 @@
+Web Audio, rendered in the engine and played by the host page.
+
+The engine renders render quanta on a thread of its own into a ring of planar
+float samples in its shared memory; an AudioWorklet in the host page reads the
+ring and plays it, at the context's sample rate (the host resamples to the
+device). With an AudioWorklet in the page, quanta render on the worklet's
+thread. WAVE files, WebKit's HRTF database among them, decode in the engine;
+compressed audio decodes in the host browser and comes back as planar samples.
+The FFT is a radix-2 transform of the port's own.
+
+diff --git a/Source/WebCore/PlatformEmscripten.cmake b/Source/WebCore/PlatformEmscripten.cmake
+index 5acc815..fb9d3b9 100644
+--- a/Source/WebCore/PlatformEmscripten.cmake
++++ b/Source/WebCore/PlatformEmscripten.cmake
+@@ -75,6 +75,16 @@ list(APPEND WebCore_SOURCES
+     platform/unix/SharedMemoryUnix.cpp
+ )
+ 
++if (ENABLE_WEB_AUDIO)
++    # Output through the host page's AudioWorklet; compressed files decode in the
++    # host browser, WAVE files here.
++    list(APPEND WebCore_SOURCES
++        platform/audio/emscripten/AudioDestinationEmscripten.cpp
++        platform/audio/emscripten/AudioFileReaderEmscripten.cpp
++        platform/audio/emscripten/FFTFrameEmscripten.cpp
++    )
++endif ()
++
+ if (ENABLE_WEBGL)
+     # WebGL draws through the host browser's WebGL. WebCore's shared WebGL code
+     # includes ANGLE's entry point headers; they resolve to a shim over
+diff --git a/Source/WebCore/platform/audio/FFTFrameStub.cpp b/Source/WebCore/platform/audio/FFTFrameStub.cpp
+index a6d78c8..2cbe1f5 100644
+--- a/Source/WebCore/platform/audio/FFTFrameStub.cpp
++++ b/Source/WebCore/platform/audio/FFTFrameStub.cpp
+@@ -29,7 +29,7 @@
+ 
+ #if ENABLE(WEB_AUDIO)
+ 
+-#if !OS(DARWIN) && !USE(GSTREAMER)
++#if !OS(DARWIN) && !USE(GSTREAMER) && !PLATFORM(EMSCRIPTEN)
+ 
+ #include "FFTFrame.h"
+ 
+@@ -80,6 +80,6 @@ void FFTFrame::initialize()
+ 
+ } // namespace WebCore
+ 
+-#endif // !OS(DARWIN) && !USE(GSTREAMER)
++#endif // !OS(DARWIN) && !USE(GSTREAMER) && !PLATFORM(EMSCRIPTEN)
+ 
+ #endif // ENABLE(WEB_AUDIO)
+diff --git a/Source/WebCore/platform/audio/emscripten/AudioDestinationEmscripten.cpp b/Source/WebCore/platform/audio/emscripten/AudioDestinationEmscripten.cpp
+new file mode 100644
+index 0000000..fcbd6fe
+--- /dev/null
++++ b/Source/WebCore/platform/audio/emscripten/AudioDestinationEmscripten.cpp
+@@ -0,0 +1,187 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "AudioDestinationEmscripten.h"
++
++#if ENABLE(WEB_AUDIO)
++
++#include "AudioUtilities.h"
++#include <emscripten/em_js.h>
++#include <emscripten/threading.h>
++#include <wtf/MainThread.h>
++#include <wtf/MonotonicTime.h>
++#include <memory>
++#include <wtf/threads/BinarySemaphore.h>
++
++// The host (host/audio.js) plays a ring from this point on; the event goes out
++// through the engine thread's bridge, which is where start and stop run.
++EM_JS(void, inception_audio_open, (int id, int header, int samples, int capacity, int channels, float sampleRate), {
++    postMessage({ inception: JSON.stringify({ event: 'audio.open', data: { id, header, samples, capacity, channels, sampleRate } }) });
++});
++
++EM_JS(void, inception_audio_close, (int id), {
++    postMessage({ inception: JSON.stringify({ event: 'audio.close', data: { id } }) });
++});
++
++namespace WebCore {
++
++static constexpr size_t quantumFrames = AudioUtilities::renderQuantumSize;
++static_assert(!(AudioDestinationEmscripten::capacity % quantumFrames), "quanta must not straddle the ring's end");
++
++Ref<AudioDestination> AudioDestination::create(const CreationOptions& options)
++{
++    return adoptRef(*new AudioDestinationEmscripten(options));
++}
++
++// The host page creates its output at whatever rate a destination asks for and
++// resamples to the device, so this only picks the default for new contexts.
++float AudioDestination::hardwareSampleRate()
++{
++    return 48000;
++}
++
++unsigned long AudioDestination::maxChannelCount()
++{
++    return 0;
++}
++
++AudioDestinationEmscripten::AudioDestinationEmscripten(const CreationOptions& options)
++    : AudioDestination(options)
++    , m_samples(std::make_unique<float[]>(static_cast<size_t>(capacity) * options.numberOfOutputChannels))
++    , m_renderBus(AudioBus::create(options.numberOfOutputChannels, quantumFrames))
++{
++    static std::atomic<int> nextID;
++    m_id = ++nextID;
++}
++
++AudioDestinationEmscripten::~AudioDestinationEmscripten()
++{
++    m_running = false;
++}
++
++unsigned AudioDestinationEmscripten::framesPerBuffer() const
++{
++    return quantumFrames;
++}
++
++MediaTime AudioDestinationEmscripten::outputLatency() const
++{
++    return MediaTime::createWithDouble(static_cast<double>(capacity) / sampleRate());
++}
++
++void AudioDestinationEmscripten::start(Function<void(Function<void()>&&)>&& dispatchToRenderThread, CompletionHandler<void(bool)>&& completionHandler)
++{
++    {
++        Locker locker { m_dispatchLock };
++        m_dispatchToRenderThread = WTF::move(dispatchToRenderThread);
++    }
++    if (!m_isPlaying) {
++        m_header[0] = 0;
++        m_header[1] = 0;
++        m_running = true;
++        inception_audio_open(m_id, reinterpret_cast<int>(&m_header[0]), reinterpret_cast<int>(m_samples.get()), capacity, numberOfOutputChannels(), sampleRate());
++        // The thread keeps the destination alive until it sees the stop.
++        Thread::create("WebAudio output"_s, [protectedThis = Ref { *this }] {
++            protectedThis->renderLoop();
++        }, ThreadType::Audio)->detach();
++        m_isPlaying = true;
++        notifyIsPlaying();
++    }
++    callOnMainThread([completionHandler = WTF::move(completionHandler)] mutable {
++        completionHandler(true);
++    });
++}
++
++void AudioDestinationEmscripten::stop(CompletionHandler<void(bool)>&& completionHandler)
++{
++    if (m_isPlaying) {
++        m_running = false;
++        emscripten_futex_wake(&m_header[1], 1);
++        inception_audio_close(m_id);
++        m_isPlaying = false;
++        notifyIsPlaying();
++    }
++    callOnMainThread([completionHandler = WTF::move(completionHandler)] mutable {
++        completionHandler(true);
++    });
++}
++
++void AudioDestinationEmscripten::notifyIsPlaying()
++{
++    Locker locker { m_callbackLock };
++    if (m_callback)
++        m_callback->isPlayingDidChange();
++}
++
++void AudioDestinationEmscripten::renderLoop()
++{
++    while (m_running) {
++        int32_t written = m_header[0].load();
++        int32_t read = m_header[1].load();
++        // Full: wait for the host to read. The timeout only bounds how late a
++        // stop is noticed.
++        if (static_cast<int32_t>(written - read) > static_cast<int32_t>(capacity - quantumFrames)) {
++            emscripten_futex_wait(&m_header[1], static_cast<uint32_t>(read), 100);
++            continue;
++        }
++        renderQuantum(written);
++        m_header[0].store(written + static_cast<int32_t>(quantumFrames));
++    }
++}
++
++void AudioDestinationEmscripten::renderQuantum(int32_t written)
++{
++    AudioIOPosition position { Seconds { m_framesRendered / static_cast<double>(sampleRate()) }, MonotonicTime::now() };
++    bool dispatched = false;
++    // Shared: if the worklet's thread is gone the wait gives up, and the task
++    // must not then signal a semaphore that no longer exists.
++    auto rendered = std::make_shared<BinarySemaphore>();
++    {
++        Locker locker { m_dispatchLock };
++        // With an AudioWorklet, rendering happens on the worklet's thread.
++        if (m_dispatchToRenderThread) {
++            dispatched = true;
++            m_dispatchToRenderThread([protectedThis = Ref { *this }, position, rendered] {
++                protectedThis->callRenderCallback(protectedThis->m_renderBus.get(), quantumFrames, position);
++                rendered->signal();
++            });
++        }
++    }
++    if (!dispatched)
++        callRenderCallback(m_renderBus.get(), quantumFrames, position);
++    else if (!rendered->waitFor(1_s))
++        m_renderBus->zero();
++
++    size_t offset = static_cast<uint32_t>(written) & (capacity - 1);
++    for (unsigned channel = 0; channel < numberOfOutputChannels(); ++channel) {
++        auto source = m_renderBus->channel(channel)->span();
++        std::copy(source.begin(), source.end(), m_samples.get() + channel * static_cast<size_t>(capacity) + offset);
++    }
++    m_framesRendered += quantumFrames;
++}
++
++} // namespace WebCore
++
++#endif // ENABLE(WEB_AUDIO)
+diff --git a/Source/WebCore/platform/audio/emscripten/AudioDestinationEmscripten.h b/Source/WebCore/platform/audio/emscripten/AudioDestinationEmscripten.h
+new file mode 100644
+index 0000000..545bfa8
+--- /dev/null
++++ b/Source/WebCore/platform/audio/emscripten/AudioDestinationEmscripten.h
+@@ -0,0 +1,79 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if ENABLE(WEB_AUDIO)
++
++#include "AudioBus.h"
++#include "AudioDestination.h"
++#include <atomic>
++#include <wtf/Lock.h>
++#include <wtf/Threading.h>
++
++namespace WebCore {
++
++// Audio output through the host page. A thread of the engine renders render
++// quanta into a ring of planar float samples in the engine's own memory, which
++// is shared with the host; an AudioWorklet in the host page reads the ring and
++// plays it. The ring's indexes are atomics both sides wait and wake on.
++class AudioDestinationEmscripten final : public AudioDestination, public ThreadSafeRefCounted<AudioDestinationEmscripten, WTF::DestructionThread::Main> {
++public:
++    explicit AudioDestinationEmscripten(const CreationOptions&);
++    ~AudioDestinationEmscripten();
++
++    void ref() const final { ThreadSafeRefCounted::ref(); }
++    void deref() const final { ThreadSafeRefCounted::deref(); }
++
++    void start(Function<void(Function<void()>&&)>&& dispatchToRenderThread, CompletionHandler<void(bool)>&&) final;
++    void stop(CompletionHandler<void(bool)>&&) final;
++    bool isPlaying() final { return m_isPlaying; }
++    unsigned framesPerBuffer() const final;
++    MediaTime outputLatency() const final;
++
++    // Frames the ring holds: about 43 ms at 48 kHz, the most the host's output
++    // can lag behind rendering.
++    static constexpr int32_t capacity = 2048;
++
++private:
++    void renderLoop();
++    void renderQuantum(int32_t written);
++    void notifyIsPlaying();
++
++    // [0] frames written, [1] frames read, [2] quanta the host found missing.
++    alignas(16) std::atomic<int32_t> m_header[4] { };
++    std::unique_ptr<float[]> m_samples;
++    Ref<AudioBus> m_renderBus;
++    std::atomic<bool> m_running { false };
++    bool m_isPlaying { false };
++    uint64_t m_framesRendered { 0 };
++    int m_id;
++
++    Lock m_dispatchLock;
++    Function<void(Function<void()>&&)> m_dispatchToRenderThread WTF_GUARDED_BY_LOCK(m_dispatchLock);
++};
++
++} // namespace WebCore
++
++#endif // ENABLE(WEB_AUDIO)
+diff --git a/Source/WebCore/platform/audio/emscripten/AudioFileReaderEmscripten.cpp b/Source/WebCore/platform/audio/emscripten/AudioFileReaderEmscripten.cpp
+new file mode 100644
+index 0000000..0f256b1
+--- /dev/null
++++ b/Source/WebCore/platform/audio/emscripten/AudioFileReaderEmscripten.cpp
+@@ -0,0 +1,183 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "AudioFileReader.h"
++
++#if ENABLE(WEB_AUDIO)
++
++#include "AudioBus.h"
++#include <atomic>
++#include <bit>
++#include <emscripten/em_js.h>
++#include <emscripten/threading.h>
++#include <wtf/FileSystem.h>
++#include <wtf/MainThread.h>
++#include <wtf/MonotonicTime.h>
++#include <wtf/StdLibExtras.h>
++#include <wtf/text/MakeString.h>
++
++namespace {
++
++// What the host writes back for a decode (host/audio.js): `done` turns 1 with
++// planar float samples it allocated in engine memory, or -1 on failure.
++struct HostDecodeReply {
++    std::atomic<int32_t> done { 0 };
++    int32_t channels { 0 };
++    int32_t frames { 0 };
++    float sampleRate { 0 };
++    float* samples { nullptr };
++};
++
++} // namespace
++
++// Runs on the engine thread, whose bridge the host listens to; the decoding
++// thread waits on the reply.
++EM_JS(void, inception_audio_decode, (const uint8_t* bytes, int length, float sampleRate, void* reply), {
++    postMessage({ inceptionAudioDecode: { bytes, length, sampleRate, reply } });
++});
++
++namespace WebCore {
++
++static uint32_t readLittleEndian(std::span<const uint8_t> data, size_t offset, size_t size)
++{
++    uint32_t value = 0;
++    for (size_t i = 0; i < size; ++i)
++        value |= static_cast<uint32_t>(data[offset + i]) << (8 * i);
++    return value;
++}
++
++// Uncompressed WAVE files (WebKit's own HRTF impulse responses, and pages'
++// PCM) decode here; anything else goes to the host browser's decoder.
++static RefPtr<AudioBus> decodeWave(std::span<const uint8_t> data)
++{
++    if (data.size() < 12 || memcmp(data.data(), "RIFF", 4) || memcmp(data.data() + 8, "WAVE", 4))
++        return nullptr;
++    unsigned format = 0, channels = 0, bitsPerSample = 0;
++    float sampleRate = 0;
++    std::span<const uint8_t> samples;
++    for (size_t offset = 12; offset + 8 <= data.size();) {
++        size_t size = readLittleEndian(data, offset + 4, 4);
++        size_t body = offset + 8;
++        if (body + size > data.size())
++            size = data.size() - body;
++        if (!memcmp(data.data() + offset, "fmt ", 4) && size >= 16) {
++            format = readLittleEndian(data, body, 2);
++            channels = readLittleEndian(data, body + 2, 2);
++            sampleRate = readLittleEndian(data, body + 4, 4);
++            bitsPerSample = readLittleEndian(data, body + 14, 2);
++            // WAVE_FORMAT_EXTENSIBLE: the real format is the sub-format's first word.
++            if (format == 0xFFFE && size >= 26)
++                format = readLittleEndian(data, body + 24, 2);
++        } else if (!memcmp(data.data() + offset, "data", 4))
++            samples = data.subspan(body, size);
++        offset = body + size + (size & 1);
++    }
++    bool pcm = format == 1 && (bitsPerSample == 8 || bitsPerSample == 16 || bitsPerSample == 24 || bitsPerSample == 32);
++    bool floats = format == 3 && bitsPerSample == 32;
++    if (!(pcm || floats) || !channels || !sampleRate || samples.empty())
++        return nullptr;
++
++    size_t bytesPerSample = bitsPerSample / 8;
++    size_t frames = samples.size() / (bytesPerSample * channels);
++    auto bus = AudioBus::create(channels, frames);
++    bus->setSampleRate(sampleRate);
++    for (unsigned channel = 0; channel < channels; ++channel) {
++        auto destination = bus->channel(channel)->mutableSpan();
++        for (size_t frame = 0; frame < frames; ++frame) {
++            size_t at = (frame * channels + channel) * bytesPerSample;
++            uint32_t raw = readLittleEndian(samples, at, bytesPerSample);
++            float value;
++            if (floats)
++                value = std::bit_cast<float>(raw);
++            else if (bitsPerSample == 8)
++                value = (static_cast<int>(raw) - 128) / 128.0f;
++            else {
++                // Sign-extend from the sample's width.
++                int shift = 32 - bitsPerSample;
++                value = (static_cast<int32_t>(raw << shift) >> shift) / static_cast<float>(1u << (bitsPerSample - 1));
++            }
++            destination[frame] = value;
++        }
++    }
++    return bus;
++}
++
++static RefPtr<AudioBus> decodeOnHost(std::span<const uint8_t> data, float sampleRate)
++{
++    // The host answers on its main thread, which the engine thread must stay
++    // free to talk to: decoding is asked from WebCore's decoding threads only.
++    if (isMainThread())
++        return nullptr;
++    // On the heap: if the host never answers, the reply it may still write
++    // later must land somewhere valid, so a timed-out reply is leaked.
++    auto* reply = new HostDecodeReply;
++    callOnMainThread([data, sampleRate, reply] {
++        inception_audio_decode(data.data(), data.size(), sampleRate, reply);
++    });
++    auto deadline = MonotonicTime::now() + 60_s;
++    while (!reply->done.load() && MonotonicTime::now() < deadline)
++        emscripten_futex_wait(&reply->done, 0, 1000);
++    if (!reply->done.load())
++        return nullptr;
++    std::unique_ptr<HostDecodeReply> owned { reply };
++    if (reply->done.load() != 1 || !reply->samples)
++        return nullptr;
++    auto bus = AudioBus::create(reply->channels, reply->frames);
++    bus->setSampleRate(reply->sampleRate);
++    for (int channel = 0; channel < reply->channels; ++channel) {
++        auto destination = bus->channel(channel)->mutableSpan();
++        std::copy_n(reply->samples + static_cast<size_t>(channel) * reply->frames, reply->frames, destination.data());
++    }
++    free(reply->samples);
++    return bus;
++}
++
++RefPtr<AudioBus> createBusFromInMemoryAudioFile(std::span<const uint8_t> data, bool mixToMono, float sampleRate)
++{
++    RefPtr bus = decodeWave(data);
++    if (!bus)
++        bus = decodeOnHost(data, sampleRate);
++    if (!bus)
++        return nullptr;
++    if (mixToMono && bus->numberOfChannels() > 1)
++        bus = AudioBus::createByMixingToMono(*bus);
++    if (sampleRate && bus->sampleRate() != sampleRate)
++        bus = AudioBus::createBySampleRateConverting(*bus, false, sampleRate);
++    return bus;
++}
++
++// WebKit's audio resources (the HRTF database) are files in the engine's file
++// system.
++RefPtr<AudioBus> AudioBus::loadPlatformResource(const char* name, float sampleRate)
++{
++    auto contents = FileSystem::readEntireFile(makeString("/usr/share/inception/audio/"_s, String::fromLatin1(name), ".wav"_s));
++    if (!contents)
++        return nullptr;
++    return createBusFromInMemoryAudioFile(contents->span(), false, sampleRate);
++}
++
++} // namespace WebCore
++
++#endif // ENABLE(WEB_AUDIO)
+diff --git a/Source/WebCore/platform/audio/emscripten/FFTFrameEmscripten.cpp b/Source/WebCore/platform/audio/emscripten/FFTFrameEmscripten.cpp
+new file mode 100644
+index 0000000..594a15c
+--- /dev/null
++++ b/Source/WebCore/platform/audio/emscripten/FFTFrameEmscripten.cpp
+@@ -0,0 +1,151 @@
++/*
++ * Copyright (C) 2026 InceptionJS contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++// FFTFrame for the Emscripten port: an iterative radix-2 transform. Same layout
++// as the other ports without Accelerate: fftSize / 2 + 1 bins from DC to
++// Nyquist, unscaled forward, and an inverse scaled by 1 / fftSize so a round
++// trip returns the input.
++
++#include "config.h"
++
++#if ENABLE(WEB_AUDIO) && PLATFORM(EMSCRIPTEN)
++
++#include "FFTFrame.h"
++
++#include <complex>
++#include <numbers>
++#include <wtf/StdLibExtras.h>
++
++namespace WebCore {
++
++static constexpr int minFFTPow2Size = 2;
++static constexpr int maxFFTPow2Size = 24;
++
++static size_t binCount(unsigned fftSize)
++{
++    return fftSize / 2 + 1;
++}
++
++// In place, size a power of two; `inverse` flips the twiddle sign.
++static void transform(std::span<std::complex<float>> values, bool inverse)
++{
++    size_t size = values.size();
++    for (size_t i = 1, j = 0; i < size; ++i) {
++        size_t bit = size >> 1;
++        for (; j & bit; bit >>= 1)
++            j ^= bit;
++        j ^= bit;
++        if (i < j)
++            std::swap(values[i], values[j]);
++    }
++    for (size_t length = 2; length <= size; length <<= 1) {
++        double angle = 2 * std::numbers::pi / length * (inverse ? 1 : -1);
++        std::complex<double> step(std::cos(angle), std::sin(angle));
++        for (size_t start = 0; start < size; start += length) {
++            std::complex<double> twiddle(1);
++            for (size_t k = 0; k < length / 2; ++k) {
++                auto even = values[start + k];
++                auto odd = values[start + k + length / 2] * std::complex<float>(twiddle);
++                values[start + k] = even + odd;
++                values[start + k + length / 2] = even - odd;
++                twiddle *= step;
++            }
++        }
++    }
++}
++
++FFTFrame::FFTFrame(unsigned fftSize)
++    : m_FFTSize(fftSize)
++    , m_log2FFTSize(static_cast<unsigned>(log2(fftSize)))
++    , m_realData(binCount(fftSize))
++    , m_imagData(binCount(fftSize))
++{
++}
++
++FFTFrame::FFTFrame()
++    : m_FFTSize(0)
++    , m_log2FFTSize(0)
++{
++}
++
++FFTFrame::FFTFrame(const FFTFrame& frame)
++    : m_FFTSize(frame.m_FFTSize)
++    , m_log2FFTSize(frame.m_log2FFTSize)
++    , m_realData(binCount(frame.m_FFTSize))
++    , m_imagData(binCount(frame.m_FFTSize))
++{
++    memcpySpan(m_realData.span(), frame.realData().span());
++    memcpySpan(m_imagData.span(), frame.imagData().span());
++}
++
++void FFTFrame::initialize()
++{
++}
++
++FFTFrame::~FFTFrame() = default;
++
++void FFTFrame::doFFT(std::span<const float> data)
++{
++    Vector<std::complex<float>> values(m_FFTSize, [&](size_t i) {
++        return std::complex<float>(i < data.size() ? data[i] : 0);
++    });
++    transform(values.mutableSpan(), false);
++    auto real = m_realData.span();
++    auto imag = m_imagData.span();
++    for (size_t i = 0; i < binCount(m_FFTSize); ++i) {
++        real[i] = values[i].real();
++        imag[i] = values[i].imag();
++    }
++}
++
++void FFTFrame::doInverseFFT(std::span<float> data)
++{
++    auto real = m_realData.span();
++    auto imag = m_imagData.span();
++    Vector<std::complex<float>> values(m_FFTSize);
++    size_t bins = binCount(m_FFTSize);
++    for (size_t i = 0; i < bins; ++i)
++        values[i] = { real[i], imag[i] };
++    // A real signal's spectrum is conjugate-symmetric.
++    for (size_t i = bins; i < m_FFTSize; ++i)
++        values[i] = std::conj(values[m_FFTSize - i]);
++    transform(values.mutableSpan(), true);
++    float scale = 1.0f / m_FFTSize;
++    for (size_t i = 0; i < m_FFTSize && i < data.size(); ++i)
++        data[i] = values[i].real() * scale;
++}
++
++int FFTFrame::minFFTSize()
++{
++    return 1 << minFFTPow2Size;
++}
++
++int FFTFrame::maxFFTSize()
++{
++    return 1 << maxFFTPow2Size;
++}
++
++} // namespace WebCore
++
++#endif // ENABLE(WEB_AUDIO) && PLATFORM(EMSCRIPTEN)
+diff --git a/Source/cmake/OptionsEmscripten.cmake b/Source/cmake/OptionsEmscripten.cmake
+index dc018f6..8e69d04 100644
+--- a/Source/cmake/OptionsEmscripten.cmake
++++ b/Source/cmake/OptionsEmscripten.cmake
+@@ -49,7 +49,8 @@ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_VIDEO PRIVATE ON)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MEDIA_SOURCE PRIVATE ON)
+ # The embedder's ChromeClient takes the host view fullscreen.
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_FULLSCREEN_API PRIVATE ON)
+-WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEB_AUDIO PRIVATE OFF)
++# Web Audio renders in the engine and plays through an AudioWorklet in the host.
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEB_AUDIO PRIVATE ON)
+ # Pages get WebGL through the host browser's own WebGL (GraphicsContextGLEmscripten).
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEBGL PRIVATE ON)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MEDIA_STREAM PRIVATE OFF)
+@@ -84,6 +85,8 @@ if (NOT ENABLE_STATIC_JSC)
+ endif ()
+ 
+ SET_AND_EXPOSE_TO_BUILD(USE_GENERIC_EVENT_LOOP 1)
++# The HRTF database ships as WebKit's single concatenated impulse response file.
++SET_AND_EXPOSE_TO_BUILD(USE_CONCATENATED_IMPULSE_RESPONSES ${ENABLE_WEB_AUDIO})
+ SET_AND_EXPOSE_TO_BUILD(WTF_DEFAULT_EVENT_LOOP 0)
+ SET_AND_EXPOSE_TO_BUILD(USE_INSPECTOR_SOCKET_SERVER ${ENABLE_REMOTE_INSPECTOR})
+ SET_AND_EXPOSE_TO_BUILD(USE_UNIX_DOMAIN_SOCKETS ON)
