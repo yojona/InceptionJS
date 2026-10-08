@@ -44,8 +44,14 @@ void NetworkLoad::start(const ResourceRequest& request)
     addCookieHeader(m_request);
     if (!acceptLanguage().isEmpty() && !m_request.hasHTTPHeaderField(HTTPHeaderName::AcceptLanguage))
         m_request.setHTTPHeaderField(HTTPHeaderName::AcceptLanguage, acceptLanguage());
-    if (s_logging)
+    if (s_logging) {
         report("debug"_s, makeString("net "_s, m_request.httpMethod(), ' ', m_request.url().string().left(4000)));
+        // CORS: what a preflight asks for, and the origin of every cross-origin request.
+        if (m_request.httpMethod() == "OPTIONS"_s)
+            report("debug"_s, makeString("net   preflight method="_s, m_request.httpHeaderField(HTTPHeaderName::AccessControlRequestMethod), " headers="_s, m_request.httpHeaderField(HTTPHeaderName::AccessControlRequestHeaders)));
+        if (auto origin = m_request.httpHeaderField(HTTPHeaderName::Origin); !origin.isEmpty())
+            report("debug"_s, makeString("net   origin="_s, origin));
+    }
     m_curl = CurlRequest::create(m_request, *this);
     m_curl->resume();
 }
@@ -78,8 +84,11 @@ void NetworkLoad::curlDidReceiveResponse(CurlRequest& curl, CurlResponse&& curlR
 
     storeResponseCookies(m_request, curlResponse);
     ResourceResponse response(curlResponse);
-    if (s_logging)
+    if (s_logging) {
         report("debug"_s, makeString("net "_s, response.httpStatusCode(), ' ', m_request.url().string().left(200)));
+        if (auto allowOrigin = response.httpHeaderField(HTTPHeaderName::AccessControlAllowOrigin); !allowOrigin.isEmpty() || m_request.httpMethod() == "OPTIONS"_s)
+            report("debug"_s, makeString("net   allow-origin="_s, allowOrigin, " allow-credentials="_s, response.httpHeaderField(HTTPHeaderName::AccessControlAllowCredentials), " allow-headers="_s, response.httpHeaderField(HTTPHeaderName::AccessControlAllowHeaders)));
+    }
     if (response.isRedirection() && !response.httpHeaderField(HTTPHeaderName::Location).isEmpty()) {
         followRedirect(WTF::move(response));
         return;
