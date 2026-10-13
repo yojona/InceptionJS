@@ -141,9 +141,19 @@ test('another site gets none of the profile\'s cookies from a page of this site'
   expect(cookiesOf(await evaluateIn(page, 1, 'document.body.innerText'))).toEqual({ secret: 's3' });
 });
 
-test('a window has one tab, and what a page opens is a window', async ({ page }) => {
+test('a window has one tab, and what a page opens is a window, in the engine of its site', async ({ page }) => {
   await start(page);
   await expect(view(page).evaluate((el) => el.createTab('https://example.com/'))).rejects.toThrow(/one tab/);
+  await evaluateIn(page, 1, `document.body.innerHTML = '<a id="go" href="https://www.iana.org/help/example-domains" target="_blank" style="position:fixed;left:0;top:0;width:400px;height:300px;display:block">open</a>'; 1`);
+  const box = await view(page).boundingBox();
+  await page.mouse.click(box.x + 50, box.y + 50);
+  await expect.poll(() => view(page).evaluate((el) => el.windows.length), { timeout: 20_000 }).toBe(2);
+  const popup = await view(page).evaluate((el) => el.windows[1].window);
+  await waitFor(page, popup, 'https://www.iana.org/help/example-domains');
+  const list = await engines(page);
+  expect(list.find((e) => e.windows.includes(popup)).site).toBe('iana.org');
+  expect(list.find((e) => e.windows.includes(1)).site).toBe('example.com');
+  expect(await view(page).evaluate((el) => el.tabs.length)).toBe(1);
 });
 
 test('past the engine budget, windows of a site share its engine and sites still never share one', async ({ page }) => {
