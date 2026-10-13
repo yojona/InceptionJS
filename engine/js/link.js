@@ -15,7 +15,7 @@
 addToLibrary({
   $inceptionLinks: { table: null },
 
-  inception_link_install__deps: ['$inceptionLinks', 'malloc', 'free', 'inception_loop_schedule'],
+  inception_link_install__deps: ['$inceptionLinks', '$inceptionGuard', 'malloc', 'free', 'inception_loop_schedule'],
   inception_link_install: () => {
     if (inceptionLinks.table) return;
     const table = inceptionLinks.table = new Map();
