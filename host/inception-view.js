@@ -315,6 +315,12 @@ export class InceptionView extends HTMLElement {
 
   get #runtime() { return this.#primary?.runtime ?? null; }
 
+  // A view whose window 1 has no display of its own: an engine host for
+  // windows shown elsewhere (exportWindow, attached documents).
+  #headless() {
+    return this.hasAttribute('headless');
+  }
+
   #isolation() {
     const value = this.getAttribute('isolation') ?? config.isolation;
     return value === 'window' || value === 'site' ? value : 'shared';
@@ -453,6 +459,19 @@ export class InceptionView extends HTMLElement {
     (record?.slot?.adapter ?? this.#primary.adapter).send(command, args);
   }
 
+  // Development aid: the engines of this view, [{engine, site?, windows,
+  // memory}] (memory: bytes of the engine's linear memory).
+  async debugEngines() {
+    this.#requireDebug();
+    await this.ready;
+    return this.#slots.filter((slot) => !slot.closed).map((slot) => ({
+      engine: slot.number,
+      ...(typeof slot.site === 'string' ? { site: slot.site } : {}),
+      windows: [...this.#windows.values()].filter((record) => record.slot === slot).map((record) => record.id),
+      memory: slot.runtime.memory()?.byteLength ?? 0,
+    }));
+  }
+
   // Development aid: the profile service (isolation 'window'), or null.
   async debugProfileService() {
     this.#requireDebug();
@@ -506,7 +525,7 @@ export class InceptionView extends HTMLElement {
     if (!['auto', 'bitmap', 'pixels'].includes(frames)) throw new TypeError("frames is 'auto', 'bitmap' or 'pixels'");
     this.#requireHost('exportWindow()');
     const record = this.#windows.get(id);
-    if (!record || record.closed || id === 1) throw new Error(`no window ${id} to export (window 1 is the view itself)`);
+    if (!record || record.closed || (id === 1 && !this.#headless())) throw new Error(`no window ${id} to export (window 1 is the view itself, unless it is headless)`);
     const { port1, port2 } = new MessageChannel();
     const served = serveDisplay(port1, {
       frames,
@@ -514,6 +533,7 @@ export class InceptionView extends HTMLElement {
       sendMedia: (command, args) => record.slot.runtime.send(command, args),
       sendFile: (name, bytes) => record.channel.sendFile(name, bytes),
       onVisibility: (visible) => this.#setVisible(record, visible),
+      onFullscreen: (active, error) => record.channel.send('fullscreen.changed', { active, ...(error ? { error } : {}) }),
       onClose: () => {
         if (record.display === served) this.#detachDisplay(record);
       },
@@ -525,7 +545,7 @@ export class InceptionView extends HTMLElement {
   // <inception-window> asks to show window `id`; returns a detach function.
   [ATTACH_DISPLAY](id, element) {
     const record = this.#windows.get(id);
-    if (!record || record.closed || id === 1) throw new Error(`no window ${id} to show`);
+    if (!record || record.closed || (id === 1 && !this.#headless())) throw new Error(`no window ${id} to show`);
     const display = element.createDisplay((command, args) => record.channel.send(command, args));
     display.provenance = element.provenance;
     this.#attachRecordDisplay(record, display, display.sink);
@@ -664,10 +684,14 @@ export class InceptionView extends HTMLElement {
     primary.root = this.#main;
     primary.windows.set(1, 1);
     primary.locals.set(1, 1);
-    // Window 1 is this view's canvas.
+    // Window 1 is this view's canvas, unless the view is headless: then it is
+    // hidden until exportWindow(1) or an <inception-window> shows it.
+    const headless = this.#headless();
     this.#display = new Display({ element: this, shadow: this.#shadow, canvas: this.#canvas, textInput: this.#textInput, send: (command, args) => this.#main.channel.send(command, args) });
-    this.#main.display = this.#display;
-    this.#mainSink = primary.runtime.attachDisplay(1, this.#display.sink);
+    if (!headless) {
+      this.#main.display = this.#display;
+      this.#main.detachSink = primary.runtime.attachDisplay(1, this.#display.sink);
+    }
     this.#server = this.#createServer();
     const [serverSide, clientSide] = createInPagePair();
     this.#server.connect(serverSide);
@@ -709,7 +733,12 @@ export class InceptionView extends HTMLElement {
     this.#main.size = { width, height };
     if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');
     this.dataset.renderer = ready.renderer;
-    this.#display.start({ input: this.#inputSender(this.#main), clipboard: policy().clipboard !== false });
+    if (headless) {
+      this.#main.visible = false;
+      this.#main.channel.send('window.visibility', { visible: false });
+    } else {
+      this.#display.start({ input: this.#inputSender(this.#main), clipboard: policy().clipboard !== false });
+    }
     if (document.activeElement === this) this.focusInput();
 
     document.addEventListener('fullscreenchange', () => {
@@ -793,8 +822,6 @@ export class InceptionView extends HTMLElement {
 
   #pageCode = null;
   #mediaCapabilities = null;
-  // Detaches window 1's display from the engine that shows it.
-  #mainSink = null;
   #rebindMainAgent = null;
   #opfsUsable = true;
 
@@ -942,7 +969,7 @@ export class InceptionView extends HTMLElement {
     if (name === 'window.focus') return record?.target.dispatchEvent(new CustomEvent('windowfocusrequest', { detail: { window: record.id } }));
     if (name === 'fullscreen') this.#setFullscreen(record, data.active);
     if (name.startsWith('media.') && !name.startsWith('media.fetch.')) this.#mediaFor(data, slot)?.handleEvent(name, data);
-    if (name.startsWith('eme.')) slot.eme.handleEvent(name, data);
+    if (name.startsWith('eme.')) this.#emeOf(slot).handleEvent(name, data);
     if (name.startsWith('download.')) this.#downloads?.handleEvent(name, data);
     if (name.startsWith('media.fetch.')) this.#mediaHosts(slot).forEach((media) => media.handleFetchEvent(name, data));
     if (name.startsWith('tab.') && record) {
@@ -968,6 +995,17 @@ export class InceptionView extends HTMLElement {
       else if (this.#mayWriteClipboard()) writeClipboard(data.items);
     }
     if (record && record !== this.#main) record.channel.dispatchEvent(new CustomEvent(name, { detail: data }));
+  }
+
+  // Where an engine's EME runs: in the document of the display that shows its
+  // one window, when that display is in another document (its videos play
+  // there, and MediaKeys belong to the document of their video); here
+  // otherwise. An engine with several windows keeps it here: its EME objects
+  // do not say which window they are for.
+  #emeOf(slot) {
+    const records = [...this.#windows.values()].filter((record) => record.slot === slot);
+    const display = records.length === 1 ? records[0].display : null;
+    return display?.eme ?? slot.eme;
   }
 
   // Web Audio of an engine plays in this document, unless the window whose page
@@ -1141,19 +1179,18 @@ export class InceptionView extends HTMLElement {
     if (!isMain) record.channel.rebind(slot.adapter);
     record.tabs.replace(record.tabs.active, tab);
     // The display now shows the new engine's frames.
+    if (record.display) {
+      record.detachSink?.();
+      record.detachSink = slot.runtime.attachDisplay(slot.localOf(record.id), record.display.sink);
+    }
     if (isMain) {
-      this.#mainSink?.();
-      this.#mainSink = slot.runtime.attachDisplay(1, this.#display.sink);
       this.#media.rebind((command, args) => slot.runtime.send(command, args), { eme: slot.eme, audio: slot.audio });
       this.#rebindMainAgent?.(slot.runtime);
     } else {
-      if (record.display) {
-        record.detachSink?.();
-        record.detachSink = slot.runtime.attachDisplay(slot.localOf(record.id), record.display.sink);
-      }
       record.media?.local.rebind((command, args) => slot.runtime.send(command, args), { eme: slot.eme, audio: slot.audio });
-      record.media?.host.reset?.();
     }
+    if (record.media?.host !== record.media?.local) record.media?.host.reset?.();
+    if (isMain && record.display?.media) record.display.media.reset?.();
     record.channel.send('window.visibility', { visible: !!record.visible });
     if (!isMain || record.channel.lastSize) record.channel.send('resize', size);
     const { url, method, body, contentType, referrer, initiator } = nav;
@@ -1413,6 +1450,9 @@ export class InceptionView extends HTMLElement {
   // this document shows it.
   async #setFullscreen(record, active) {
     if (!record) return;
+    // A display in another document puts its own element in fullscreen and
+    // says how it went (serveDisplay's onFullscreen).
+    if (record.display?.post) return record.display.post('fullscreen', { active: !!active });
     const element = record === this.#main ? this : record.display?.element;
     try {
       if (!element) throw new Error('no element shows this window here');
