@@ -1,5 +1,5 @@
-import { attachInput, writeClipboard } from './input.js';
-import { SelectMenu, answerDialog, chooseFiles } from './ui.js';
+import { writeClipboard } from './input.js';
+import { answerDialog, chooseFiles } from './ui.js';
 import { Preferences } from './preferences.js';
 import { ENGINE_VERSION, defaultUserAgent } from './identity.js';
 import { PROVENANCE_STYLE, Provenance } from './provenance.js';
@@ -8,12 +8,13 @@ import { EncryptedMedia } from './eme.js';
 import { AudioHost } from './audio.js';
 import { Modules } from './modules.js';
 import { Downloads } from './downloads.js';
-import { Tabs } from './tabs.js';
 import { resolvePolicy } from './policy.js';
 import { EngineRuntime } from './runtime.js';
 import { WasmTranslator } from './wasm-translator.js';
-import { ProtocolClient, ProtocolServer, createInPagePair } from './protocol.js';
-import { AgentClient, AgentHost } from './agent.js';
+import { ProtocolClient, ProtocolError, ProtocolServer, createInPagePair } from './protocol.js';
+import { AgentClient, AgentHost, registerAgentMethods } from './agent.js';
+import { Display, serveDisplay } from './display.js';
+import { ATTACH_DISPLAY, HostWindow, InceptionWindow } from './window.js';
 
 const config = { engineUrl: null, relayUrl: null, binaryenUrl: null, storage: null, policy: null, debug: false, agent: null, webglContexts: 0, modules: {} };
 const policy = () => resolvePolicy(config.policy);
@@ -54,11 +55,16 @@ const VIEW_EVENTS = ['security.state', 'security.certificateError', 'navigate', 
 // Names the view dispatches them under where the engine's would clash with
 // the element's own DOM events.
 // What the view's own client negotiates; remote clients get less (serve()).
-const PROTOCOL_CAPABILITIES = ['view', 'history', 'find', 'observe'];
+const PROTOCOL_CAPABILITIES = ['view', 'history', 'find', 'observe', 'windows'];
 const EVENT_CAPABILITY = { console: 'observe', 'find.result': 'find' };
 const DOM_EVENT_NAMES = { 'security.state': 'securitystate', 'security.certificateError': 'certificateerror', contextmenu: 'contextmenurequest', 'navigation.state': 'navigationstate', 'find.result': 'findresult', 'agent.action': 'agentaction', 'agent.blocked': 'agentblocked' };
 // Events of the agent namespace (host/agent.js), re-dispatched the same way.
 const AGENT_EVENTS = ['control', 'agent.action', 'agent.blocked'];
+// Events of the windows capability, on the view.
+const WINDOW_EVENTS = ['windows.created', 'windows.closed', 'windows.updated'];
+const WINDOW_DOM_EVENTS = { 'windows.created': 'windowcreated', 'windows.closed': 'windowclosed', 'windows.updated': 'windowupdated' };
+// Engine events a window's display draws.
+const DISPLAY_EVENT_NAMES = new Set(['cursor', 'select.show', 'select.update', 'select.hide']);
 
 // <inception-view src gpu="auto|on|off" muted media profile fresh-profile user-agent
 //                 provenance-corner provenance="off" agent>
@@ -77,8 +83,14 @@ export class InceptionView extends HTMLElement {
   #mediaLayer;
   #textInput;
   #shadow;
-  #selectMenu = null;
+  #display;
   #provenance;
+  // Every window of this view's engine, by id; window 1 is the view itself.
+  #windows = new Map();
+  #windowHandles = new Map();
+  #pendingWindows = [];
+  #eme = null;
+  #soundAllowed = false;
   #preferences = new Preferences((changed) => this.#runtime?.send('preferences', changed));
   #media = null;
   #audio = null;
@@ -89,17 +101,25 @@ export class InceptionView extends HTMLElement {
   // clipboard is written only soon after (policy.clipboard 'user').
   #lastInput = -Infinity;
   #ready = null;
-  #state = { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, zoom: 1 };
-  #security = null;
-  #agentHost = null;
   #agentClient = new AgentClient(async (method, params) => {
     await this.ready;
     return this.#client.request(method, params);
   });
-  #tabs = new Tabs(this, (command, args) => this.#runtime?.send(command, args), policy);
+  // Window 1: the view's own page state, tabs and agent.
+  #main;
+  get #state() { return this.#main.state; }
+  get #tabs() { return this.#main.tabs; }
+  get #agentHost() { return this.#main.agent; }
 
   constructor() {
     super();
+    const view = this;
+    const runtime = {
+      send: (command, args) => view.#runtime?.send(command, args),
+      sendFile: (name, bytes) => view.#runtime?.sendFile(name, bytes),
+      get crash() { return view.#runtime?.crash; },
+    };
+    this.#main = new HostWindow({ id: 1, runtime, target: this, policy });
     for (const type of ['keydown', 'pointerdown', 'copy', 'cut'])
       this.addEventListener(type, (event) => event.isTrusted && (this.#lastInput = performance.now()), { capture: true });
     const shadow = this.attachShadow({ mode: 'open' });
@@ -116,6 +136,7 @@ export class InceptionView extends HTMLElement {
     this.#mediaLayer = shadow.querySelector('.media');
     this.#textInput = shadow.querySelector('textarea');
     this.#shadow = shadow;
+    this.#windows.set(1, this.#main);
     this.#provenance = new Provenance(shadow, this, (hidden) => this.#provenanceHidden(hidden));
   }
 
@@ -128,7 +149,7 @@ export class InceptionView extends HTMLElement {
   // The connection of the page shown, from the engine: {url, scheme, secure,
   // httpVersion?, certificate?: {subject, validFrom, validUntil, dnsNames,
   // verificationError}}, for the embedder's own address bar.
-  get securityState() { return this.#security; }
+  get securityState() { return this.#main.security; }
 
   // Tabs share this view and its engine; one is shown (host/tabs.js).
   get tabs() { return this.#tabs.list(); }
@@ -254,8 +275,9 @@ export class InceptionView extends HTMLElement {
       throw new Error('Debug methods are off: set the debug attribute or Inception.configure({ debug: true })');
   }
 
-  // Development aid: evaluates script in the engine's main frame.
-  async debugEvaluate(source) {
+  // Development aid: evaluates script in the main frame of a window's shown
+  // tab (window 1 unless `window` says otherwise).
+  async debugEvaluate(source, { window = 1 } = {}) {
     this.#requireDebug();
     await this.ready;
     const id = ++this.#debugRequests;
@@ -266,7 +288,7 @@ export class InceptionView extends HTMLElement {
         resolve(e.detail.value);
       };
       this.#runtime.addEventListener('debug.result', listener);
-      this.#runtime.send('debug.evaluate', { id, source });
+      this.#runtime.send('debug.evaluate', { id, source, ...(window !== 1 ? { window } : {}) });
     });
   }
 
@@ -290,10 +312,102 @@ export class InceptionView extends HTMLElement {
   // It may negotiate only `capabilities`: by default just 'view' (navigation,
   // tabs, state). The rest need naming here: 'find' (a text search is an oracle
   // on the page's content), 'history' (the browsing history), 'observe' (the
-  // page's console) and 'agent' (the agent namespace, when it is enabled).
-  // ['agent'] alone keeps an agent runtime to the policed agent namespace.
-  serve(transport, { capabilities = ['view'] } = {}) {
-    return this.#server.connect(transport, { allow: capabilities });
+  // page's console), 'agent' (the agent namespace, when it is enabled) and
+  // 'windows' (list, open, resize and close the engine's windows, and bind to
+  // another window in hello). ['agent'] alone keeps an agent runtime to the
+  // policed agent namespace. `window`: the window it is bound to (default 1);
+  // it acts on that window only.
+  serve(transport, { capabilities = ['view'], window = 1 } = {}) {
+    return this.#server.connect(transport, { allow: capabilities, window });
+  }
+
+  // The windows of this view's engine, window 1 (the view) first.
+  get windows() {
+    return [...this.#windows.values()].map((record) => record.info());
+  }
+
+  // Opens another window of this view's engine: same profile, cookies,
+  // storage and network. It is hidden (paints nothing) until a display shows
+  // it: <inception-window> here, or exportWindow() for another document.
+  async openWindow({ width = 800, height = 600, url = '', deviceScaleFactor = devicePixelRatio } = {}) {
+    await this.ready;
+    const { window } = await this.#client.request('windows.create', { width, height, url, deviceScaleFactor });
+    return this.window(window);
+  }
+
+  // The handle of a window other than 1, or null.
+  window(id) {
+    return this.#windowHandles.get(id) ?? null;
+  }
+
+  // A display channel for window `id` (see host/display.js): pass the port to
+  // another document, which shows the window with createDisplay(canvas, port).
+  // The window's earlier display, if any, is replaced. Video, audio and
+  // dialogs stay in this document.
+  exportWindow(id) {
+    const record = this.#windows.get(id);
+    if (!record || record.closed || id === 1) throw new Error(`no window ${id} to export (window 1 is the view itself)`);
+    const { port1, port2 } = new MessageChannel();
+    const served = serveDisplay(port1, {
+      send: this.#inputSender(record),
+      onVisibility: (visible) => this.#setVisible(record, visible),
+      onClose: () => {
+        if (record.display === served) this.#detachDisplay(record);
+      },
+    });
+    this.#attachRecordDisplay(record, served, served.sink);
+    return port2;
+  }
+
+  // <inception-window> asks to show window `id`; returns a detach function.
+  [ATTACH_DISPLAY](id, element) {
+    const record = this.#windows.get(id);
+    if (!record || record.closed || id === 1) throw new Error(`no window ${id} to show`);
+    const display = element.createDisplay((command, args) => record.channel.send(command, args));
+    display.provenance = element.provenance;
+    this.#attachRecordDisplay(record, display, display.sink);
+    display.start({ input: this.#inputSender(record), clipboard: policy().clipboard !== false });
+    // Its videos move under this display and play with the view's level.
+    if (record.media) {
+      record.media.host.setLayer(element.mediaLayer);
+      record.media.host.setMaster({ volume: this.#volume, muted: this.#muted });
+    }
+    display.provenance?.navigated(record.state.url);
+    if (record.agent) element.dataset.control = record.agent.control === 'agent' ? 'agent' : '';
+    return () => {
+      display.stop();
+      if (record.display === display) this.#detachDisplay(record);
+    };
+  }
+
+  #attachRecordDisplay(record, display, sink) {
+    if (record.display && record.display !== display) record.display.close?.();
+    record.display = display;
+    record.detachSink?.();
+    record.detachSink = this.#runtime.attachDisplay(record.id, sink);
+    this.#setVisible(record, true);
+  }
+
+  #detachDisplay(record) {
+    record.detachSink?.();
+    record.detachSink = null;
+    record.display = null;
+    if (record.media) record.media.host.setMaster({ volume: 0, muted: true });
+    if (!record.closed) this.#setVisible(record, false);
+  }
+
+  #setVisible(record, visible) {
+    if (record.visible === visible || record.closed) return;
+    record.visible = visible;
+    record.channel.send('window.visibility', { visible });
+    this.#server?.emit('windows.updated', record.info(), 'windows');
+  }
+
+  // Input from a display of `record`: the agent's watch takes control back
+  // from it first.
+  #inputSender(record) {
+    const send = (command, args) => record.channel.send(command, args);
+    return record.agent ? record.agent.watchInput(send) : send;
   }
 
   // The agent namespace (host/agent.js), or null unless the embedder enabled
@@ -342,50 +456,66 @@ export class InceptionView extends HTMLElement {
       if (!acquired) throw new Error(`The profile "${profile}" is already open in another tab or window. Close it there, or open this page with a different profile.`);
     }
     navigator.storage?.persist?.().catch(() => {});
-    this.#runtime = new EngineRuntime({ engineUrl: config.engineUrl, relayUrl: config.relayUrl, canvas: this.#canvas, maxMemoryMB: config.maxMemoryMB });
+    this.#runtime = new EngineRuntime({ engineUrl: config.engineUrl, relayUrl: config.relayUrl, maxMemoryMB: config.maxMemoryMB });
+    // Window 1 is this view's canvas.
+    this.#display = new Display({ element: this, shadow: this.#shadow, canvas: this.#canvas, textInput: this.#textInput, send: (command, args) => this.#main.channel.send(command, args) });
+    this.#main.display = this.#display;
+    this.#runtime.attachDisplay(1, this.#display.sink);
     this.#server = this.#createServer();
     const [serverSide, clientSide] = createInPagePair();
     this.#server.connect(serverSide);
     this.#client = new ProtocolClient(clientSide);
     for (const name of [...VIEW_EVENTS, ...AGENT_EVENTS])
       this.#client.addEventListener(name, (e) => this.dispatchEvent(new CustomEvent(DOM_EVENT_NAMES[name] ?? name, { detail: e.detail })));
+    for (const name of WINDOW_EVENTS)
+      this.#client.addEventListener(name, (e) => this.dispatchEvent(new CustomEvent(WINDOW_DOM_EVENTS[name], { detail: e.detail })));
 
     // Videos play in the host page, under the canvas (host/media.js).
     // `autoplay-sound`: the embedder knows playback with sound is allowed here.
     const soundAllowed = this.hasAttribute('autoplay-sound') || policy().autoplaySound;
-    const eme = new EncryptedMedia((command, args) => this.#runtime.send(command, args), { onKeysUsable: (mediaKeys) => this.#media.keysUsable(mediaKeys) });
+    this.#soundAllowed = soundAllowed;
+    const eme = new EncryptedMedia((command, args) => this.#runtime.send(command, args), { onKeysUsable: (mediaKeys) => this.#mediaHosts().forEach((media) => media.keysUsable(mediaKeys)) });
+    this.#eme = eme;
     const audio = new AudioHost(() => this.#runtime.memory(), { soundAllowed });
     this.#audio = audio;
     this.#media = new MediaHost(this.#mediaLayer, (command, args) => this.#runtime.send(command, args), { soundAllowed, eme, audio });
     this.#applyLevel();
     const modules = new Modules(this, (command, args) => this.#runtime.send(command, args), config.modules);
     const downloads = new Downloads(this, (command, args) => this.#runtime.send(command, args), policy);
-    this.#runtime.onDownloadChunk = (chunk) => (this.#media.ownsFetch(chunk.id) ? this.#media.fetchChunk(chunk) : downloads.chunk(chunk));
+    this.#runtime.onDownloadChunk = (chunk) => {
+      const media = this.#mediaHosts().find((host) => host.ownsFetch(chunk.id));
+      return media ? media.fetchChunk(chunk) : downloads.chunk(chunk);
+    };
     this.#runtime.onAudioDecode = (request) => audio.decode(request, (size) => this.#runtime.malloc(size));
     this.#runtime.onEngineEvent = (name, data) => {
-      if (name === 'cursor') this.#canvas.style.cursor = data.cursor;
-      if (name === 'fullscreen') this.#setFullscreen(data.active);
-      if (name.startsWith('media.') && !name.startsWith('media.fetch.')) this.#media.handleEvent(name, data);
+      const record = this.#recordOf(data);
+      if (name === 'window.created' || name === 'window.opened') return this.#windowCreated(name, data);
+      if (name === 'window.closed') return this.#windowClosed(data.window);
+      if (name === 'window.focus') return record?.target.dispatchEvent(new CustomEvent('windowfocusrequest', { detail: { window: record.id } }));
+      if (name === 'fullscreen') this.#setFullscreen(record, data.active);
+      if (name.startsWith('media.') && !name.startsWith('media.fetch.')) this.#mediaFor(data)?.handleEvent(name, data);
       if (name.startsWith('eme.')) eme.handleEvent(name, data);
       if (name.startsWith('download.')) downloads.handleEvent(name, data);
-      if (name.startsWith('media.fetch.')) this.#media.handleFetchEvent(name, data);
-      if (name.startsWith('tab.')) {
-        this.#tabs.handleEvent(name, data);
-        if (name === 'tab.activated') this.#showTab(data.tab);
+      if (name.startsWith('media.fetch.')) this.#mediaHosts().forEach((media) => media.handleFetchEvent(name, data));
+      if (name.startsWith('tab.') && record) {
+        record.tabs.handleEvent(name, data);
+        if (name === 'tab.activated') this.#showTab(record, data.tab);
       }
       if (name === 'audio.open') audio.open(data);
       if (name === 'audio.close') audio.close(data);
       if (name.startsWith('permission.') || name.startsWith('geolocation.') || name.startsWith('notification.')) modules.handleEvent(name, data);
-      if (name === 'select.show') this.#selectMenu.show(this, data);
-      if (name === 'select.update') this.#selectMenu.update(data);
-      if (name === 'select.hide') this.#selectMenu.hide(data.id);
-      if (name === 'file.choose') chooseFiles(this, this.#runtime, data);
-      if (name === 'field.focus') this.#provenance.fieldFocused(data.kind, data.origin);
+      if (DISPLAY_EVENT_NAMES.has(name)) {
+        const display = record?.display;
+        if (display?.handleEvent) display.handleEvent(name, data);
+        else display?.post?.(name, data);
+      }
+      if (name === 'file.choose' && record) chooseFiles(record.target, record.channel, data);
+      if (name === 'field.focus') this.#provenanceOf(record)?.fieldFocused(data.kind, data.origin);
       if (name === 'clipboard.write' && this.#mayWriteClipboard()) writeClipboard(data.items);
+      if (record && record !== this.#main) record.channel.dispatchEvent(new CustomEvent(name, { detail: data }));
     };
-    this.#selectMenu = new SelectMenu(this.#shadow, (command, args) => this.#runtime.send(command, args));
-    this.#runtime.onAsk = (question) => answerDialog(this, question, policy);
-    this.#runtime.onMediaAppend = ({ id, sb, seq, bytes }) => this.#media.append(id, sb, seq, bytes);
+    this.#runtime.onAsk = (question) => answerDialog(this.#recordOf(question)?.target ?? this, question, policy);
+    this.#runtime.onMediaAppend = ({ id, sb, seq, bytes }) => this.#mediaHosts().find((media) => media.hasPlayer(id))?.append(id, sb, seq, bytes);
     // binaryen next to the host modules (the package ships it there), or in the
     // repository's node_modules; resolved from this module, so a plain
     // <script type=module> setup needs no bundler.
@@ -395,7 +525,7 @@ export class InceptionView extends HTMLElement {
     // Activation is sticky for the host page's lifetime: the first gesture
     // anywhere in it lets every later video play with sound.
     const gesture = () => {
-      this.#media.userGesture();
+      for (const media of this.#mediaHosts()) media.userGesture();
       audio.userGesture();
     };
     for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, gesture, { capture: true });
@@ -409,36 +539,161 @@ export class InceptionView extends HTMLElement {
 
     const { width, height } = this.#cssSize();
     const gpu = this.getAttribute('gpu') ?? 'auto';
-    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: await probeMediaCapabilities(), wasmPolyfill, pageShims: pageShims.replaceAll('__INCEPTION_VERSION__', ENGINE_VERSION) + userStylesShim(this.userStyles ?? config.userStyles), wispUrl: config.relayUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? defaultUserAgent(), preferences: this.#preferences.resolved(), webglContexts: config.webglContexts | 0, url: this.getAttribute('src') ?? '', debug: this.#debugEnabled() });
+    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: await probeMediaCapabilities(), wasmPolyfill, pageShims: pageShims.replaceAll('__INCEPTION_VERSION__', ENGINE_VERSION) + userStylesShim(this.userStyles ?? config.userStyles), wispUrl: config.relayUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? defaultUserAgent(), preferences: this.#preferences.resolved(), webglContexts: config.webglContexts | 0, popups: policy().popups, url: this.getAttribute('src') ?? '', debug: this.#debugEnabled() });
     const ready = await engineReady;
     this.#tabs.started(ready.tab ?? 1);
-    this.#runtime.addEventListener('crash', (e) => this.dispatchEvent(new CustomEvent('crash', { detail: { reason: e.detail.message, stack: e.detail.stack, ...(e.detail.kind ? { kind: e.detail.kind } : {}) } })));
+    this.#main.size = { width, height };
+    this.#runtime.addEventListener('crash', (e) => this.#crashed(e.detail));
     if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');
     this.dataset.renderer = ready.renderer;
-    const send = (command, args) => this.#runtime.send(command, args);
-    attachInput(this, this.#canvas, this.#textInput, this.#agentHost ? this.#agentHost.watchInput(send) : send, { clipboard: policy().clipboard !== false });
+    this.#display.start({ input: this.#inputSender(this.#main), clipboard: policy().clipboard !== false });
     if (document.activeElement === this) this.focusInput();
 
     document.addEventListener('fullscreenchange', () => {
-      if (document.fullscreenElement !== this) this.#runtime.send('fullscreen.changed', { active: false });
+      if (document.fullscreenElement !== this) this.#main.channel.send('fullscreen.changed', { active: false });
       this.dispatchEvent(new CustomEvent('fullscreen', { detail: { active: document.fullscreenElement === this } }));
     });
-
-    new ResizeObserver(() => {
-      const size = this.#cssSize();
-      this.#runtime.send('resize', { ...size, deviceScaleFactor: devicePixelRatio });
-    }).observe(this);
     return ready;
   }
 
-  // Another tab is shown: the view's own state and events follow it.
-  #showTab(id) {
-    const tab = this.#tabs.get(id);
+  // The engine crashed: every window's connections and handles hear it, with
+  // the windows it took down.
+  #crashed(crash) {
+    const windows = [...this.#windows.keys()];
+    const detail = { reason: crash.message, stack: crash.stack, ...(crash.kind ? { kind: crash.kind } : {}), windows };
+    this.dispatchEvent(new CustomEvent('crash', { detail }));
+    for (const record of this.#windows.values()) {
+      if (record === this.#main) continue;
+      record.channel.dispatchEvent(new CustomEvent('crash', { detail: crash }));
+      record.target.dispatchEvent(new CustomEvent('crash', { detail }));
+      this.#server.emit('crash', { ...crash, windows }, 'view', record.id);
+    }
+  }
+
+  // The window an engine event or question belongs to; window 1 when it names
+  // none (engine-wide events, an engine without windows).
+  #recordOf(data) {
+    const id = data?.window;
+    return Number.isInteger(id) ? this.#windows.get(id) ?? null : this.#main;
+  }
+
+  #mediaHosts() {
+    const hosts = this.#media ? [this.#media] : [];
+    for (const record of this.#windows.values()) if (record.media) hosts.push(record.media.host);
+    return hosts;
+  }
+
+  #mediaFor(data) {
+    const record = this.#recordOf(data);
+    if (!record || record === this.#main) return this.#media;
+    return record.media?.host ?? null;
+  }
+
+  #provenanceOf(record) {
+    if (!record || record === this.#main) return this.#provenance;
+    return record.display?.provenance ?? null;
+  }
+
+  // A window appeared in the engine: the embedder's (openWindow,
+  // windows.create) or a page's (window.open with popups: 'window').
+  #windowCreated(name, data) {
+    const id = data.window;
+    if (!Number.isInteger(id) || id < 2 || this.#windows.has(id)) return;
+    let handle = null;
+    const target = { dispatchEvent: (event) => handle.dispatchEvent(event) };
+    const record = new HostWindow({ id, runtime: this.#runtime, target, policy });
+    handle = new InceptionWindow({
+      id,
+      record,
+      connect: (transport) => this.#server.connect(transport, { window: id }),
+      serve: (transport, { capabilities = ['view'] } = {}) => this.#server.connect(transport, { allow: capabilities, window: id }),
+      events: [...VIEW_EVENTS, ...AGENT_EVENTS].map((event) => [event, DOM_EVENT_NAMES[event] ?? event]),
+      capabilities: this.#capabilities(),
+      agentEnabled: this.#agentEnabled(),
+    });
+    record.target = handle;
+    if (Number.isInteger(data.tab)) record.tabs.started(data.tab);
+    // Its videos play muted, off screen, until a display here shows it.
+    const host = new MediaHost(document.createElement('div'), (command, args) => this.#runtime.send(command, args), { soundAllowed: this.#soundAllowed, eme: this.#eme, audio: this.#audio });
+    host.setMaster({ volume: 0, muted: true });
+    record.media = { host };
+    if (this.#agentEnabled()) record.agent = this.#createAgent(record);
+    this.#windows.set(id, record);
+    this.#windowHandles.set(id, handle);
+    if (name === 'window.created') this.#pendingWindows.shift()?.(record);
+    this.#server.emit('windows.created', record.info(), 'windows');
+    if (name === 'window.opened') this.#windowOpened(record, handle, data);
+  }
+
+  // A page opened a window (popups: 'window'): the embedder decides as for a
+  // new tab ("windowopen", then policy.newTabs); a refused one is closed.
+  #windowOpened(record, handle, data) {
+    const detail = { window: handle, opener: data.opener, openerWindow: data.openerWindow, url: data.url ?? '', userGesture: !!data.userGesture };
+    let accepted = false;
+    const event = new CustomEvent('windowopen', { cancelable: true, detail: { ...detail, allow: () => (accepted = true) } });
+    this.dispatchEvent(event);
+    const keep = !event.defaultPrevented && (accepted || (detail.userGesture && policy().newTabs !== 'block'));
+    if (keep) return;
+    record.channel.send('window.close');
+    if (!event.defaultPrevented) this.dispatchEvent(new CustomEvent('popupblocked', { detail: { tab: data.tab, opener: data.opener, url: detail.url, userGesture: detail.userGesture, window: record.id } }));
+  }
+
+  #windowClosed(id) {
+    const record = this.#windows.get(id);
+    if (!record || record === this.#main) return;
+    record.closed = true;
+    record.display?.close?.();
+    this.#detachDisplay(record);
+    this.#windows.delete(id);
+    this.#windowHandles.delete(id);
+    record.channel.dispatchEvent(new CustomEvent('crash', { detail: { message: 'the window was closed' } }));
+    record.target.dispatchEvent(new CustomEvent('close', { detail: { window: id } }));
+    this.#server.emit('windows.closed', { window: id }, 'windows');
+  }
+
+  #createAgent(record) {
+    const isMain = record === this.#main;
+    return new AgentHost({
+      element: isMain ? this : null,
+      shadow: isMain ? this.#shadow : null,
+      runtime: isMain ? this.#mainChannel() : record.channel,
+      server: this.#server,
+      window: record.id,
+      options: () => (typeof config.agent === 'object' && config.agent ? config.agent : {}),
+      state: () => ({ ...record.state }),
+      captureFrame: () => (isMain ? this.#canvas : record.display?.canvas ?? null),
+    });
+  }
+
+  // Window 1's agent hears the engine's events for window 1 (and the
+  // engine-wide ones an older engine sends without a window).
+  #mainChannel() {
+    const runtime = this.#runtime;
+    const main = this.#main;
+    const mine = (detail) => detail?.window === undefined || detail.window === 1;
+    const wrapped = new Map();
+    return {
+      send: (command, args) => main.channel.send(command, args),
+      get crash() { return runtime.crash; },
+      addEventListener(name, listener, options) {
+        const filtered = (e) => (name === 'crash' || mine(e.detail)) && listener(e);
+        wrapped.set(listener, filtered);
+        runtime.addEventListener(name, filtered, options);
+      },
+      removeEventListener(name, listener) {
+        runtime.removeEventListener(name, wrapped.get(listener) ?? listener);
+      },
+    };
+  }
+
+  // Another tab is shown: the window's state and events follow it.
+  #showTab(record, id) {
+    const tab = record.tabs.get(id);
     if (!tab) return;
-    Object.assign(this.#state, { url: tab.url, title: tab.title, loading: tab.loading, canGoBack: tab.canGoBack, canGoForward: tab.canGoForward });
-    this.#provenance.navigated(tab.url);
+    Object.assign(record.state, { url: tab.url, title: tab.title, loading: tab.loading, canGoBack: tab.canGoBack, canGoForward: tab.canGoForward });
+    this.#provenanceOf(record)?.navigated(tab.url);
     for (const [name, detail] of [['navigate', { url: tab.url }], ['title', { title: tab.title }], ['loading', { loading: tab.loading }]])
-      this.#server?.emit(name, { tab: id, ...detail });
+      this.#server?.emit(name, { tab: id, ...detail }, 'view', record.id);
   }
 
   // Why the view cannot start, shown in the view itself so it never just stays
@@ -455,47 +710,58 @@ export class InceptionView extends HTMLElement {
     box.textContent = text;
   }
 
-  // The page asked for fullscreen (or to leave it); the view element itself
-  // goes fullscreen in the host page.
-  async #setFullscreen(active) {
+  // The page asked for fullscreen (or to leave it): window 1's is the view
+  // element's own; another window's is its <inception-window>'s, when one in
+  // this document shows it.
+  async #setFullscreen(record, active) {
+    if (!record) return;
+    const element = record === this.#main ? this : record.display?.element;
     try {
-      if (active && document.fullscreenElement !== this) await this.requestFullscreen();
-      if (!active && document.fullscreenElement === this) await document.exitFullscreen();
-      if (active) this.#runtime.send('fullscreen.changed', { active: true });
+      if (!element) throw new Error('no element shows this window here');
+      if (active && document.fullscreenElement !== element) await element.requestFullscreen();
+      if (!active && document.fullscreenElement === element) await document.exitFullscreen();
+      if (active) record.channel.send('fullscreen.changed', { active: true });
     } catch (error) {
-      this.#runtime.send('fullscreen.changed', { active: false, error: String(error?.message ?? error) });
+      record.channel.send('fullscreen.changed', { active: false, error: String(error?.message ?? error) });
     }
   }
 
+  // The window a protocol call acts on: the calling connection's.
+  #windowFor(window) {
+    const record = this.#windows.get(window ?? 1);
+    if (!record || record.closed) throw ProtocolError.fromReason('not_ready', 'the window is closed');
+    return record;
+  }
+
   #createServer() {
-    const agent = this.#agentEnabled();
-    const server = new ProtocolServer(this.#capabilities(), { optIn: ['history', 'find', 'observe', 'agent'] });
+    const server = new ProtocolServer(this.#capabilities(), { optIn: ['history', 'find', 'observe', 'agent', 'windows'], windowExists: (id) => !!this.#windows.get(id) && !this.#windows.get(id).closed });
+    this.#server = server;
     const runtime = this.#runtime;
-    if (agent) {
-      this.#agentHost = new AgentHost({
-        element: this,
-        runtime,
-        server,
-        shadow: this.#shadow,
-        options: () => (typeof config.agent === 'object' && config.agent ? config.agent : {}),
-        state: () => ({ ...this.#state }),
-        captureFrame: () => this.#canvas,
-      });
+    if (this.#agentEnabled()) {
+      this.#main.agent = this.#createAgent(this.#main);
+      registerAgentMethods(server, (window) => this.#windows.get(window)?.agent ?? null);
     }
-    server.handle('view.navigate', ({ url }) => {
+    const send = (window, command, args) => this.#windowFor(window).channel.send(command, args);
+    server.handle('view.navigate', ({ url }, { window }) => {
       if (typeof url !== 'string' || !url) throw new TypeError('url must be a non-empty string');
-      runtime.send('load', { url });
+      send(window, 'load', { url });
     });
-    server.handle('view.state', () => ({ ...this.#state }));
-    server.handle('view.back', () => runtime.send('back'));
-    server.handle('view.forward', () => runtime.send('forward'));
-    server.handle('view.reload', ({ bypassCache } = {}) => runtime.send('reload', { bypassCache: !!bypassCache }));
-    server.handle('view.stop', () => runtime.send('stop'));
-    server.handle('view.find', ({ text, backwards, caseSensitive } = {}) => new Promise((resolve) => {
-      runtime.addEventListener('find.result', (e) => resolve({ found: e.detail.found, matches: e.detail.matches }), { once: true });
-      runtime.send('find', { text: String(text ?? ''), backwards: !!backwards, caseSensitive: !!caseSensitive });
+    server.handle('view.state', (params, { window }) => ({ ...this.#windowFor(window).state }));
+    server.handle('view.back', (params, { window }) => send(window, 'back'));
+    server.handle('view.forward', (params, { window }) => send(window, 'forward'));
+    server.handle('view.reload', ({ bypassCache } = {}, { window }) => send(window, 'reload', { bypassCache: !!bypassCache }));
+    server.handle('view.stop', (params, { window }) => send(window, 'stop'));
+    server.handle('view.find', ({ text, backwards, caseSensitive } = {}, { window }) => new Promise((resolve) => {
+      const record = this.#windowFor(window);
+      const listener = (e) => {
+        if ((e.detail.window ?? 1) !== record.id) return;
+        runtime.removeEventListener('find.result', listener);
+        resolve({ found: e.detail.found, matches: e.detail.matches });
+      };
+      runtime.addEventListener('find.result', listener);
+      record.channel.send('find', { text: String(text ?? ''), backwards: !!backwards, caseSensitive: !!caseSensitive });
     }), 'find');
-    server.handle('view.findClear', () => runtime.send('find.clear'), 'find');
+    server.handle('view.findClear', (params, { window }) => send(window, 'find.clear'), 'find');
     let historyRequests = 0;
     server.handle('history.query', (args = {}) => new Promise((resolve) => {
       const id = ++historyRequests;
@@ -508,30 +774,62 @@ export class InceptionView extends HTMLElement {
       runtime.send('history.query', { id, text: String(args.text ?? ''), limit: args.limit | 0 || 100, ...(args.before ? { before: Number(args.before) } : {}) });
     }));
     server.handle('history.delete', (args = {}) => runtime.send('history.delete', args.url ? { url: String(args.url) } : { from: Number(args.from ?? 0), to: Number(args.to ?? Number.MAX_VALUE) }));
-    server.handle('view.zoom', ({ factor } = {}) => {
+    server.handle('view.zoom', ({ factor } = {}, { window }) => {
       if (!(factor > 0)) throw new TypeError('factor must be a positive number');
-      runtime.send('zoom', { factor });
+      send(window, 'zoom', { factor });
     });
-    server.handle('view.tabs', () => this.#tabs.list());
-    server.handle('view.createTab', ({ url = '', activate = true } = {}) => this.#tabs.create(String(url), { activate: !!activate }));
-    server.handle('view.activateTab', ({ tab } = {}) => this.#tabs.activate(Number(tab)));
-    server.handle('view.closeTab', ({ tab } = {}) => this.#tabs.close(Number(tab)));
+    server.handle('view.tabs', (params, { window }) => this.#windowFor(window).tabs.list());
+    server.handle('view.createTab', ({ url = '', activate = true } = {}, { window }) => this.#windowFor(window).tabs.create(String(url), { activate: !!activate }));
+    server.handle('view.activateTab', ({ tab } = {}, { window }) => this.#windowFor(window).tabs.activate(Number(tab)));
+    server.handle('view.closeTab', ({ tab } = {}, { window }) => this.#windowFor(window).tabs.close(Number(tab)));
+
+    // The windows capability. A window it opens is not bound to the caller:
+    // driving it takes a connection bound to it.
+    const windowId = (value) => {
+      if (!Number.isInteger(value) || value < 1) throw ProtocolError.fromReason('invalid_params', 'window must be a positive integer');
+      return value;
+    };
+    const dimension = (value, name) => {
+      if (!Number.isFinite(value) || value < 1 || value > 16384) throw ProtocolError.fromReason('invalid_params', `${name} must be between 1 and 16384`);
+      return Math.round(value);
+    };
+    server.handle('windows.list', () => this.windows);
+    server.handle('windows.create', ({ width = 800, height = 600, url = '', deviceScaleFactor = 1 } = {}) => new Promise((resolve, reject) => {
+      if (typeof url !== 'string') throw ProtocolError.fromReason('invalid_params', 'url must be a string');
+      const size = { width: dimension(width, 'width'), height: dimension(height, 'height') };
+      const scale = Number(deviceScaleFactor) > 0 && Number(deviceScaleFactor) <= 8 ? Number(deviceScaleFactor) : 1;
+      const timer = setTimeout(() => reject(ProtocolError.fromReason('timeout', 'the engine did not open the window')), 10000);
+      this.#pendingWindows.push((record) => {
+        clearTimeout(timer);
+        record.size = size;
+        resolve(record.info());
+      });
+      this.#main.channel.send('window.create', { ...size, deviceScaleFactor: scale, url });
+    }));
+    server.handle('windows.close', ({ window } = {}) => {
+      if (windowId(window) === 1) throw ProtocolError.fromReason('invalid_params', 'window 1 is the view and cannot be closed');
+      this.#windowFor(window).channel.send('window.close');
+    });
+    server.handle('windows.resize', ({ window, width, height, deviceScaleFactor = 1 } = {}) => {
+      const record = this.#windowFor(windowId(window));
+      if (record.display) throw ProtocolError.fromReason('invalid_params', 'a display sets the size of the window it shows');
+      record.size = { width: dimension(width, 'width'), height: dimension(height, 'height') };
+      record.channel.send('resize', { ...record.size, deviceScaleFactor: Number(deviceScaleFactor) > 0 ? Number(deviceScaleFactor) : 1 });
+      server.emit('windows.updated', record.info(), 'windows');
+    });
+
     for (const name of VIEW_EVENTS) {
+      if (name === 'crash') continue;
       runtime.addEventListener(name, (e) => {
+        const record = this.#recordOf(e.detail);
+        if (!record) return;
         // A hidden tab's page events update its tab record only.
-        if (!this.#tabs.track(name, e.detail)) return;
-        if (name === 'navigate') {
-          this.#state.url = e.detail.url;
-          this.#provenance.navigated(e.detail.url);
-        }
-        if (name === 'title') this.#state.title = e.detail.title;
-        if (name === 'loading') this.#state.loading = e.detail.loading;
-        if (name === 'navigation.state') Object.assign(this.#state, e.detail);
-        if (name === 'zoom') this.#state.zoom = e.detail.factor;
-        if (name === 'security.state') this.#security = Object.freeze({ ...e.detail });
-        server.emit(name, e.detail, EVENT_CAPABILITY[name]);
+        if (!record.track(name, e.detail)) return;
+        if (name === 'navigate') this.#provenanceOf(record)?.navigated(e.detail.url);
+        server.emit(name, e.detail, EVENT_CAPABILITY[name], record.id);
       });
     }
+    runtime.addEventListener('crash', (e) => server.emit('crash', e.detail, 'view', 1));
     return server;
   }
 

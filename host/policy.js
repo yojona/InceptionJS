@@ -21,6 +21,9 @@
 //                    and reported as "popupblocked"; the embedder may accept one
 //                    from the "newtab" event. 'foreground' / 'background' accept
 //                    all that follow a user gesture.
+//   popups           'tab' (default): what a page opens is a new tab of its
+//                    window. 'window': a new window ("windowopen"), which the
+//                    newTabs rule then accepts or closes the same way.
 //   dialogs          'dismiss' (default): alert, confirm, prompt and
 //                    beforeunload are answered without showing anything
 //                    (alert returns, confirm false, prompt null, leaving is
@@ -37,6 +40,7 @@ export const POLICY_DEFAULTS = Object.freeze({
   gesturelessDownloads: 'block',
   maxDownloadBytes: 256 * 1024 * 1024,
   newTabs: 'block',
+  popups: 'tab',
   dialogs: 'dismiss',
   clipboard: 'user',
   autoplaySound: false,
@@ -46,6 +50,7 @@ const CHOICES = {
   downloads: ['events', 'save', 'block'],
   gesturelessDownloads: ['block', 'allow'],
   newTabs: ['block', 'foreground', 'background'],
+  popups: ['tab', 'window'],
   dialogs: ['dismiss', 'native'],
   clipboard: ['user', true, false],
 };

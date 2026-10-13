@@ -87,14 +87,22 @@ export class AgentHost {
   #navigations = 0;
   #indicator;
 
-  // `options()` returns the embedder's agent options; `state()` the view's
-  // {url, title, ...}; `captureFrame()` the last frame as a canvas.
-  constructor({ element, runtime, server, shadow, options, state, captureFrame }) {
+  #window;
+
+  // One per window: control, the log, the rate limit and the engine's guard
+  // belong to the window, never shared. `runtime` sends commands to and hears
+  // events from that window only; `window` is its id, for the server's events.
+  // `options()` returns the embedder's agent options; `state()` the window's
+  // {url, title, ...}; `captureFrame()` its last frame as a canvas. `element`
+  // and `shadow` (window 1's view) show the control indicator; a window
+  // without them shows it in its displays through the "control" event.
+  constructor({ element = null, runtime, server, shadow = null, options, state, captureFrame, window = 1 }) {
     this.#element = element;
     this.#runtime = runtime;
     this.#server = server;
     this.#options = options;
     this.#state = state;
+    this.#window = window;
     this.captureFrame = captureFrame;
     runtime.addEventListener('agent.result', (e) => {
       const pending = this.#pending.get(e.detail.id);
@@ -111,18 +119,7 @@ export class AgentHost {
       for (const pending of this.#pending.values()) pending.reject(fail('engine_crashed', 'the engine crashed'));
       this.#pending.clear();
     });
-    const style = document.createElement('style');
-    style.textContent = AGENT_STYLE;
-    this.#indicator = Object.assign(document.createElement('div'), { className: 'agent-indicator', textContent: 'An agent is in control. Click or type to take over.' });
-    this.#indicator.setAttribute('part', 'agent-indicator');
-    this.#indicator.setAttribute('role', 'status');
-    this.#indicator.addEventListener('pointerdown', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      this.takeBack('indicator');
-    });
-    shadow.append(style, this.#indicator);
-    this.#register(server);
+    if (shadow) this.#indicator = addAgentIndicator(shadow, () => this.takeBack('indicator'));
   }
 
   get control() {
@@ -147,14 +144,16 @@ export class AgentHost {
   #setControl(control, reason) {
     this.#control = control;
     this.#runtime.send('agent.control', { agent: control === 'agent' });
-    if (control === 'agent') this.#element.dataset.control = 'agent';
-    else delete this.#element.dataset.control;
+    if (this.#element) {
+      if (control === 'agent') this.#element.dataset.control = 'agent';
+      else delete this.#element.dataset.control;
+    }
     this.#record({ action: 'control', params: { control, reason }, risk: 'read', decision: 'allowed', outcome: 'ok' });
     this.#emit('control', { control, reason }, 'view');
   }
 
   #emit(name, data, capability) {
-    this.#server.emit(name, data, capability);
+    this.#server.emit(name, data, capability, this.#window);
   }
 
   log() {
@@ -453,22 +452,49 @@ export class AgentHost {
     });
   }
 
-  #register(server) {
-    const methods = {
-      'agent.snapshot': (p) => this.snapshot(p),
-      'agent.find': (p) => this.find(p),
-      'agent.extract': (p) => this.extract(p),
-      'agent.waitFor': (p) => this.waitFor(p),
-      'agent.screenshot': (p) => this.screenshot(p),
-      'agent.act': (p) => this.act(p),
-      'agent.navigate': (p) => this.navigate(p),
-      'agent.history': (p) => this.history(p),
-      'agent.requestControl': () => this.requestControl(),
-      'agent.releaseControl': () => this.releaseControl(),
-      'agent.control': () => ({ control: this.#control }),
-      'agent.log': () => this.log(),
-    };
-    for (const [name, fn] of Object.entries(methods)) server.handle(name, (params) => fn(params ?? {}));
+}
+
+// The outline and status pill shown while an agent drives; clicking the pill
+// takes control back. Returns the pill.
+export function addAgentIndicator(shadow, takeBack) {
+  const style = document.createElement('style');
+  style.textContent = AGENT_STYLE;
+  const indicator = Object.assign(document.createElement('div'), { className: 'agent-indicator', textContent: 'An agent is in control. Click or type to take over.' });
+  indicator.setAttribute('part', 'agent-indicator');
+  indicator.setAttribute('role', 'status');
+  indicator.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    takeBack();
+  });
+  shadow.append(style, indicator);
+  return indicator;
+}
+
+// The agent namespace's methods, each run by the agent host of the calling
+// connection's window: `hostFor(window)` returns it (or null when the window
+// is gone).
+export function registerAgentMethods(server, hostFor) {
+  const methods = {
+    'agent.snapshot': (host, p) => host.snapshot(p),
+    'agent.find': (host, p) => host.find(p),
+    'agent.extract': (host, p) => host.extract(p),
+    'agent.waitFor': (host, p) => host.waitFor(p),
+    'agent.screenshot': (host, p) => host.screenshot(p),
+    'agent.act': (host, p) => host.act(p),
+    'agent.navigate': (host, p) => host.navigate(p),
+    'agent.history': (host, p) => host.history(p),
+    'agent.requestControl': (host) => host.requestControl(),
+    'agent.releaseControl': (host) => host.releaseControl(),
+    'agent.control': (host) => ({ control: host.control }),
+    'agent.log': (host) => host.log(),
+  };
+  for (const [name, fn] of Object.entries(methods)) {
+    server.handle(name, (params, { window } = {}) => {
+      const host = hostFor(window ?? 1);
+      if (!host) throw fail('not_ready', 'the window is closed');
+      return fn(host, params ?? {});
+    });
   }
 }
 
