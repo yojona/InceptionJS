@@ -37,7 +37,18 @@
 //   hosts            {allow?: [host], block?: [host]}: where pages may go (a host
 //                    matches itself and its subdomains; block wins; without
 //                    allow, every host not blocked). Enforced by the profile
-//                    service, so with isolation 'window' only.
+//                    service, so with isolation 'window' or 'site' only.
+//   thirdPartyCookies
+//                    isolation 'site' only. 'block' (default): a request to a
+//                    site other than the window's page carries none of the
+//                    profile's cookies, sets none, and another site's frame gets
+//                    no cookies, localStorage or IndexedDB of the profile (its
+//                    localStorage lives as long as the window). The profile
+//                    service enforces it, so a subverted engine cannot read
+//                    another site's data either. 'allow': other sites' frames
+//                    and requests have their cookies and storage, as the other
+//                    isolations do, which hands a subverted engine those
+//                    sites' data too.
 
 export const POLICY_DEFAULTS = Object.freeze({
   downloads: 'events',
@@ -49,6 +60,7 @@ export const POLICY_DEFAULTS = Object.freeze({
   clipboard: 'user',
   autoplaySound: false,
   hosts: null,
+  thirdPartyCookies: 'block',
 });
 
 // A host list as the engine takes it: lowercase names, nothing else.
@@ -67,6 +79,7 @@ const CHOICES = {
   popups: ['tab', 'window'],
   dialogs: ['dismiss', 'native'],
   clipboard: ['user', true, false],
+  thirdPartyCookies: ['block', 'allow'],
 };
 
 /** The effective policy for the configured one: defaults filled in, invalid values replaced. */
