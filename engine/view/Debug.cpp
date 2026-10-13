@@ -6,6 +6,7 @@
 #include "ScriptController.h"
 #include "CommonVM.h"
 #include "bridge/Bridge.h"
+#include "gfx/Renderer.h"
 #include "net/NetworkLoad.h"
 #include "view/View.h"
 #include <JavaScriptCore/JSCJSValueInlines.h>
@@ -83,6 +84,8 @@ void registerDebugCommands()
         result->setDouble("heapSize"_s, vm.heap.size());
         result->setDouble("heapCapacity"_s, vm.heap.capacity());
         result->setDouble("memory"_s, emscripten_get_heap_size());
+        // Render targets alive: one per window that painted and is not hidden.
+        result->setInteger("surfaces"_s, Renderer::singleton().surfaceCount());
         emitEvent("debug.heap"_s, WTF::move(result));
     });
 }

@@ -81,6 +81,10 @@ void Window::setVisible(bool visible)
     if (visible == m_visible)
         return;
     m_visible = visible;
+    // A hidden window paints nothing: its render target goes back to the GPU
+    // and is made again with its next frame.
+    if (!visible)
+        Renderer::singleton().releaseSurface(m_id);
     if (!m_active)
         return;
     m_active->setVisible(visible);

@@ -41,8 +41,9 @@ public:
     // receives a context in device pixels with the transparent clear done.
     void paintFrame(unsigned window, WebCore::IntSize pixelSize, const Function<void(WebCore::GraphicsContext&)>& paint);
 
-    // Frees what a closed window painted into.
+    // Frees what a closed or hidden window painted into.
     void releaseSurface(unsigned window);
+    unsigned surfaceCount() const { return m_surfaces.size(); }
 
 private:
     struct Surface {
