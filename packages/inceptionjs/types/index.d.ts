@@ -34,6 +34,14 @@ export interface InceptionConfig {
   /** Offer the agent namespace (view.agent) on every view: true, or its options. Off by default. */
   agent?: boolean | AgentOptions;
   modules?: Partial<Record<'geolocation' | 'notifications', ModuleSetting>>;
+  /**
+   * A view whose profile another document of the site holds attaches to that document and shows a window
+   * of it, instead of failing (default true); the document that holds the profile accepts such views. Set
+   * false to get the "profile is open in another tab" error. See `InceptionView.role` and `connectProfile()`.
+   */
+  attach?: boolean;
+  /** Where the site serves host/broker.js, the shared worker that connects documents, when it is not next to the host modules. All documents of the site must agree. */
+  brokerUrl?: string;
 }
 
 export interface InceptionPolicy {
@@ -299,6 +307,12 @@ export interface InceptionViewEventMap {
   certificateerror: CustomEvent<{ url: string; verificationError: number; description: string; subject?: string; validFrom?: number; validUntil?: number }>;
   cursor: CustomEvent<{ cursor: string }>;
   fullscreen: CustomEvent<{ active: boolean }>;
+  /** An attached view: the document that held the profile went away; the view waits for the next one. */
+  hostlost: CustomEvent<undefined>;
+  /** An attached view: its window is open again on the new host. */
+  reattached: CustomEvent<undefined>;
+  /** An attached view became the host of its profile. */
+  promoted: CustomEvent<undefined>;
   zoom: CustomEvent<{ factor: number }>;
   findresult: CustomEvent<FindResult>;
   contextmenurequest: CustomEvent<ContextMenuDetail>;
@@ -318,7 +332,7 @@ export interface InceptionViewEventMap {
   /** A window or tab a page opened was closed instead of shown. */
   popupblocked: CustomEvent<{ tab: number; opener: number; url: string; userGesture: boolean; window?: number }>;
   /** A page opened a window (policy.popups 'window'): preventDefault() closes it, allow() keeps it. Show it with <inception-window> or exportWindow(). */
-  windowopen: CustomEvent<{ window: InceptionWindow; opener: number; openerWindow: number; url: string; userGesture: boolean; allow(): void }>;
+  windowopen: CustomEvent<{ window: InceptionWindow | RemoteWindow; opener: number | string; openerWindow?: number; url: string; userGesture: boolean; allow?(): void }>;
   windowcreated: CustomEvent<WindowInfo>;
   windowclosed: CustomEvent<{ window: number }>;
   windowupdated: CustomEvent<WindowInfo>;
@@ -344,6 +358,16 @@ export interface InceptionViewEventMap {
 export declare class InceptionView extends HTMLElement {
   /** CSS for every page this view shows (overrides InceptionConfig.userStyles); set before it starts. */
   userStyles: string | null;
+  /**
+   * 'host': this document holds the profile and runs the engine. 'client': another document holds it and
+   * this view shows a window of it (agent, serve(), openWindow(), exportWindow(), downloads and the debug
+   * methods other than debugEvaluate are not available there). null until the view has started. A client
+   * takes the profile over, starting where its window was, if the host goes away and it is next in line;
+   * "promoted" then fires and `role` becomes 'host'.
+   */
+  readonly role: 'host' | 'client' | null;
+  /** The id of this view's window on the document that runs the engine (1 on the host itself). */
+  readonly windowId: number;
   readonly url: string;
   readonly title: string;
   readonly loading: boolean;
@@ -480,10 +504,99 @@ export declare class InceptionWindowElement extends HTMLElement {}
 
 /**
  * Shows a window of an engine in another document, through the port its view's exportWindow() returned.
- * Needs no cross-origin isolation. Video, audio and dialogs stay in the engine's document.
+ * Needs no cross-origin isolation. The window's dialogs (a cancelable "dialog" event on `dialogTarget`, as on a
+ * view), file choosers ("filechooser"), videos (played here, under the canvas), Web Audio (samples that play once
+ * the person has used this document) and copies (to this document's clipboard) all come here.
  * A "closed" event fires on the canvas when the window closes.
  */
-export declare function createDisplay(canvas: HTMLCanvasElement, port: MessagePort, options?: { clipboard?: boolean }): { close(): void };
+export declare function createDisplay(canvas: HTMLCanvasElement, port: MessagePort, options?: {
+  /** Whether the page may receive this document's clipboard on paste. */
+  clipboard?: boolean;
+  /** What takes keyboard focus (default the canvas). */
+  element?: HTMLElement;
+  textInput?: HTMLTextAreaElement;
+  menuRoot?: Element | ShadowRoot;
+  /** The box videos are placed in (default: one is added under the canvas). */
+  mediaLayer?: HTMLElement;
+  dialogTarget?: EventTarget;
+  dialogs?: 'dismiss' | 'native';
+  /** As policy.clipboard: whether a copy the page makes reaches the system clipboard. */
+  clipboardWrite?: boolean | 'user';
+  volume?: number;
+  muted?: boolean;
+  soundAllowed?: boolean;
+}): {
+  close(notify?: boolean): void;
+  setLevel(level: { volume?: number; muted?: boolean }): void;
+  /** Counters of the Web Audio samples received, and the state of the output ("suspended" until the person has used the document). */
+  readonly audio: { readonly stats: { chunks: number; frames: number; peak: number; state: string } };
+};
+
+export interface RemoteWindowEventMap extends InceptionWindowEventMap {
+  /** The profile's host went away; the window waits for the next one. */
+  hostlost: CustomEvent<undefined>;
+  /** The window is open on the host (again, after a failover). */
+  attached: CustomEvent<{ window: number }>;
+  /** A page of this window opened a window (policy.popups 'window'): preventDefault() closes it; show it with its show(canvas). */
+  windowopen: CustomEvent<{ window: RemoteWindow; opener: string; url: string; userGesture: boolean }>;
+}
+
+/** A window of the profile's host, shown and driven from this document. */
+export declare class RemoteWindow extends EventTarget {
+  readonly key: string;
+  /** The window's id on the host; 0 while it has none (the host is gone). */
+  readonly id: number;
+  readonly url: string;
+  readonly title: string;
+  readonly loading: boolean;
+  readonly canGoBack: boolean;
+  readonly canGoForward: boolean;
+  readonly securityState: SecurityState | null;
+  readonly tabs: Array<{ id: number; url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean; audible: boolean; active: boolean }>;
+  readonly activeTab: number;
+  readonly closed: boolean;
+  /** Resolves once the window is open on the host (again, after a failover). */
+  readonly ready: Promise<void>;
+  /** Draws the window on `canvas` and sends it the person's input; options as createDisplay's. */
+  show(canvas: HTMLCanvasElement, options?: Parameters<typeof createDisplay>[2]): void;
+  hide(): void;
+  navigate(url: string): Promise<void>;
+  back(): Promise<void>;
+  forward(): Promise<void>;
+  reload(options?: { bypassCache?: boolean }): Promise<void>;
+  stop(): Promise<void>;
+  find(text: string, options?: { backwards?: boolean; caseSensitive?: boolean }): Promise<FindResult>;
+  findClear(): Promise<void>;
+  zoom(factor: number): Promise<void>;
+  history(options?: { text?: string; limit?: number; before?: number }): Promise<HistoryEntry[]>;
+  createTab(url?: string, options?: { activate?: boolean }): Promise<unknown>;
+  activateTab(id: number): Promise<void>;
+  closeTab(id: number): Promise<void>;
+  /** Closes the window on the host. */
+  close(): void;
+  addEventListener<K extends keyof RemoteWindowEventMap>(type: K, listener: (this: RemoteWindow, ev: RemoteWindowEventMap[K]) => unknown, options?: boolean | AddEventListenerOptions): void;
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
+}
+
+/** This document's attachment to a profile whose host is another document. */
+export declare class ProfileConnection extends EventTarget {
+  readonly profile: string;
+  readonly state: 'new' | 'attached' | 'lost' | 'closed';
+  readonly windows: RemoteWindow[];
+  /** Opens a window on the host; `key` names it across a failover. */
+  open(options?: { width?: number; height?: number; deviceScaleFactor?: number; url?: string; frames?: 'auto' | 'bitmap' | 'pixels'; key?: string }): Promise<RemoteWindow>;
+  close(reason?: string): void;
+}
+
+/** Rejected by connectProfile() and by a view's `ready` when no document holding the profile can be reached. */
+export declare class AttachUnavailableError extends Error {}
+
+/**
+ * Attaches this document to the host of `profile` (the document that holds its lock), to open windows there and
+ * show them. Finds the host through the document that opened this one, or through a shared worker; when the host
+ * goes away, follows the profile to the next document that takes it and reopens the windows there.
+ */
+export declare function connectProfile(profile?: string, options?: { via?: Array<'opener' | 'broker'>; brokerUrl?: string }): Promise<ProfileConnection>;
 
 declare global {
   interface HTMLElementTagNameMap {
