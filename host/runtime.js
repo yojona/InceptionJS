@@ -115,6 +115,21 @@ export function loadEngine(engineUrl) {
   return Promise.all([entry.module, entry.data]).then(([module, data]) => ({ module, data }));
 }
 
+// The imports a content engine must never reach: the origin-private file
+// system and the relay's sockets (see engine/js/guard.js, which does the same
+// in the engine's own threads).
+const CONTENT_FORBIDDEN = /^(__wasmfs_opfs_|_inception_tcp_|inception_has_opfs$)/;
+
+export function lockImports(imports) {
+  for (const table of Object.values(imports)) {
+    for (const [key, value] of Object.entries(table)) {
+      if (typeof value === 'function' && CONTENT_FORBIDDEN.test(value.name))
+        table[key] = () => { throw new Error('a content engine has no files or network of its own'); };
+    }
+  }
+  return imports;
+}
+
 export class EngineRuntime extends EventTarget {
   #module = null;
   #worker = null;
@@ -123,15 +138,20 @@ export class EngineRuntime extends EventTarget {
 
   #maxMemoryMB;
   #shareCode;
+  #role;
 
   // `canvas`, when given, shows window 1. `shareCode` (default true): start
   // from the document's one compiled module (loadEngine) instead of letting
   // the engine fetch and compile its own.
-  constructor({ engineUrl, relayUrl, canvas, maxMemoryMB, shareCode = true }) {
+  // `role`: 'content' locks the engine out of files and the network in
+  // every thread, whatever its own code tries; 'profile' or 'standalone'
+  // (default) leave them.
+  constructor({ engineUrl, relayUrl, canvas, maxMemoryMB, shareCode = true, role = 'standalone' }) {
     super();
     this.engineUrl = engineUrl;
     this.#maxMemoryMB = maxMemoryMB;
     this.#shareCode = shareCode;
+    this.#role = role;
     this.relayUrl = relayUrl;
     if (canvas) this.attachDisplay(1, canvasSink(canvas));
   }
@@ -162,6 +182,9 @@ export class EngineRuntime extends EventTarget {
     globalThis.Worker = class extends NativeWorker {
       constructor(...args) {
         super(...args);
+        // Before the engine's own first message, so the thread knows its
+        // role when it instantiates the engine.
+        this.postMessage({ inceptionRole: runtime.#role });
         runtime.#workers.add(this);
         this.addEventListener('message', (e) => runtime.#onWorkerMessage(this, e.data));
       }
@@ -173,7 +196,8 @@ export class EngineRuntime extends EventTarget {
         print: (text) => console.log('[engine]', text),
         printErr: (text) => console.warn('[engine]', text),
         ...(code ? {
-          instantiateWasm(imports, receive) {
+          instantiateWasm: (imports, receive) => {
+            if (this.#role === 'content') lockImports(imports);
             WebAssembly.instantiate(code.module, imports).then((instance) => receive(instance, code.module));
             return {};
           },
@@ -182,6 +206,22 @@ export class EngineRuntime extends EventTarget {
       });
     } finally {
       globalThis.Worker = NativeWorker;
+    }
+    // Threads the engine starts later are told their role too.
+    const threads = this.#module.PThread;
+    const allocate = threads?.allocateUnusedWorker;
+    if (allocate) {
+      threads.allocateUnusedWorker = (...args) => {
+        const before = new Set(threads.unusedWorkers);
+        const result = allocate.apply(threads, args);
+        for (const worker of threads.unusedWorkers) {
+          if (before.has(worker)) continue;
+          worker.postMessage({ inceptionRole: this.#role });
+          this.#workers.add(worker);
+          worker.addEventListener('message', (e) => this.#onWorkerMessage(worker, e.data));
+        }
+        return result;
+      };
     }
     await started;
   }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_MAX_MEMORY_MB, isOutOfMemory, memoryLimitPages } from '../../host/runtime.js';
+import { DEFAULT_MAX_MEMORY_MB, isOutOfMemory, lockImports, memoryLimitPages } from '../../host/runtime.js';
 
 test('engine memory is bounded: 2 GiB by default, 512 MiB to 4 GiB when set', () => {
   const pages = (megabytes) => (megabytes * 1024 * 1024) / 65536;
@@ -16,4 +16,17 @@ test('out-of-memory crashes are told apart', () => {
   assert.ok(isOutOfMemory('Aborted(OOM)'));
   assert.ok(isOutOfMemory('Cannot enlarge memory arrays to size 2147549184 bytes'));
   assert.ok(!isOutOfMemory('RuntimeError: unreachable'));
+});
+
+test('a content engine is instantiated without file system or socket imports', () => {
+  function __wasmfs_opfs_open_access() { return 'opened'; }
+  function _inception_tcp_open() { return 'connected'; }
+  function inception_has_opfs() { return 1; }
+  function _inception_link_post() { return 'posted'; }
+  function _emscripten_get_now() { return 1; }
+  const imports = { a: { b: __wasmfs_opfs_open_access, c: _inception_tcp_open, d: inception_has_opfs, e: _inception_link_post, f: _emscripten_get_now } };
+  lockImports(imports);
+  for (const key of ['b', 'c', 'd']) assert.throws(() => imports.a[key](), /no files or network/);
+  assert.equal(imports.a.e(), 'posted');
+  assert.equal(imports.a.f(), 1);
 });
