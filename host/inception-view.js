@@ -29,6 +29,15 @@ export const Inception = {
   },
 };
 
+// User styles: CSS the embedder gives every page this view shows (its scrollbars, say),
+// as a browser's user stylesheet. Set with Inception.configure({ userStyles }) or the
+// view's `userStyles` property before it starts. Added to each document in a cascade
+// layer, so any style of the page's own still wins over it.
+const userStylesShim = (css) =>
+  css
+    ? `\n;(() => {\n  try {\n    const sheet = new CSSStyleSheet();\n    sheet.replaceSync(${JSON.stringify(`@layer inception-user {\n${css}\n}`)});\n    document.adoptedStyleSheets = [sheet, ...document.adoptedStyleSheets];\n  } catch {}\n})();\n`
+    : '';
+
 // Events the engine reports that the view re-dispatches as DOM events.
 const VIEW_EVENTS = ['navigate', 'title', 'loading', 'popup', 'console', 'crash', 'cursor', 'navigation.state', 'find.result', 'zoom', 'contextmenu'];
 // Names the view dispatches them under where the engine's would clash with
@@ -43,6 +52,8 @@ const DOM_EVENT_NAMES = { contextmenu: 'contextmenurequest', 'navigation.state':
 export class InceptionView extends HTMLElement {
   static observedAttributes = ['src', 'provenance-corner', 'provenance', 'volume', 'muted'];
 
+  /** CSS for every page this view shows (see userStylesShim); set before it starts. */
+  userStyles = null;
   #runtime = null;
   #server = null;
   #client = null;
@@ -280,7 +291,7 @@ export class InceptionView extends HTMLElement {
 
     const { width, height } = this.#cssSize();
     const gpu = this.getAttribute('gpu') ?? 'auto';
-    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: await probeMediaCapabilities(), wasmPolyfill, pageShims: pageShims.replaceAll('__INCEPTION_VERSION__', ENGINE_VERSION), wispUrl: config.relayUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? defaultUserAgent(), preferences: this.#preferences.resolved(), webglContexts: config.webglContexts | 0, url: this.getAttribute('src') ?? '' });
+    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: await probeMediaCapabilities(), wasmPolyfill, pageShims: pageShims.replaceAll('__INCEPTION_VERSION__', ENGINE_VERSION) + userStylesShim(this.userStyles ?? config.userStyles), wispUrl: config.relayUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? defaultUserAgent(), preferences: this.#preferences.resolved(), webglContexts: config.webglContexts | 0, url: this.getAttribute('src') ?? '' });
     const ready = await engineReady;
     this.#tabs.started(ready.tab ?? 1);
     this.#runtime.addEventListener('crash', (e) => this.dispatchEvent(new CustomEvent('crash', { detail: { reason: e.detail.message, stack: e.detail.stack } })));

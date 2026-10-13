@@ -11,6 +11,8 @@ export interface InceptionConfig {
   binaryenUrl?: string;
   /** User-Agent override for every view. */
   userAgent?: string;
+  /** CSS for every page (a user stylesheet: scrollbars, say), in a cascade layer so the page's own styles win. */
+  userStyles?: string;
   /** How many WebGL contexts pages may hold (0 = derived from the browser). */
   webglContexts?: number;
   storage?: { profile?: string; fresh?: boolean };
@@ -116,6 +118,8 @@ export interface InceptionViewEventMap {
 }
 
 export declare class InceptionView extends HTMLElement {
+  /** CSS for every page this view shows (overrides InceptionConfig.userStyles); set before it starts. */
+  userStyles: string | null;
   readonly url: string;
   readonly title: string;
   readonly loading: boolean;
