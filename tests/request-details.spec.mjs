@@ -62,7 +62,9 @@ for (const role of ['standalone', 'content']) {
       const typed = await echo(new Blob(['typed'], { type: 'text/plain' }));
       const xhr = await new Promise((resolve) => { const x = new XMLHttpRequest(); x.open('POST', '/anything'); x.onload = () => resolve(JSON.parse(x.responseText)); x.send(new Blob(['xhr'])); });
       const type = (echoed) => echoed.headers['Content-Type'] ?? null;
-      return { blob: [blob.data, type(blob)], buffer: [buffer.data, type(buffer)], typed: [typed.data, type(typed)], xhr: [xhr.data, type(xhr)] };`);
+      // The echo shows a body of no known type as a data: URL.
+      const data = (echoed) => echoed.data.startsWith('data:') ? atob(echoed.data.split(',')[1]) : echoed.data;
+      return { blob: [data(blob), type(blob)], buffer: [data(buffer), type(buffer)], typed: [data(typed), type(typed)], xhr: [data(xhr), type(xhr)] };`);
     expect(result.blob).toEqual(['blob contents', null]);
     expect(result.buffer).toEqual(['hi', null]);
     expect(result.typed).toEqual(['typed', ['text/plain']]);
