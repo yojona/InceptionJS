@@ -237,6 +237,19 @@ export class MediaHost {
     if (player.wantsPlay) this.#play(player);
   }
 
+  // Moves the videos (and the ones to come) under another layer: a window's
+  // display took over.
+  setLayer(layer) {
+    if (layer === this.#layer) return;
+    layer.append(...this.#layer.childNodes);
+    this.#layer = layer;
+  }
+
+  // Whether the element `id` plays here (each window has its own host).
+  hasPlayer(id) {
+    return this.#players.has(id);
+  }
+
   ownsFetch(id) {
     return this.#fetches.has(id);
   }
