@@ -59,3 +59,12 @@ test('a download without the person\'s input is cancelled unless the policy allo
   assert.deepEqual(run({ gesturelessDownloads: 'allow' }, { ...page, userGesture: false }), { events: [['downloadstart', undefined]], sent: [] });
   assert.deepEqual(run({ downloads: 'block' }, { ...page, userGesture: true }).events, [['downloadblocked', 'policy']]);
 });
+
+test('host lists keep only host names, lowercased', async () => {
+  const { hostRules, resolvePolicy } = await import('../../host/policy.js');
+  assert.deepEqual(hostRules({ allow: ['Example.COM', 'bad host', 5, 'a.b'], block: ['x.org'] }), { allow: ['example.com', 'a.b'], block: ['x.org'] });
+  assert.deepEqual(hostRules({ block: ['x.org'] }), { block: ['x.org'] });
+  assert.equal(hostRules('everything'), null);
+  assert.deepEqual(resolvePolicy({ hosts: { allow: [] } }).hosts, { allow: [], block: [] });
+  assert.equal(resolvePolicy({}).hosts, null);
+});

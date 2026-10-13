@@ -34,6 +34,10 @@
 //                    soon after the person's own input. true: copy requests
 //                    from the page are always honoured. false: neither way.
 //   autoplaySound    the embedder knows playback with sound is allowed.
+//   hosts            {allow?: [host], block?: [host]}: where pages may go (a host
+//                    matches itself and its subdomains; block wins; without
+//                    allow, every host not blocked). Enforced by the profile
+//                    service, so with isolation 'window' only.
 
 export const POLICY_DEFAULTS = Object.freeze({
   downloads: 'events',
@@ -44,7 +48,17 @@ export const POLICY_DEFAULTS = Object.freeze({
   dialogs: 'dismiss',
   clipboard: 'user',
   autoplaySound: false,
+  hosts: null,
 });
+
+// A host list as the engine takes it: lowercase names, nothing else.
+export function hostRules(value) {
+  if (!value || typeof value !== 'object') return null;
+  const list = (hosts) => (Array.isArray(hosts) ? hosts.filter((host) => typeof host === 'string' && /^[a-z0-9.-]{1,253}$/i.test(host)).map((host) => host.toLowerCase()) : undefined);
+  const allow = list(value.allow);
+  const block = list(value.block) ?? [];
+  return { ...(allow ? { allow } : {}), block };
+}
 
 const CHOICES = {
   downloads: ['events', 'save', 'block'],
@@ -60,6 +74,10 @@ export function resolvePolicy(configured) {
   const policy = { ...POLICY_DEFAULTS };
   for (const [name, value] of Object.entries(configured ?? {})) {
     if (!(name in POLICY_DEFAULTS)) continue;
+    if (name === 'hosts') {
+      policy.hosts = hostRules(value);
+      continue;
+    }
     if (CHOICES[name] ? CHOICES[name].includes(value) : typeof value === typeof POLICY_DEFAULTS[name]) policy[name] = value;
   }
   return policy;
