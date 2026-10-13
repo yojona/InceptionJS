@@ -154,6 +154,8 @@ test('display messages: sizes, visibility and junk', () => {
   assert.deepEqual(validateDisplayMessage({ type: 'visibility', visible: false }), { type: 'visibility', visible: false });
   assert.equal(validateDisplayMessage({ type: 'visibility', visible: 'no' }), null);
   assert.deepEqual(validateDisplayMessage({ type: 'close', window: 1 }), { type: 'close' });
+  assert.deepEqual(validateDisplayMessage({ type: 'probe', ok: false, bitmap: {} }), { type: 'probe', ok: false });
+  assert.equal(validateDisplayMessage({ type: 'probe', ok: 'yes' }), null);
   for (const junk of [null, 'input', 5, [], {}, { type: 'frame' }, { type: 'answer', id: 1 }, { type: 'eval' }])
     assert.equal(validateDisplayMessage(junk), null);
 });

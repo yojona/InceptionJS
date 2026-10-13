@@ -28,7 +28,8 @@ const canvasColor = (target) => target.evaluate(async () => {
   return [r, g, b];
 });
 
-test('an isolated frame shows a window and drives it; removing it leaves the engine alone', async ({ page }) => {
+for (const frames of ['auto', 'pixels'])
+test(`an isolated frame shows a window and drives it (${frames}); removing it leaves the engine alone`, async ({ page }) => {
   const id = await start(page);
   await page.evaluate(() => {
     const frame = Object.assign(document.createElement('iframe'), { src: '/examples/window-display.html', id: 'display' });
@@ -36,7 +37,7 @@ test('an isolated frame shows a window and drives it; removing it leaves the eng
     document.body.append(frame);
     return new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }));
   });
-  await view(page).evaluate((el, w) => document.getElementById('display').contentWindow.postMessage({}, location.origin, [el.exportWindow(w)]), id);
+  await view(page).evaluate((el, [w, frames]) => document.getElementById('display').contentWindow.postMessage({}, location.origin, [el.exportWindow(w, { frames })]), [id, frames]);
   const frame = page.frameLocator('#display');
   const frameHandle = page.frames().find((f) => f.url().includes('window-display.html'));
   await expect.poll(() => canvasColor(frameHandle), { timeout: 20_000 }).toEqual([0, 128, 0]);
