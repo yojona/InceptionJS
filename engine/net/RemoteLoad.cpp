@@ -4,6 +4,7 @@
 #include "CertificateInfo.h"
 #include "CertificateSummary.h"
 #include "DocumentPage.h"
+#include "HTTPHeaderNames.h"
 #include "LocalFrame.h"
 #include "NetworkLoadMetrics.h"
 #include "ResourceError.h"
@@ -52,6 +53,103 @@ RemoteLoad::~RemoteLoad()
 {
     --s_inFlight;
     loads().remove(m_id);
+}
+
+// Development aid (the engine's debug commands only): loads made straight on
+// the link, past WebCore and its CORS checks, as a subverted content engine
+// would make them, to see what the service hands over.
+struct RawLoad {
+    double id { 0 };
+    int status { 0 };
+    Vector<uint8_t> body;
+};
+
+static HashMap<uint64_t, RawLoad>& rawLoads()
+{
+    static NeverDestroyed<HashMap<uint64_t, RawLoad>> map;
+    return map;
+}
+
+static void finishRaw(uint64_t id, const String& error)
+{
+    auto raw = rawLoads().take(id);
+    auto data = JSON::Object::create();
+    data->setDouble("id"_s, raw.id);
+    data->setInteger("status"_s, raw.status);
+    data->setInteger("length"_s, raw.body.size());
+    data->setString("text"_s, String { byteCast<Latin1Character>(raw.body.span().first(std::min<size_t>(raw.body.size(), 2000))) });
+    if (!error.isNull())
+        data->setString("error"_s, error);
+    emitEvent("debug.rawLoad.result"_s, WTF::move(data));
+}
+
+// {id, url, mode ("cors", "no-cors", "navigate"), origin?, firstParty?}
+void RemoteLoad::registerDebugCommands()
+{
+    registerCommand("debug.rawLoad"_s, [](JSON::Object& args) {
+        RefPtr link = Link::service();
+        if (!link)
+            return;
+        static uint64_t lastID = 1ull << 52;
+        auto id = ++lastID;
+        ResourceRequest request { URL { args.getString("url"_s) } };
+        auto origin = args.getString("origin"_s);
+        if (!origin.isEmpty())
+            request.setHTTPHeaderField(HTTPHeaderName::Origin, origin);
+        auto firstParty = args.getString("firstParty"_s);
+        request.setFirstPartyForCookies(URL { firstParty.isEmpty() ? request.url().string() : firstParty });
+        auto mode = args.getString("mode"_s);
+        rawLoads().set(id, RawLoad { args.getDouble("id"_s).value_or(0), 0, { } });
+        Encoder encoder;
+        encoder.u64(id);
+        encoder << request;
+        encoder.u8(static_cast<uint8_t>(mode == "cors"_s ? FetchOptions::Mode::Cors : mode == "navigate"_s ? FetchOptions::Mode::Navigate : FetchOptions::Mode::NoCors));
+        link->send(Message::LoadStart, WTF::move(encoder));
+    });
+}
+
+// Whether a frame of a load belongs to a debug raw load; if so, it is handled.
+static bool handleRaw(Link& link, Message message, uint64_t id, Decoder& decoder)
+{
+    auto it = rawLoads().find(id);
+    if (it == rawLoads().end())
+        return false;
+    switch (message) {
+    case Message::LoadRedirect: {
+        auto request = decoder.decode<ResourceRequest>();
+        Encoder encoder;
+        encoder.u64(id);
+        std::optional<ResourceRequest> next;
+        if (request)
+            next = WTF::move(*request);
+        encoder << next;
+        link.send(Message::LoadRedirectReply, WTF::move(encoder));
+        break;
+    }
+    case Message::LoadResponse: {
+        if (auto response = decoder.decode<ResourceResponse>())
+            it->value.status = response->httpStatusCode();
+        Encoder encoder;
+        encoder.u64(id);
+        link.send(Message::LoadResponseReply, WTF::move(encoder));
+        break;
+    }
+    case Message::LoadData:
+        if (auto bytes = decoder.view())
+            it->value.body.append(*bytes);
+        break;
+    case Message::LoadFinish:
+        finishRaw(id, String { });
+        break;
+    case Message::LoadFail: {
+        auto error = decoder.decode<ResourceError>();
+        finishRaw(id, error ? error->localizedDescription() : "failed"_s);
+        break;
+    }
+    default:
+        break;
+    }
+    return true;
 }
 
 static ResourceError lostService(const URL& url)
@@ -137,6 +235,8 @@ void RemoteLoad::install()
     // decides whether and where to go on.
     Link::handle(Message::LoadRedirect, [](Link& link, Decoder& decoder) {
         auto id = decoder.u64();
+        if (id && handleRaw(link, Message::LoadRedirect, *id, decoder))
+            return;
         auto request = decoder.decode<ResourceRequest>();
         auto response = decoder.decode<ResourceResponse>();
         RefPtr load = id ? byID(*id) : nullptr;
@@ -168,6 +268,8 @@ void RemoteLoad::install()
     // {id, response}: WebCore takes it; the service holds the body until it has.
     Link::handle(Message::LoadResponse, [](Link& link, Decoder& decoder) {
         auto id = decoder.u64();
+        if (id && handleRaw(link, Message::LoadResponse, *id, decoder))
+            return;
         auto response = decoder.decode<ResourceResponse>();
         RefPtr load = response ? byID(*id) : nullptr;
         if (!load || load->m_link != &link)
@@ -187,6 +289,8 @@ void RemoteLoad::install()
     // {id, bytes}
     Link::handle(Message::LoadData, [](Link& link, Decoder& decoder) {
         auto id = decoder.u64();
+        if (id && handleRaw(link, Message::LoadData, *id, decoder))
+            return;
         auto bytes = id ? decoder.view() : std::nullopt;
         RefPtr load = bytes ? byID(*id) : nullptr;
         if (!load || load->m_link != &link)
@@ -210,6 +314,8 @@ void RemoteLoad::install()
     // {id, metrics}
     Link::handle(Message::LoadFinish, [](Link& link, Decoder& decoder) {
         auto id = decoder.u64();
+        if (id && handleRaw(link, Message::LoadFinish, *id, decoder))
+            return;
         RefPtr load = id ? byID(*id) : nullptr;
         if (!load || load->m_link != &link)
             return;
@@ -222,6 +328,8 @@ void RemoteLoad::install()
     // {id, error, certificate?}
     Link::handle(Message::LoadFail, [](Link& link, Decoder& decoder) {
         auto id = decoder.u64();
+        if (id && handleRaw(link, Message::LoadFail, *id, decoder))
+            return;
         auto error = decoder.decode<ResourceError>();
         auto certificate = error ? decoder.decode<std::optional<CertificateInfo>>() : std::nullopt;
         RefPtr load = certificate ? byID(*id) : nullptr;

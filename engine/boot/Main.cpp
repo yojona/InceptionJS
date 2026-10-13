@@ -178,6 +178,8 @@ static void registerCommands()
             installCookieProxy();
             installStorageProxy();
             installIDBProxy();
+            if (args.getBoolean("debug"_s).value_or(false))
+                RemoteLoad::registerDebugCommands();
             // Its IDB connection is known to the service by this process
             // identifier: unique among the service's engines.
             setContentIdentifier(args.getInteger("engine"_s).value_or(0));

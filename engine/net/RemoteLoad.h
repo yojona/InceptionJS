@@ -25,6 +25,7 @@ public:
 
     static unsigned inFlight();
     static void install();
+    static void registerDebugCommands();
 
     void start(const WebCore::ResourceRequest&);
     void cancel();
