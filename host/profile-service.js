@@ -7,8 +7,10 @@
 //
 // One service per profile per document: views of the same profile attach to
 // the one that runs (ProfileService.acquire), and its Web Lock keeps other
-// documents off the profile's files.
+// documents off the profile's files (they attach to this document instead,
+// see host/attach.js).
 import { EngineRuntime } from './runtime.js';
+import { profileLockName, tryLock } from './profile-lock.js';
 
 // Room for a waiting call's chunk; longer requests and replies cross in
 // several chunks.
@@ -35,6 +37,12 @@ export class ProfileService extends EventTarget {
     return service;
   }
 
+  // Whether a service for `profile` runs in this document.
+  static running(profile) {
+    const service = ProfileService.#open.get(`profile:${profile ?? 'default'}`);
+    return !!service && !service.stopped;
+  }
+
   #options;
   #runtime = null;
   #links = new Map();
@@ -49,7 +57,8 @@ export class ProfileService extends EventTarget {
   info = null;
 
   // {engineUrl, relayUrl, profile, fresh, ephemeral, preferences, debug,
-  // maxMemoryMB, restart (default true: a crashed service starts again)}
+  // maxMemoryMB, restart (default true: a crashed service starts again),
+  // lock (the profile's lock when the caller already holds it: {release()})}
   constructor(options) {
     super();
     this.#options = { restart: true, ...options };
@@ -65,17 +74,14 @@ export class ProfileService extends EventTarget {
   }
 
   async #start() {
-    if (!this.ephemeral && navigator.locks) {
+    if (this.#options.lock) {
+      this.#unlock = () => this.#options.lock.release();
+    } else if (!this.ephemeral) {
       // The profile's files are open by one service at a time; a second
       // document would get read-only handles.
-      const acquired = await new Promise((resolve) => navigator.locks.request(`inception-profile:${this.profile}`, { ifAvailable: true }, (lock) => {
-        if (!lock) return resolve(false);
-        return new Promise((release) => {
-          this.#unlock = release;
-          resolve(true);
-        });
-      }));
-      if (!acquired) throw new Error(`The profile "${this.profile}" is already open in another tab or window. Close it there, or open this page with a different profile.`);
+      const lock = await tryLock(profileLockName(this.profile));
+      if (!lock) throw new Error(`The profile "${this.profile}" is already open in another tab or window. Close it there, or open this page with a different profile.`);
+      this.#unlock = () => lock.release();
     }
     navigator.storage?.persist?.().catch(() => {});
     await this.#launch(this.#options.fresh === true);
