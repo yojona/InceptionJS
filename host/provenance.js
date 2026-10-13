@@ -11,6 +11,11 @@
 // bottom-right). A first-party embedder, one whose own window chrome already
 // says what the view is (an operating system's browser app, say), turns both
 // off with provenance="off"; it is on by default.
+//
+// Styling is not hiding. While the badge is on, the host checks once a second
+// that it can be seen (not display:none, not transparent, not collapsed, not
+// outside the view); if the embedding page has hidden it, the view covers the
+// page with a message until the style is removed, and reports "provenancetampered".
 
 const SIGN_IN_HOSTS = [
   'accounts.google.com',
@@ -48,8 +53,14 @@ export class Provenance {
   #signIn = false;
   #enabled = true;
   #site = location.hostname || location.host || 'this page';
+  #host;
+  #timer = null;
+  #hidden = false;
 
-  constructor(shadow, host) {
+  // `onHidden(hidden)` is told when the badge becomes unseeable or seeable again.
+  constructor(shadow, host, onHidden = () => {}) {
+    this.#host = host;
+    this.onHidden = onHidden;
     this.#badge = document.createElement('div');
     this.#badge.className = 'provenance';
     this.#badge.setAttribute('part', 'provenance');
@@ -68,6 +79,39 @@ export class Provenance {
     this.#enabled = enabled;
     this.#badge.hidden = !enabled;
     this.#update();
+    this.verify();
+  }
+
+  // Watching starts when the view is attached and stops when it is removed.
+  start() {
+    this.#timer ??= setInterval(() => this.verify(), 1000);
+  }
+
+  stop() {
+    clearInterval(this.#timer);
+    this.#timer = null;
+  }
+
+  // Whether the badge can be seen by the person right now.
+  get visible() {
+    if (!this.#enabled) return true;
+    const style = getComputedStyle(this.#badge);
+    if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) < 0.5) return false;
+    if (style.clipPath !== 'none' || style.filter !== 'none') return false;
+    const badge = this.#badge.getBoundingClientRect();
+    const view = this.#host.getBoundingClientRect();
+    if (!this.#host.isConnected || !view.width || !view.height) return true;
+    if (badge.width < 24 || badge.height < 10) return false;
+    const inside = Math.min(badge.right, view.right) - Math.max(badge.left, view.left) >= badge.width * 0.9
+      && Math.min(badge.bottom, view.bottom) - Math.max(badge.top, view.top) >= badge.height * 0.9;
+    return inside;
+  }
+
+  verify() {
+    const hidden = !this.visible;
+    if (hidden === this.#hidden) return;
+    this.#hidden = hidden;
+    this.onHidden(hidden);
   }
 
   setCorner(corner) {

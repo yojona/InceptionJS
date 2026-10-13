@@ -139,6 +139,8 @@ export interface InceptionViewEventMap {
   popupblocked: CustomEvent<{ tab: number; opener: number; url: string; userGesture: boolean }>;
   /** A page opened a tab: preventDefault() closes it, allow() shows it. */
   newtab: CustomEvent<{ tab: number; opener: number; url: string; userGesture: boolean; allow(mode?: 'foreground' | 'background'): void }>;
+  /** The embedding page hid the provenance badge; the view covers the content until it is visible again. */
+  provenancetampered: CustomEvent<{ hidden: boolean }>;
   downloadfinish: CustomEvent<{ id: number; filename: string; mime: string; error?: string; blob?: Blob }>;
 }
 

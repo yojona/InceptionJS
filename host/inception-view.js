@@ -104,7 +104,7 @@ export class InceptionView extends HTMLElement {
     this.#mediaLayer = shadow.querySelector('.media');
     this.#textInput = shadow.querySelector('textarea');
     this.#shadow = shadow;
-    this.#provenance = new Provenance(shadow, this);
+    this.#provenance = new Provenance(shadow, this, (hidden) => this.#provenanceHidden(hidden));
   }
 
   get url() { return this.#state.url; }
@@ -150,7 +150,30 @@ export class InceptionView extends HTMLElement {
     this.#audio?.setLevel(this.#muted ? 0 : this.#volume);
   }
 
+  disconnectedCallback() {
+    this.#provenance.stop();
+  }
+
+  // The embedding page hid the badge: the view does not show content unseen
+  // by its provenance. The reason is shown in the view itself.
+  #provenanceHidden(hidden) {
+    let box = this.#shadow.querySelector('.tamper');
+    if (hidden && !box) {
+      box = document.createElement('div');
+      box.className = 'message tamper';
+      box.setAttribute('part', 'message');
+      box.setAttribute('role', 'alert');
+      box.textContent = 'InceptionJS: the page showing this view has hidden its notice of where the content comes from. The content is not shown while the notice is hidden.';
+      this.#shadow.append(box);
+    } else if (!hidden) {
+      box?.remove();
+    }
+    this.dataset.provenance = hidden ? 'hidden' : 'shown';
+    this.dispatchEvent(new CustomEvent('provenancetampered', { detail: { hidden } }));
+  }
+
   connectedCallback() {
+    this.#provenance.start();
     // Not in the constructor: an element created with document.createElement
     // must not gain attributes there.
     if (!this.hasAttribute('tabindex')) this.tabIndex = 0;

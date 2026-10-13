@@ -29,3 +29,30 @@ test('a password or card field brings up the notice, leaving it hides it', async
   await evaluate(page, `document.getElementById('user').focus(), 'ok'`);
   await expect(notice).toBeHidden();
 });
+
+test('hiding the badge from the embedding page covers the view until it is shown again', async ({ page }) => {
+  const tamper = view(page).locator('.tamper');
+  await expect(tamper).toHaveCount(0);
+  for (const css of [
+    'inception-view::part(provenance) { display: none !important }',
+    'inception-view::part(provenance) { opacity: 0 !important }',
+    'inception-view::part(provenance) { visibility: hidden !important }',
+    'inception-view::part(provenance) { transform: translate(-9999px, 0) !important }',
+    'inception-view::part(provenance) { width: 0 !important; padding: 0 !important; overflow: hidden !important }',
+  ]) {
+    const style = await page.addStyleTag({ content: css });
+    await expect(tamper, css).toHaveCount(1, { timeout: 5000 });
+    await style.evaluate((node) => node.remove());
+    await expect(tamper, css).toHaveCount(0, { timeout: 5000 });
+  }
+});
+
+test('restyling the badge is fine; provenance="off" is the explicit way to remove it', async ({ page }) => {
+  await page.addStyleTag({ content: 'inception-view::part(provenance) { background: #123; font-size: 14px; margin: 12px }' });
+  await page.waitForTimeout(2500);
+  await expect(view(page).locator('.tamper')).toHaveCount(0);
+  await view(page).evaluate((el) => el.setAttribute('provenance', 'off'));
+  await page.addStyleTag({ content: 'inception-view::part(provenance) { display: none !important }' });
+  await page.waitForTimeout(2500);
+  await expect(view(page).locator('.tamper')).toHaveCount(0);
+});
