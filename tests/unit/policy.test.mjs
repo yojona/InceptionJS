@@ -30,3 +30,14 @@ test('file names from a server cannot carry paths or control characters', () => 
   assert.equal(safeFilename(undefined), 'download');
   assert.ok(safeFilename('x'.repeat(1000)).length <= 200);
 });
+
+import { safeNotificationIcon } from '../../host/modules.js';
+
+test('a notification icon is shown only when it is an inline image', () => {
+  assert.equal(safeNotificationIcon('data:image/png;base64,AAAA'), 'data:image/png;base64,AAAA');
+  assert.equal(safeNotificationIcon('https://tracker.example/pixel.png'), undefined);
+  assert.equal(safeNotificationIcon('data:text/html;base64,AAAA'), undefined);
+  assert.equal(safeNotificationIcon('data:image/svg+xml;base64,AAAA'), undefined);
+  assert.equal(safeNotificationIcon(''), undefined);
+  assert.equal(safeNotificationIcon(undefined), undefined);
+});

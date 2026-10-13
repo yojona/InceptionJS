@@ -32,13 +32,19 @@ const hostGeolocation = {
   },
 };
 
+// The host browser would fetch a page's icon URL itself, outside the relay,
+// telling the page's server the person's real address. Only inline images pass.
+export function safeNotificationIcon(icon) {
+  return typeof icon === 'string' && /^data:image\/(png|jpeg|gif|webp);/i.test(icon) ? icon : undefined;
+}
+
 const hostNotifications = {
   show({ title, body, icon, tag }, { click, close }) {
     if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
       close();
       return { close() {} };
     }
-    const shown = new Notification(title, { body, icon: icon || undefined, tag: tag || undefined });
+    const shown = new Notification(title, { body, icon: safeNotificationIcon(icon), tag: tag || undefined });
     shown.onclick = click;
     shown.onclose = close;
     return { close: () => shown.close() };
