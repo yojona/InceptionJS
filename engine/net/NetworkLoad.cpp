@@ -14,6 +14,7 @@
 #include "bridge/Bridge.h"
 #include "net/Session.h"
 #include "view/Preferences.h"
+#include <wtf/RunLoop.h>
 #include <wtf/text/MakeString.h>
 
 namespace Inception {
@@ -49,6 +50,15 @@ NetworkLoad::~NetworkLoad()
 
 void NetworkLoad::start(const ResourceRequest& request)
 {
+    // Only the web's own schemes go to the network layer: a redirect must never
+    // reach file:, where the engine keeps the profile's cookies and history.
+    if (!request.url().protocolIsInHTTPFamily()) {
+        RunLoop::mainSingleton().dispatch([protectedThis = Ref { *this }, url = request.url()] {
+            if (RefPtr loader = std::exchange(protectedThis->m_loader, nullptr))
+                loader->didFail(ResourceError(errorDomainWebKitInternal, 0, url, "Only http and https loads are allowed"_s));
+        });
+        return;
+    }
     m_request = request;
     addCookieHeader(m_request);
     if (!acceptLanguage().isEmpty() && !m_request.hasHTTPHeaderField(HTTPHeaderName::AcceptLanguage))
