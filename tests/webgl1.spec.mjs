@@ -61,7 +61,11 @@ test('WebGL 2 enums and formats are errors in WebGL 1', async ({ page }) => {
     const sizedFormat = gl.getError();
     return JSON.stringify({ max3D, parameterError, floatWithout, floatWith, sizedFormat });
   })()`);
-  expect(result).toEqual({ max3D: null, parameterError: 0x0500, floatWithout: 0x0500, floatWith: 0, sizedFormat: 0x0501 });
+  // An unsupported sized format is INVALID_VALUE in Chromium and Firefox and
+  // INVALID_OPERATION in WebKit: both are errors, only the code differs.
+  const { sizedFormat, ...rest } = result;
+  expect([0x0501, 0x0502]).toContain(sizedFormat);
+  expect(rest).toEqual({ max3D: null, parameterError: 0x0500, floatWithout: 0x0500, floatWith: 0 });
 });
 
 test('WebGL 1 vertex arrays and instancing come from their extensions', async ({ page }) => {

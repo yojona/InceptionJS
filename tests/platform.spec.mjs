@@ -98,7 +98,8 @@ test('plain-src media from another origin plays, fetched by the engine', async (
 
 // Media Source data the page fetched with CORS is the page's own: unlike
 // cross-origin media without CORS, which feeds silence, as the spec requires.
-test('a media element feeds the page\'s audio graph', async ({ page }) => {
+test('a media element feeds the page\'s audio graph', async ({ page, browserName }) => {
+  test.skip(browserName === 'webkit', 'WebKit gives silence from createMediaElementSource on Media Source playback');
   const box = await view(page).boundingBox();
   await page.mouse.click(box.x + 50, box.y + 50);
   await evaluate(page, `(async () => {

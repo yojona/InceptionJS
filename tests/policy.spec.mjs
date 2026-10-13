@@ -177,7 +177,7 @@ const pageCopies = async (page, text) => {
 };
 
 test('a page cannot write the system clipboard on its own by default, only after the person acts', async ({ page, context, browserName }) => {
-  test.skip(browserName === 'firefox', 'Playwright\'s Firefox has no clipboard permissions to grant');
+  test.skip(browserName !== 'chromium', 'only Chromium in Playwright has clipboard permissions to grant');
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await open(page);
   await hostClipboardWrites(page);
@@ -188,7 +188,7 @@ test('a page cannot write the system clipboard on its own by default, only after
 });
 
 test('policy.clipboard true lets a page write it at any time, false never', async ({ page, context, browserName }) => {
-  test.skip(browserName === 'firefox', 'Playwright\'s Firefox has no clipboard permissions to grant');
+  test.skip(browserName !== 'chromium', 'only Chromium in Playwright has clipboard permissions to grant');
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await open(page, { clipboard: true });
   await hostClipboardWrites(page);
