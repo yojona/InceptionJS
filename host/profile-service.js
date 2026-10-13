@@ -11,6 +11,7 @@
 // see host/attach.js).
 import { EngineRuntime } from './runtime.js';
 import { profileLockName, tryLock } from './profile-lock.js';
+import { probeOpfs } from './opfs.js';
 
 // Room for a waiting call's chunk; longer requests and replies cross in
 // several chunks.
@@ -102,6 +103,7 @@ export class ProfileService extends EventTarget {
       profile: options.profile ?? 'default',
       freshProfile: fresh,
       ephemeral: !!options.ephemeral,
+      opfs: await probeOpfs(),
       wispUrl: options.relayUrl,
       preferences: options.preferences ?? {},
       debug: !!options.debug,
