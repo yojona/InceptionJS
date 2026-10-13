@@ -105,7 +105,7 @@ static void emitContextMenu(LocalFrame& frame, const DoublePoint& position)
 }
 
 // {type: "down"|"up"|"move", x, y, button, clickCount, modifiers}
-static void handleMouse(JSON::Object& args)
+void dispatchMouse(JSON::Object& args)
 {
     RefPtr frame = mainFrame();
     if (!frame)
@@ -148,7 +148,7 @@ static void handleMouse(JSON::Object& args)
 
 // {x, y, deltaX, deltaY, deltaMode, modifiers}, deltas as in DOM WheelEvent
 // (positive Y scrolls down).
-static void handleWheel(JSON::Object& args)
+void dispatchWheel(JSON::Object& args)
 {
     RefPtr frame = mainFrame();
     if (!frame)
@@ -191,7 +191,7 @@ static String keyIdentifierFor(const String& key)
 // {type: "down"|"up", key, code, keyCode, text, repeat, modifiers}, from DOM
 // KeyboardEvent. A keydown becomes WebCore's RawKeyDown followed, when it
 // produces text, by a Char (the keypress).
-static void handleKey(JSON::Object& args)
+void dispatchKey(JSON::Object& args)
 {
     // Keys go to the frame that has focus, as in other browsers; a field in
     // an iframe takes typing only this way.
@@ -274,9 +274,9 @@ void registerInputCommands()
             frame->editor().command(args.getString("command"_s)).execute();
     });
 
-    registerCommand("mouse"_s, handleMouse);
-    registerCommand("wheel"_s, handleWheel);
-    registerCommand("key"_s, handleKey);
+    registerCommand("mouse"_s, dispatchMouse);
+    registerCommand("wheel"_s, dispatchWheel);
+    registerCommand("key"_s, dispatchKey);
     registerCommand("focus"_s, handleFocus);
 }
 
