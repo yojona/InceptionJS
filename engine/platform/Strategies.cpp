@@ -19,8 +19,11 @@
 #include "SharedBuffer.h"
 #include "SubresourceLoader.h"
 #include "bridge/Bridge.h"
+#include "link/Link.h"
+#include "link/NetCoders.h"
 #include "net/NetworkLoad.h"
 #include "net/PingLoad.h"
+#include "net/RemoteLoad.h"
 #include <wtf/HashMap.h>
 #include <wtf/RunLoop.h>
 
@@ -34,7 +37,8 @@ static ResourceError makeError(const URL& url, int code, ASCIILiteral descriptio
 
 // Every subresource and main resource load passes through here. data: and blob:
 // are served by WebCore itself (ResourceLoader::start); everything else goes to
-// a NetworkLoad over curl.
+// a NetworkLoad over curl, or in a content engine to the profile service
+// (RemoteLoad).
 class LoaderStrategyImpl final : public LoaderStrategy {
 public:
     void loadResource(LocalFrame& frame, CachedResource& resource, ResourceRequest&& request, const ResourceLoaderOptions& options, CompletionHandler<void(RefPtr<SubresourceLoader>&&)>&& completionHandler) final
@@ -57,8 +61,8 @@ public:
 
     void remove(ResourceLoader* loader) final
     {
-        if (auto load = m_loads.take(loader))
-            load->cancel();
+        if (auto cancel = m_loads.take(loader))
+            cancel();
     }
 
     void setDefersLoading(ResourceLoader&, bool) final { }
@@ -69,6 +73,10 @@ public:
 
     void startPingLoad(LocalFrame&, ResourceRequest& request, const HTTPHeaderMap&, const FetchOptions&, ContentSecurityPolicyImposition, PingLoadCompletionHandler&& completionHandler) final
     {
+        if (role() == Role::Content) {
+            startRemotePing(request, WTF::move(completionHandler));
+            return;
+        }
         PingLoad::start(request, [completionHandler = WTF::move(completionHandler)](const ResourceError& error, const ResourceResponse& response) mutable {
             if (completionHandler)
                 completionHandler(error, response);
@@ -102,6 +110,30 @@ public:
     ResourceError pluginWillHandleLoadError(const ResourceResponse& response) const final { return makeError(response.url(), 110, "Plug-in will handle load"_s, ResourceError::Type::Cancellation); }
 
 private:
+    static void startRemotePing(const ResourceRequest& original, PingLoadCompletionHandler&& completionHandler)
+    {
+        RefPtr link = Link::service();
+        if (!link || !original.url().protocolIsInHTTPFamily()) {
+            if (completionHandler)
+                completionHandler(ResourceError(errorDomainWebKitInternal, 0, original.url(), "The profile service is not available"_s), { });
+            return;
+        }
+        ResourceRequest request = original;
+        flattenBody(request);
+        Encoder encoder;
+        encoder << request;
+        link->call(Message::PingLoad, WTF::move(encoder), [url = request.url(), completionHandler = WTF::move(completionHandler)](Decoder* decoder) mutable {
+            auto error = decoder ? decoder->decode<ResourceError>() : std::nullopt;
+            auto response = error ? decoder->decode<ResourceResponse>() : std::nullopt;
+            if (!completionHandler)
+                return;
+            if (!response)
+                completionHandler(ResourceError(errorDomainWebKitInternal, 0, url, "The profile service is not available"_s), { });
+            else
+                completionHandler(*error, *response);
+        });
+    }
+
     // Starting is deferred one loop turn: WebCore is still setting the loader
     // up when create() completes.
     void schedule(SubresourceLoader& loader)
@@ -114,13 +146,19 @@ private:
                 loader->start();
                 return;
             }
+            if (role() == Role::Content) {
+                auto load = RemoteLoad::create(loader.get());
+                m_loads.set(loader.ptr(), [load] { load->cancel(); });
+                load->start(request);
+                return;
+            }
             auto load = NetworkLoad::create(loader.get());
-            m_loads.set(loader.ptr(), load.copyRef());
+            m_loads.set(loader.ptr(), [load] { load->cancel(); });
             load->start(request);
         });
     }
 
-    HashMap<ResourceLoader*, Ref<NetworkLoad>> m_loads;
+    HashMap<ResourceLoader*, Function<void()>> m_loads;
 };
 
 // The engine-wide clipboard. The host mirrors it to the system clipboard when

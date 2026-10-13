@@ -25,6 +25,40 @@ void setRole(Role);
 enum class Message : uint16_t {
     Ping = 1,
     PingSync,
+
+    // Loads (net/RemoteLoad.cpp, net/ServiceLoad.cpp). Content to service:
+    LoadStart = 100,
+    LoadCancel,
+    LoadRedirectReply,
+    LoadResponseReply,
+    PingLoad,
+    // Service to content:
+    LoadRedirect,
+    LoadResponse,
+    LoadData,
+    LoadSent,
+    LoadFinish,
+    LoadFail,
+
+    // Downloads and media fetches (net/Download.cpp), history
+    // (storage/History.cpp), content to service.
+    DownloadStart = 200,
+    MediaFetchStart,
+    MediaFetchCancel,
+    HistoryVisit,
+    HistoryTitle,
+
+    // Page WebSockets (net/WebSocketChannel.cpp). Content to service:
+    SocketConnect = 300,
+    SocketSend,
+    SocketClose,
+    SocketDisconnect,
+    // Service to content:
+    SocketConnected,
+    SocketMessage,
+    SocketBuffered,
+    SocketError,
+    SocketClosed,
 };
 
 class Link;

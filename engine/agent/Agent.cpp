@@ -38,6 +38,7 @@
 #include "bridge/Bridge.h"
 #include "input/Input.h"
 #include "net/NetworkLoad.h"
+#include "net/RemoteLoad.h"
 #include "view/View.h"
 #include "view/Window.h"
 #include <wtf/HashMap.h>
@@ -1417,7 +1418,7 @@ static void probe(int id, JSON::Object& args)
     auto result = JSON::Object::create();
     result->setString("url"_s, document->url().string());
     result->setBoolean("loading"_s, frame->loader().isLoading());
-    result->setInteger("loads"_s, NetworkLoad::inFlight());
+    result->setInteger("loads"_s, NetworkLoad::inFlight() + RemoteLoad::inFlight());
     auto ref = args.getString("ref"_s);
     if (!ref.isEmpty()) {
         ASCIILiteral error;
