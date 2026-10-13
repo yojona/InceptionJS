@@ -3,6 +3,11 @@
 // capability set; methods outside that set fail with a typed error. Events are
 // notifications named "event" with {name, data}. The element, remote agents and
 // a future CDP adapter are all clients of this one surface.
+//
+// A connection is bound to one window of the engine (window 1 unless it was
+// served for another, or names one in `hello` it may bind to). Methods act on
+// that window and its events reach only connections bound to it; a client
+// cannot name another window.
 
 export const PROTOCOL_VERSION = 1;
 
@@ -121,36 +126,50 @@ export function createWebSocketTransport(socket, { maxMessageBytes = 1024 * 1024
 
 // --- server -----------------------------------------------------------------
 
+const isWindowId = (value) => Number.isInteger(value) && value > 0;
+
 export class ProtocolServer {
   #methods = new Map();
   #capabilities;
   #optIn;
   #connections = new Set();
 
+  #windowExists;
+
   // `capabilities` lists what this server implements; each method belongs to
   // one capability (by default the part of its name before the dot). Those in
   // `optIn` are sensitive: a client gets them only by asking for them by name,
-  // and only if the connection was allowed them (see connect).
-  constructor(capabilities, { optIn = [] } = {}) {
+  // and only if the connection was allowed them (see connect). `windowExists`
+  // says whether a window id names a live window (default: only window 1).
+  constructor(capabilities, { optIn = [], windowExists = (id) => id === 1 } = {}) {
     this.#capabilities = new Set(capabilities);
     this.#optIn = new Set(optIn);
+    this.#windowExists = windowExists;
   }
 
+  // `fn(params, {window})` runs for the window the calling connection is
+  // bound to.
   handle(name, fn, capability = name.split('.')[0]) {
     this.#methods.set(name, { fn, capability });
   }
 
   // `allow`: the capabilities this connection may negotiate (default: all).
-  connect(transport, { allow } = {}) {
-    const connection = { transport, negotiated: null, allow: allow ? new Set(allow) : null };
+  // `window`: the window it is bound to (default 1). It may bind to another
+  // window in `hello` only if it may negotiate 'windows' (connections with no
+  // `allow`, the embedder's own, may).
+  connect(transport, { allow, window = 1 } = {}) {
+    if (!isWindowId(window)) throw new TypeError('window must be a positive integer');
+    const connection = { transport, negotiated: null, allow: allow ? new Set(allow) : null, window };
     this.#connections.add(connection);
     transport.onmessage = (message) => this.#receive(connection, message);
     return () => this.#connections.delete(connection);
   }
 
-  // Events go to the connections that negotiated `capability`.
-  emit(name, data, capability = 'view') {
-    for (const { transport, negotiated } of this.#connections) {
+  // Events go to the connections that negotiated `capability` and, when
+  // `window` is given, are bound to that window.
+  emit(name, data, capability = 'view', window = undefined) {
+    for (const { transport, negotiated, window: bound } of this.#connections) {
+      if (window !== undefined && bound !== window) continue;
       if (negotiated?.has(capability)) transport.send({ jsonrpc: '2.0', method: 'event', params: { name, data } });
     }
   }
@@ -173,21 +192,28 @@ export class ProtocolServer {
       if (!connection.negotiated.has(capability))
         throw new ProtocolError(ErrorCode.CapabilityMissing, `capability "${capability}" not negotiated`);
       if (!entry) throw new ProtocolError(ErrorCode.MethodNotFound, `unknown method ${method}`);
-      reply({ result: (await entry.fn(params ?? {})) ?? null });
+      reply({ result: (await entry.fn(params ?? {}, { window: connection.window })) ?? null });
     } catch (error) {
       const code = error instanceof ProtocolError ? error.code : ErrorCode.Internal;
       reply({ error: { code, message: error.message, data: error.data } });
     }
   }
 
-  #hello(connection, { version, capabilities }) {
+  #hello(connection, { version, capabilities, window }) {
     if (version !== PROTOCOL_VERSION)
       throw new ProtocolError(ErrorCode.VersionMismatch, `server speaks protocol ${PROTOCOL_VERSION}`, { version: PROTOCOL_VERSION });
     if (capabilities !== undefined && (!Array.isArray(capabilities) || capabilities.some((c) => typeof c !== 'string')))
       throw new ProtocolError(ErrorCode.InvalidParams, 'capabilities must be a list of names');
+    if (window !== undefined) {
+      if (!isWindowId(window)) throw ProtocolError.fromReason('invalid_params', 'window must be a positive integer');
+      const mayBind = window === connection.window || !connection.allow || connection.allow.has('windows');
+      if (!mayBind) throw ProtocolError.fromReason('denied_by_policy', 'this connection is bound to its own window');
+      if (!this.#windowExists(window)) throw ProtocolError.fromReason('invalid_params', 'no such window');
+      connection.window = window;
+    }
     const wanted = capabilities?.length ? capabilities : [...this.#capabilities].filter((c) => !this.#optIn.has(c));
     connection.negotiated = new Set(wanted.filter((c) => this.#capabilities.has(c) && (!connection.allow || connection.allow.has(c))));
-    return { version: PROTOCOL_VERSION, capabilities: [...connection.negotiated] };
+    return { version: PROTOCOL_VERSION, capabilities: [...connection.negotiated], window: connection.window };
   }
 }
 
@@ -205,9 +231,11 @@ export class ProtocolClient extends EventTarget {
     transport.onmessage = (message) => this.#receive(message);
   }
 
-  async hello(capabilities = []) {
-    const result = await this.request('hello', { version: PROTOCOL_VERSION, capabilities });
+  // `window`: bind to that window instead of the one the server chose.
+  async hello(capabilities = [], { window } = {}) {
+    const result = await this.request('hello', { version: PROTOCOL_VERSION, capabilities, ...(window !== undefined ? { window } : {}) });
     this.capabilities = result.capabilities;
+    this.window = result.window ?? 1;
     return result;
   }
 

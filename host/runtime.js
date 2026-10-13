@@ -1,6 +1,6 @@
-// Starts one engine instance and connects it to a canvas. The engine runs
-// WebKit on a pthread worker; this side forwards commands to it, receives its
-// events, and shows its frames.
+// Starts one engine instance. The engine runs WebKit on a pthread worker; this
+// side forwards commands to it, receives its events, and hands each window's
+// frames to the display attached for that window (attachDisplay).
 
 export const BRIDGE_VERSION = 1;
 
@@ -38,22 +38,83 @@ export function memoryLimitPages(maxMemoryMB) {
 // A crash caused by the memory limit, told apart from the rest.
 export const isOutOfMemory = (message) => /out of memory|\bOOM\b|Cannot enlarge memory|memory access out of bounds.*grow/i.test(String(message));
 
+// The window a frame or frame request is for: a positive integer, or window
+// 1 for the bare forms an engine without windows sends.
+export function frameWindow(value) {
+  return Number.isInteger(value) && value > 0 ? value : 1;
+}
+
+// A sink that draws frames into a canvas with a bitmaprenderer context.
+export function canvasSink(canvas) {
+  let context = null;
+  return {
+    canvas,
+    present(bitmap) {
+      if (canvas.width !== bitmap.width) canvas.width = bitmap.width;
+      if (canvas.height !== bitmap.height) canvas.height = bitmap.height;
+      context ??= canvas.getContext('bitmaprenderer');
+      context.transferFromImageBitmap(bitmap);
+    },
+  };
+}
+
+// Each window's frames go to the sink attached for it (`sink.present(bitmap)`),
+// one sink per window; a later one replaces the earlier. Frames of a window
+// without a sink, and anything that is not a bitmap, are dropped.
+export class FrameRouter {
+  #sinks = new Map();
+
+  attach(window, sink) {
+    this.#sinks.set(window, sink);
+    return () => {
+      if (this.#sinks.get(window) === sink) this.#sinks.delete(window);
+    };
+  }
+
+  sinkOf(window) {
+    return this.#sinks.get(window) ?? null;
+  }
+
+  present(window, bitmap) {
+    if (!bitmap || typeof bitmap !== 'object' || typeof bitmap.close !== 'function') return false;
+    const sink = this.#sinks.get(frameWindow(window));
+    if (!sink) {
+      bitmap.close();
+      return false;
+    }
+    sink.present(bitmap);
+    return true;
+  }
+}
+
 export class EngineRuntime extends EventTarget {
   #module = null;
   #worker = null;
-  #canvas = null;
-  #bitmapContext = null;
-  #pixelContext = null;
+  #frames = new FrameRouter();
   #pending = [];
 
   #maxMemoryMB;
 
+  // `canvas`, when given, shows window 1.
   constructor({ engineUrl, relayUrl, canvas, maxMemoryMB }) {
     super();
     this.engineUrl = engineUrl;
     this.#maxMemoryMB = maxMemoryMB;
     this.relayUrl = relayUrl;
-    this.#canvas = canvas;
+    if (canvas) this.attachDisplay(1, canvasSink(canvas));
+  }
+
+  // What the engine reported it speaks beyond the bridge version ("started").
+  features = [];
+
+  // Frames of `window` go to `sink.present(bitmap)` from now on; returns a
+  // function that detaches the sink.
+  attachDisplay(window, sink) {
+    return this.#frames.attach(window, sink);
+  }
+
+  displayOf(window) {
+    return this.#frames.sinkOf(window);
   }
 
   async start() {
@@ -93,11 +154,14 @@ export class EngineRuntime extends EventTarget {
 
   #onWorkerMessage(worker, data) {
     if (!data || typeof data !== 'object') return;
-    if (data.inceptionWantsFrame) return requestAnimationFrame(() => worker.postMessage({ inceptionFrameTick: 1 }));
-    if (data.inceptionFrame) return this.#presentBitmap(data.inceptionFrame);
+    if (data.inceptionWantsFrame) {
+      const window = frameWindow(data.inceptionWantsFrame);
+      return requestAnimationFrame(() => worker.postMessage({ inceptionFrameTick: window }));
+    }
+    if (data.inceptionFrame) return this.#presentBitmap(frameWindow(data.window), data.inceptionFrame);
     if (data.inceptionMediaAppend) return this.onMediaAppend?.(data.inceptionMediaAppend);
     if (data.inceptionWasm) return this.#translateWasm(data.inceptionWasm);
-    if (data.inceptionPixels) return this.#presentPixels(data.inceptionPixels);
+    if (data.inceptionPixels) return this.#presentPixels(frameWindow(data.window), data.inceptionPixels);
     if (data.inceptionCrash) return this.#crashed(data.inceptionCrash);
     if (data.inceptionAsk) return this.#answer(data.inceptionAsk);
     if (data.inceptionAudioDecode) return this.onAudioDecode?.(data.inceptionAudioDecode);
@@ -110,6 +174,7 @@ export class EngineRuntime extends EventTarget {
       if (payload.version !== BRIDGE_VERSION)
         throw new Error(`engine speaks bridge v${payload.version}, host speaks v${BRIDGE_VERSION}`);
       this.#worker = worker;
+      this.features = Array.isArray(payload.features) ? payload.features.filter((f) => typeof f === 'string') : [];
       for (const message of this.#pending.splice(0)) worker.postMessage(message);
     }
     // One handler failing on a malformed payload must not keep the rest from the event.
@@ -180,18 +245,15 @@ export class EngineRuntime extends EventTarget {
     this.#worker?.postMessage({ inceptionFile: { name, bytes } }, [bytes]);
   }
 
-  #presentBitmap(bitmap) {
-    const canvas = this.#canvas;
-    if (canvas.width !== bitmap.width) canvas.width = bitmap.width;
-    if (canvas.height !== bitmap.height) canvas.height = bitmap.height;
-    this.#bitmapContext ??= canvas.getContext('bitmaprenderer');
-    this.#bitmapContext.transferFromImageBitmap(bitmap);
+  #presentBitmap(window, bitmap) {
+    this.#frames.present(window, bitmap);
   }
 
   // CPU fallback frames arrive as RGBA bytes. They go through an ImageBitmap so
-  // both paths share the canvas's bitmaprenderer context.
-  async #presentPixels({ width, height, buffer }) {
+  // both paths share the display's bitmaprenderer context.
+  async #presentPixels(window, { width, height, buffer }) {
+    if (!this.#frames.sinkOf(window)) return;
     const image = new ImageData(new Uint8ClampedArray(buffer), width, height);
-    this.#presentBitmap(await createImageBitmap(image, { premultiplyAlpha: 'premultiply' }));
+    this.#presentBitmap(window, await createImageBitmap(image, { premultiplyAlpha: 'premultiply' }));
   }
 }
