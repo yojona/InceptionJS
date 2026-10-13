@@ -13,6 +13,9 @@
 //   {type: 'close'}                  the display goes away (the window stays)
 //   {type: 'probe', ok}              whether the probe bitmap arrived
 //   {type: 'answer', id, value}      the reply to an "ask"
+//   {type: 'file', name, bytes}      a file the person chose for a file
+//                                    chooser the window raised ("file.choose"
+//                                    event); "file.chosen" input follows
 //   {type: 'media', command, args}   state of a video the display plays
 //                                    (media.state, media.bufferDone)
 // host to display:
@@ -23,7 +26,8 @@
 //                                    browsers drop a bitmap posted through a
 //                                    port to another document (WebKit always,
 //                                    Firefox when not isolated)
-//   {type: 'event', name, data}      cursor, select.show|update|hide, control
+//   {type: 'event', name, data}      cursor, select.show|update|hide, control,
+//                                    file.choose, clipboard.write
 //   {type: 'closed'}                 the window was closed
 //   {type: 'ask', id, question}      a dialog (alert, confirm, prompt,
 //                                    beforeunload) the page is blocked on
@@ -36,21 +40,25 @@
 // dropped, and the host stamps the window id itself, so whatever window a
 // display names is ignored.
 
-import { attachInput } from './input.js';
-import { SelectMenu, answerDialog } from './ui.js';
+import { attachInput, writeClipboard } from './input.js';
+import { SelectMenu, answerDialog, chooseFiles } from './ui.js';
 import { canvasSink } from './runtime.js';
 import { MediaHost } from './media.js';
 import { PcmPlayer, PcmTap } from './pcm.js';
 
-export const DISPLAY_INPUT_COMMANDS = new Set(['mouse', 'wheel', 'key', 'ime.set', 'ime.commit', 'ime.cancel', 'focus', 'edit', 'clipboard.set', 'select.choose']);
+export const DISPLAY_INPUT_COMMANDS = new Set(['mouse', 'wheel', 'key', 'ime.set', 'ime.commit', 'ime.cancel', 'focus', 'edit', 'clipboard.set', 'select.choose', 'file.chosen']);
 // Events a display needs to draw its part.
-export const DISPLAY_EVENTS = new Set(['cursor', 'select.show', 'select.update', 'select.hide', 'control']);
+export const DISPLAY_EVENTS = new Set(['cursor', 'select.show', 'select.update', 'select.hide', 'control', 'file.choose', 'clipboard.write']);
 
 // What a display's videos may send back to the engine.
 const MEDIA_COMMANDS = new Set(['media.state', 'media.bufferDone']);
 
 const MAX_ARGS_CHARS = 64 * 1024;
 const MAX_SIZE = 16384;
+const MAX_FILE_BYTES = 256 * 1024 * 1024;
+// How long after the person's input in the display's document a page may
+// still write the clipboard.
+const CLIPBOARD_GESTURE_MS = 2000;
 
 const isObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
 const dimension = (value) => Number.isFinite(value) && value >= 1 && value <= MAX_SIZE;
@@ -86,6 +94,9 @@ export function validateDisplayMessage(message) {
       return { type: 'close' };
     case 'probe':
       return typeof message.ok === 'boolean' ? { type: 'probe', ok: message.ok } : null;
+    case 'file':
+      if (typeof message.name !== 'string' || !message.name || message.name.length > 255 || !(message.bytes instanceof ArrayBuffer) || message.bytes.byteLength > MAX_FILE_BYTES) return null;
+      return { type: 'file', name: message.name, bytes: message.bytes };
     case 'answer': {
       const { id, value } = message;
       if (!Number.isInteger(id) || id < 1) return null;
@@ -175,7 +186,7 @@ export class Display {
 // `media` stands in for the window's MediaHost: the display plays the
 // window's videos, so their events and bytes cross the port and their state
 // comes back through `send`. `audio` takes the engine's audio rings.
-export function serveDisplay(port, { send, sendMedia = send, onVisibility, onClose, frames = 'auto' }) {
+export function serveDisplay(port, { send, sendMedia = send, sendFile, onVisibility, onClose, frames = 'auto' }) {
   let open = true;
   // Until the display answers the probe, frames go as pixels: they always arrive.
   let bitmaps = frames === 'bitmap';
@@ -183,6 +194,8 @@ export function serveDisplay(port, { send, sendMedia = send, onVisibility, onClo
   const asks = new Map();
   let nextAsk = 1;
   let tap = null;
+  // The display may send files only for a chooser the window raised.
+  let choosing = false;
   const close = (notify) => {
     if (!open) return;
     open = false;
@@ -197,8 +210,15 @@ export function serveDisplay(port, { send, sendMedia = send, onVisibility, onClo
   port.addEventListener('message', (event) => {
     const message = validateDisplayMessage(event.data);
     if (!open || !message) return;
-    if (message.type === 'input') send(message.command, message.args);
-    else if (message.type === 'resize') send('resize', { width: message.width, height: message.height, deviceScaleFactor: message.deviceScaleFactor });
+    if (message.type === 'input') {
+      if (message.command === 'file.chosen') {
+        if (!choosing) return;
+        choosing = false;
+      }
+      send(message.command, message.args);
+    } else if (message.type === 'file') {
+      if (choosing) sendFile?.(message.name, message.bytes);
+    } else if (message.type === 'resize') send('resize', { width: message.width, height: message.height, deviceScaleFactor: message.deviceScaleFactor });
     else if (message.type === 'visibility') onVisibility?.(message.visible);
     else if (message.type === 'probe') bitmaps = frames === 'auto' ? message.ok : bitmaps;
     else if (message.type === 'answer') {
@@ -285,7 +305,9 @@ export function serveDisplay(port, { send, sendMedia = send, onVisibility, onClo
       },
     },
     post(name, data) {
-      if (open && DISPLAY_EVENTS.has(name)) port.postMessage({ type: 'event', name, data });
+      if (!open || !DISPLAY_EVENTS.has(name)) return;
+      if (name === 'file.choose') choosing = true;
+      port.postMessage({ type: 'event', name, data });
     },
     ask(question) {
       if (!open) return Promise.resolve(undefined);
@@ -316,12 +338,16 @@ export function serveDisplay(port, { send, sendMedia = send, onVisibility, onClo
 // textInput (the hidden field IME input goes through; default: one is added),
 // menuRoot (where select menus open), mediaLayer (the box videos are placed
 // in; default: one is added under the canvas), dialogTarget and dialogs
-// ('dismiss' | 'native', as policy.dialogs), volume, muted, soundAllowed
-// (playing with sound is allowed without a gesture).
+// ('dismiss' | 'native', as policy.dialogs), clipboardWrite (as
+// policy.clipboard: whether a copy the page makes reaches this document's
+// system clipboard; 'user' only soon after the person's own input), volume,
+// muted, soundAllowed (playing with sound is allowed without a gesture). A
+// file chooser the window raises is a cancelable "filechooser" event on
+// dialogTarget, or this document's own picker.
 //
 // Returns {close(notify = true), setLevel({volume, muted}), media, audio}:
 // `media` is the MediaHost of this display's videos and `audio` its PcmPlayer.
-export function createDisplay(canvas, port, { clipboard = true, element = canvas, textInput = null, menuRoot = null, mediaLayer = null, dialogTarget = canvas, dialogs = 'dismiss', volume = 1, muted = false, soundAllowed = false } = {}) {
+export function createDisplay(canvas, port, { clipboard = true, element = canvas, textInput = null, menuRoot = null, mediaLayer = null, dialogTarget = canvas, dialogs = 'dismiss', clipboardWrite = 'user', volume = 1, muted = false, soundAllowed = false } = {}) {
   const sink = canvasSink(canvas);
   let ownTextInput = null;
   if (!textInput) {
@@ -355,6 +381,15 @@ export function createDisplay(canvas, port, { clipboard = true, element = canvas
   for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, gesture, true);
   const player = new PcmPlayer({ volume, muted });
   const level = { volume, muted };
+  let lastInput = -Infinity;
+  const used = (event) => event.isTrusted && (lastInput = performance.now());
+  const inputTypes = ['pointerdown', 'keydown', 'copy', 'cut'];
+  for (const type of inputTypes) document.addEventListener(type, used, true);
+  const mayWriteClipboard = () => clipboardWrite === true || (clipboardWrite === 'user' && performance.now() - lastInput < CLIPBOARD_GESTURE_MS);
+  const chooser = {
+    send: (command, args) => port.postMessage({ type: 'input', command, args }),
+    sendFile: (name, bytes) => port.postMessage({ type: 'file', name, bytes }, [bytes]),
+  };
 
   const sendSize = () => {
     const { width, height } = cssSizeOf(canvas);
@@ -371,6 +406,7 @@ export function createDisplay(canvas, port, { clipboard = true, element = canvas
     resizeObserver.disconnect();
     document.removeEventListener('visibilitychange', visibility);
     for (const type of ['pointerdown', 'keydown']) document.removeEventListener(type, gesture, true);
+    for (const type of inputTypes) document.removeEventListener(type, used, true);
     detachInput?.();
     ownTextInput?.remove();
     ownLayer?.remove();
@@ -400,6 +436,8 @@ export function createDisplay(canvas, port, { clipboard = true, element = canvas
       if (name === 'select.update') selectMenu.update(data);
       if (name === 'select.hide') selectMenu.hide(data.id);
       if (name === 'control') canvas.dataset.control = data.control === 'agent' ? 'agent' : 'human';
+      if (name === 'file.choose') chooseFiles(dialogTarget, chooser, { multiple: !!data.multiple, accept: Array.isArray(data.accept) ? data.accept.map(String).slice(0, 64) : [], directory: !!data.directory });
+      if (name === 'clipboard.write' && isObject(data.items) && mayWriteClipboard()) writeClipboard(Object.fromEntries(Object.entries(data.items).filter(([, value]) => typeof value === 'string')));
     } else if (message.type === 'ask' && Number.isInteger(message.id) && isObject(message.question)) {
       const { question: kind, message: text, defaultValue } = message.question;
       const question = { question: String(kind ?? '').slice(0, 32), message: String(text ?? '').slice(0, MAX_ASK_CHARS), ...(defaultValue === undefined ? {} : { defaultValue: String(defaultValue).slice(0, MAX_ASK_CHARS) }) };

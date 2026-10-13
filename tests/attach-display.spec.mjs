@@ -149,3 +149,42 @@ test('Web Audio of the window arrives as samples and plays once the person has u
   await expect.poll(async () => Number(await evaluateIn(host, id, 'ctx.currentTime.toFixed(2)')), { timeout: 10_000 }).toBeGreaterThan(t + 1);
   await expect.poll(async () => (await stats()).frames, { timeout: 10_000 }).toBeGreaterThan(heard.frames);
 });
+
+test('a file chosen in the tab that shows the window reaches the page', async ({ context }) => {
+  const profile = profileName();
+  const host = await startHost(context, profile);
+  const { page, id } = await startClient(context, profile);
+  await expect.poll(() => evaluateIn(host, id, 'document.readyState'), { timeout: 30_000 }).toBe('complete');
+  await write(host, id, '<title>files</title><body style="margin:0"><input type="file" id="f" style="width:300px;height:100px;display:block">');
+  await page.evaluate(() => {
+    window.pickers = 0;
+    document.getElementById('screen').addEventListener('filechooser', (e) => {
+      e.preventDefault();
+      window.pickers++;
+      e.detail.choose([new File(['hello from the other tab'], 'note.txt', { type: 'text/plain' })]);
+    });
+  });
+  await expect.poll(() => evaluateIn(host, id, 'document.getElementById("f") ? "ready" : "no"')).toBe('ready');
+  await page.locator('#screen').click({ position: { x: 40, y: 20 } });
+  await expect.poll(() => evaluateIn(host, id, 'String(document.getElementById("f").files.length)'), { timeout: 20_000 }).toBe('1');
+  expect(await page.evaluate(() => window.pickers)).toBe(1);
+  expect(await evaluateIn(host, id, 'document.getElementById("f").files[0].name')).toBe('note.txt');
+  await evaluateIn(host, id, 'window.text = ""; document.getElementById("f").files[0].text().then((t) => { window.text = t; }); "ok"');
+  await expect.poll(() => evaluateIn(host, id, 'window.text')).toBe('hello from the other tab');
+});
+
+test('a copy the page makes reaches the clipboard of the tab that shows the window', async ({ context }) => {
+  const profile = profileName();
+  const host = await startHost(context, profile);
+  const { page, id } = await startClient(context, profile);
+  await expect.poll(() => evaluateIn(host, id, 'document.readyState'), { timeout: 30_000 }).toBe('complete');
+  // The clipboard of the tab, observed instead of the system's.
+  await page.evaluate(() => {
+    window.copied = [];
+    Object.defineProperty(navigator, 'clipboard', { value: { write: async (items) => { for (const item of items) window.copied.push(await (await item.getType('text/plain')).text()); }, writeText: async (text) => window.copied.push(text) } });
+  });
+  await write(host, id, '<title>copy</title><body style="margin:0"><button id="c" style="width:300px;height:100px" onclick="const t = document.createElement(\'textarea\'); t.value = \'copied text\'; document.body.append(t); t.select(); document.execCommand(\'copy\'); t.remove()">copy</button>');
+  await expect.poll(() => evaluateIn(host, id, 'document.getElementById("c") ? "ready" : "no"')).toBe('ready');
+  await page.locator('#screen').click({ position: { x: 40, y: 20 } });
+  await expect.poll(() => page.evaluate(() => window.copied), { timeout: 20_000 }).toEqual(['copied text']);
+});

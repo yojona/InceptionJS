@@ -500,6 +500,7 @@ export class InceptionView extends HTMLElement {
       frames,
       send: this.#inputSender(record),
       sendMedia: (command, args) => record.slot.runtime.send(command, args),
+      sendFile: (name, bytes) => record.channel.sendFile(name, bytes),
       onVisibility: (visible) => this.#setVisible(record, visible),
       onClose: () => {
         if (record.display === served) this.#detachDisplay(record);
@@ -722,7 +723,7 @@ export class InceptionView extends HTMLElement {
     this.#watchRemote(remote, connection);
     remote.show(this.#canvas, {
       element: this, textInput: this.#textInput, menuRoot: this.#shadow, mediaLayer: this.#mediaLayer, dialogTarget: this,
-      dialogs: policy().dialogs, clipboard: policy().clipboard !== false, volume: this.#volume, muted: this.#muted, soundAllowed: this.hasAttribute('autoplay-sound') || policy().autoplaySound,
+      dialogs: policy().dialogs, clipboard: policy().clipboard !== false, clipboardWrite: policy().clipboard, volume: this.#volume, muted: this.#muted, soundAllowed: this.hasAttribute('autoplay-sound') || policy().autoplaySound,
     });
     if (document.activeElement === this) this.focusInput();
     // Waits in line for the profile: when its host goes away and this is the
@@ -909,9 +910,16 @@ export class InceptionView extends HTMLElement {
       if (display?.handleEvent) display.handleEvent(name, data);
       else display?.post?.(name, data);
     }
-    if (name === 'file.choose' && record) chooseFiles(record.target, record.channel, data);
+    // A display in another document raises the picker itself.
+    if (name === 'file.choose' && record) {
+      if (record.display?.post) record.display.post(name, data);
+      else chooseFiles(record.target, record.channel, data);
+    }
     if (name === 'field.focus') this.#provenanceOf(record)?.fieldFocused(data.kind, data.origin);
-    if (name === 'clipboard.write' && this.#mayWriteClipboard()) writeClipboard(data.items);
+    if (name === 'clipboard.write') {
+      if (record?.display?.post) record.display.post(name, { items: data.items });
+      else if (this.#mayWriteClipboard()) writeClipboard(data.items);
+    }
     if (record && record !== this.#main) record.channel.dispatchEvent(new CustomEvent(name, { detail: data }));
   }
 
