@@ -10,7 +10,9 @@
 #include "LocalFrameInlines.h"
 #include "Page.h"
 #include "bridge/Bridge.h"
+#include "view/BackForward.h"
 #include "view/Navigation.h"
+#include "view/SiteLock.h"
 #include "view/View.h"
 #include "view/Window.h"
 
@@ -20,8 +22,11 @@ using namespace WebCore;
 // Most matches find counts; past it the host shows "1000+".
 static constexpr unsigned maxFindMatches = 1000;
 
-// "navigation.state": what the host's back and forward buttons show.
-void emitNavigationState()
+// "navigation.state": what the host's back and forward buttons show. A
+// site-locked engine also sends its entries ({url, title}), the current one's
+// index and whether it was just `added`: the host keeps the window's history
+// across the engines of the sites it visits.
+void emitNavigationState(bool added)
 {
     auto* view = View::singleton();
     if (!view)
@@ -31,6 +36,19 @@ void emitNavigationState()
     state->setInteger("tab"_s, view->id());
     state->setBoolean("canGoBack"_s, history.canGoBackOrForward(-1));
     state->setBoolean("canGoForward"_s, history.canGoBackOrForward(1));
+    if (SiteLock::active()) {
+        auto& list = static_cast<BackForwardList&>(history.client());
+        auto entries = JSON::Array::create();
+        for (auto& item : list.entries()) {
+            auto entry = JSON::Object::create();
+            entry->setString("url"_s, item->url().string());
+            entry->setString("title"_s, item->title());
+            entries->pushObject(WTF::move(entry));
+        }
+        state->setArray("entries"_s, WTF::move(entries));
+        state->setInteger("index"_s, list.current());
+        state->setBoolean("added"_s, added);
+    }
     emitEvent("navigation.state"_s, WTF::move(state));
 }
 

@@ -13,7 +13,7 @@ void BackForwardList::addItem(Ref<HistoryItem>&& item)
     if (m_entries.size() > capacity)
         m_entries.removeAt(0);
     m_current = m_entries.size() - 1;
-    m_didChange();
+    m_didChange(true);
 }
 
 void BackForwardList::goToItem(HistoryItem& item)
@@ -21,7 +21,7 @@ void BackForwardList::goToItem(HistoryItem& item)
     for (size_t i = 0; i < m_entries.size(); ++i) {
         if (m_entries[i].ptr() == &item) {
             m_current = i;
-            m_didChange();
+            m_didChange(false);
             return;
         }
     }

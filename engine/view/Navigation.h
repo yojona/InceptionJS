@@ -6,7 +6,7 @@ namespace Inception {
 void registerNavigationCommands();
 
 // Tells the host whether back and forward have somewhere to go.
-void emitNavigationState();
+void emitNavigationState(bool added = false);
 
 // Where pages' window.open() and target=_blank go: a new tab in the opener's
 // window (the default), or a new window (view/Clients.cpp).
