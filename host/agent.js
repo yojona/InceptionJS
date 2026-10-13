@@ -14,7 +14,7 @@
 //   } })
 
 import { ProtocolError } from './protocol.js';
-import { diffSnapshots, findNodes, formatMarkdown, formatText, inViewport, neutralize, sanitize, wrapUntrusted } from './agent-snapshot.js';
+import { diffSnapshots, dropLabelEchoes, findNodes, formatMarkdown, formatText, inViewport, neutralize, sanitize, wrapUntrusted } from './agent-snapshot.js';
 
 // From least to most consequential. 'interact' is input that stays in the
 // page (typing into an ordinary field, choosing an option, scrolling).
@@ -262,6 +262,7 @@ export class AgentHost {
 
   async #takeSnapshot({ maxNodes }) {
     const result = await this.#engine('agent.snapshot', maxNodes ? { maxNodes } : {});
+    result.nodes = dropLabelEchoes(result.nodes);
     const suspicious = sanitize(result.nodes);
     const snapshot = { ...result, suspicious, title: neutralize(result.title) };
     this.#snapshot = snapshot;
@@ -395,6 +396,9 @@ export class AgentHost {
     const risk = declared(classify(action, params, target), params.risk);
     return this.#perform(action, params, risk, target, async (allow) => {
       const navigationsBefore = this.#navigations;
+      // Without a snapshot to compare with, take one, so the result can say
+      // what the action changed.
+      if (params.diff !== false && !this.#baseline) this.#baseline = await this.#takeSnapshot({});
       const args = { action, allow };
       for (const key of ['ref', 'text', 'value', 'key', 'deltaX', 'deltaY']) if (params[key] !== undefined) args[key] = params[key];
       for (const key of ['x', 'y']) if (Number.isFinite(params[key])) args[key] = Math.round(params[key]);

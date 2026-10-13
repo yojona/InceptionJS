@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { diffSnapshots, findNodes, formatMarkdown, formatText, inViewport, looksLikeInstructions, neutralize, sanitize, wrapUntrusted } from '../../host/agent-snapshot.js';
+import { diffSnapshots, dropLabelEchoes, findNodes, formatMarkdown, formatText, inViewport, looksLikeInstructions, neutralize, sanitize, wrapUntrusted } from '../../host/agent-snapshot.js';
 import { classify } from '../../host/agent.js';
 
 const page = () => [
@@ -105,4 +105,14 @@ test('risk classes from what the engine says about the target', () => {
   assert.equal(classify('press', { key: 'Enter' }, { editable: true, formRisk: 'login' }), 'login');
   assert.equal(classify('press', { key: 'Tab' }, { editable: true, formRisk: 'login' }), 'interact');
   assert.equal(classify('scroll', {}, null), 'interact');
+});
+
+test("a label's text beside its control is dropped", () => {
+  const nodes = dropLabelEchoes([
+    { ref: 'e1', role: 'text', name: 'Email', box: [0, 0, 1, 1] },
+    { ref: 'e2', role: 'textbox', name: 'Email', interactive: true, box: [0, 0, 1, 1] },
+    { ref: 'e3', role: 'text', name: 'Email', box: [0, 0, 1, 1] },
+    { ref: 'e4', role: 'text', name: 'Other', box: [0, 0, 1, 1] },
+  ]);
+  assert.deepEqual(nodes.map((n) => n.ref), ['e2', 'e4']);
 });

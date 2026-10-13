@@ -50,6 +50,19 @@ export function sanitize(nodes) {
   return suspicious;
 }
 
+// A label's text next to the control it names says the same thing twice; the
+// control keeps it.
+export function dropLabelEchoes(nodes) {
+  if (!nodes) return nodes;
+  const kept = nodes.filter((node, i) => {
+    if (node.role !== 'text' || !node.name) return true;
+    const near = [nodes[i - 1], nodes[i + 1]];
+    return !near.some((other) => other?.interactive && other.name === node.name);
+  });
+  for (const node of kept) if (node.children) node.children = dropLabelEchoes(node.children);
+  return kept;
+}
+
 // Keeps nodes that intersect the viewport, and the ancestors of those.
 export function inViewport(nodes, { width, height }) {
   const visible = ([x, y, w, h] = [0, 0, 0, 0]) => x < width && y < height && x + w > 0 && y + h > 0;

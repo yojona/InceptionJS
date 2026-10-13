@@ -277,19 +277,19 @@ test.describe('safety', () => {
     const password = await ref(page, 'textbox', 'Password');
     const card = await ref(page, 'textbox', 'Card number');
     await agent(page, 'requestControl');
-    await agent(page, 'type', password, 'hunter2');
-    expect(await pageValue(page, `document.getElementById('password').value`)).toBe('hunter2');
+    await agent(page, 'type', password, 's3cret-pw');
+    expect(await pageValue(page, `document.getElementById('password').value`)).toBe('s3cret-pw');
     expect(await outcome(page, 'type', card, '4111')).toMatchObject({ reason: 'denied_by_policy' });
     expect(await page.evaluate(() => window.asked)).toEqual(['read:control', 'login:type', 'payment:type']);
 
     const snapshot = await agent(page, 'snapshot');
     expect(snapshot.text).toMatch(/textbox "Password" password-field filled/);
-    expect(snapshot.text).not.toContain('hunter2');
+    expect(snapshot.text).not.toContain('s3cret-pw');
     const forms = JSON.stringify(await agent(page, 'extract', { kind: 'forms' }));
-    expect(forms).not.toContain('hunter2');
+    expect(forms).not.toContain('s3cret-pw');
     const log = JSON.stringify(await agent(page, 'log'));
-    expect(log).not.toContain('hunter2');
-    expect(log).toContain('7 characters, password field');
+    expect(log).not.toContain('s3cret-pw');
+    expect(log).toContain('9 characters, password field');
   });
 
   test('with login approved, the submission goes ahead', async ({ page }) => {
