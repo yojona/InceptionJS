@@ -380,7 +380,7 @@ export class InceptionView extends HTMLElement {
       if (name === 'select.update') this.#selectMenu.update(data);
       if (name === 'select.hide') this.#selectMenu.hide(data.id);
       if (name === 'file.choose') chooseFiles(this, this.#runtime, data);
-      if (name === 'field.focus') this.#provenance.fieldFocused(data.kind);
+      if (name === 'field.focus') this.#provenance.fieldFocused(data.kind, data.origin);
       if (name === 'clipboard.write' && this.#mayWriteClipboard()) writeClipboard(data.items);
     };
     this.#selectMenu = new SelectMenu(this.#shadow, (command, args) => this.#runtime.send(command, args));

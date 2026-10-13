@@ -50,6 +50,10 @@ export class Provenance {
   #badge;
   #notice;
   #field = '';
+  #fieldOrigin = '';
+  #url = '';
+  #reported = '';
+  #handled = false;
   #signIn = false;
   #enabled = true;
   #site = location.hostname || location.host || 'this page';
@@ -119,14 +123,16 @@ export class Provenance {
     this.#badge.classList.add(CORNERS.includes(corner) ? corner : 'bottom-right');
   }
 
-  // The engine's "field.focus": {kind: "password" | "payment" | ""}.
-  fieldFocused(kind) {
+  // The engine's "field.focus": {kind: "password" | "payment" | "", origin}.
+  fieldFocused(kind, origin = '') {
     this.#field = kind;
+    this.#fieldOrigin = typeof origin === 'string' ? origin : '';
     this.#update();
   }
 
   // The main frame's URL after each navigation.
   navigated(url) {
+    this.#url = String(url ?? '');
     try {
       this.#signIn = SIGN_IN_HOSTS.includes(new URL(url).hostname);
     } catch {
@@ -135,9 +141,33 @@ export class Provenance {
     this.#update();
   }
 
+  // "sensitivepage" is dispatched on the view when the page shows a password or
+  // payment field or a known sign-in page, and again with kind "" when it stops:
+  //   {kind: "password" | "payment" | "", reason: "field" | "signin-page", origin, url}
+  // It is cancelable: preventDefault() means the embedder shows its own warning
+  // and the built-in notice stays hidden. It fires whatever the provenance
+  // attribute says.
   #update() {
     const kind = this.#field === 'payment' ? 'payment' : this.#field === 'password' || this.#signIn ? 'password' : '';
+    const reason = this.#field ? 'field' : this.#signIn ? 'signin-page' : '';
+    let origin = this.#fieldOrigin;
+    if (!origin || !this.#field) {
+      try {
+        origin = new URL(this.#url).origin;
+      } catch {
+        origin = '';
+      }
+    }
+    // Nothing to say while nothing is sensitive, and once when that ends.
+    const key = kind ? `${kind}|${reason}|${origin}` : '';
+    let handled = this.#handled;
+    if (key !== this.#reported) {
+      this.#reported = key;
+      const event = new CustomEvent('sensitivepage', { cancelable: true, detail: { kind, reason, origin, url: this.#url } });
+      this.#host.dispatchEvent(event);
+      handled = this.#handled = event.defaultPrevented;
+    }
     this.#notice.textContent = kind ? text[kind](this.#site) : '';
-    this.#notice.classList.toggle('shown', !!kind && this.#enabled);
+    this.#notice.classList.toggle('shown', !!kind && this.#enabled && !handled);
   }
 }

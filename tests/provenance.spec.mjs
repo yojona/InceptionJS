@@ -56,3 +56,37 @@ test('restyling the badge is fine; provenance="off" is the explicit way to remov
   await page.waitForTimeout(2500);
   await expect(view(page).locator('.tamper')).toHaveCount(0);
 });
+
+test('sensitivepage reports password and card fields with their origin, and can replace the built-in notice', async ({ page }) => {
+  await view(page).evaluate((el) => {
+    window.sensitive = [];
+    el.addEventListener('sensitivepage', (e) => {
+      window.sensitive.push(`${e.detail.kind}:${e.detail.reason}:${e.detail.origin}`);
+      if (window.takeOver) e.preventDefault();
+    });
+  });
+  await evaluate(page, `document.body.innerHTML = '<input id="user"><input id="pass" type="password"><input id="card" autocomplete="cc-number">'; 'ok'`);
+  await evaluate(page, `document.getElementById('pass').focus(), 'ok'`);
+  await expect(view(page).locator('.notice')).toBeVisible();
+  await evaluate(page, `document.getElementById('user').focus(), 'ok'`);
+  await expect(view(page).locator('.notice')).toBeHidden();
+  await page.evaluate(() => (window.takeOver = true));
+  await evaluate(page, `document.getElementById('card').focus(), 'ok'`);
+  await expect.poll(() => page.evaluate(() => window.sensitive.length)).toBe(3);
+  await expect(view(page).locator('.notice')).toBeHidden();
+  const seen = await page.evaluate(() => window.sensitive);
+  expect(seen[0]).toMatch(/^password:field:/);
+  expect(seen[1]).toMatch(/^::/);
+  expect(seen[2]).toMatch(/^payment:field:/);
+});
+
+test('sensitivepage fires with provenance="off" too', async ({ page }) => {
+  await view(page).evaluate((el) => {
+    el.setAttribute('provenance', 'off');
+    window.sensitive = [];
+    el.addEventListener('sensitivepage', (e) => window.sensitive.push(e.detail.kind));
+  });
+  await evaluate(page, `document.body.innerHTML = '<input id="pass" type="password">'; document.getElementById('pass').focus(), 'ok'`);
+  await expect.poll(() => page.evaluate(() => window.sensitive)).toEqual(['password']);
+  await expect(view(page).locator('.notice')).toBeHidden();
+});
