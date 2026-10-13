@@ -74,9 +74,9 @@ test('a download reaches the host as a file', async ({ page }) => {
   expect(result.size).toBeGreaterThan(0);
 });
 
-test('a second view on an open profile says so in the view', async ({ page, context }) => {
+test('a second view that does not attach says the profile is open, in the view', async ({ page, context }) => {
   const second = await context.newPage();
-  await second.goto(`${PAGE}?url=about:blank`);
+  await second.goto(`${PAGE}?url=about:blank&attach=off`);
   const message = second.locator('inception-view').locator('.message');
   await expect(message).toContainText('already open in another tab', { timeout: 20_000 });
   await second.close();

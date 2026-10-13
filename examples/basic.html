@@ -47,6 +47,9 @@
     policy: params.has('policy') ? JSON.parse(params.get('policy')) : { downloads: 'save', newTabs: 'foreground', dialogs: 'native', clipboard: true },
     // ?isolation=window: a profile service and an engine per window.
     isolation: params.get('isolation') ?? 'shared',
+    // A second tab on the same profile attaches to the first; ?attach=off
+    // shows the error instead.
+    attach: params.get('attach') !== 'off',
   });
 
   const view = document.getElementById('view');
