@@ -159,3 +159,17 @@ test('display messages: sizes, visibility and junk', () => {
   for (const junk of [null, 'input', 5, [], {}, { type: 'frame' }, { type: 'answer' }, { type: 'eval' }])
     assert.equal(validateDisplayMessage(junk), null);
 });
+
+test('display messages: fullscreen and EME answers', () => {
+  assert.deepEqual(validateDisplayMessage({ type: 'fullscreen', active: true, window: 3 }), { type: 'fullscreen', active: true });
+  assert.deepEqual(validateDisplayMessage({ type: 'fullscreen', active: false, error: 'x'.repeat(500) }), { type: 'fullscreen', active: false, error: 'x'.repeat(200) });
+  assert.equal(validateDisplayMessage({ type: 'fullscreen', active: 'yes' }), null);
+  assert.deepEqual(validateDisplayMessage({ type: 'eme', command: 'eme.reply', args: { req: 1, ok: true } }), { type: 'eme', command: 'eme.reply', args: { req: 1, ok: true } });
+  // License messages are bigger than other arguments, but bounded.
+  assert.ok(validateDisplayMessage({ type: 'eme', command: 'eme.message', args: { session: 1, message: 'a'.repeat(100_000) } }));
+  assert.equal(validateDisplayMessage({ type: 'eme', command: 'eme.message', args: { message: 'a'.repeat(3 * 1024 * 1024) } }), null);
+  for (const command of ['load', 'debug.evaluate', 'media.state', 'eme.create'])
+    assert.equal(validateDisplayMessage({ type: 'eme', command, args: {} }), null);
+  assert.ok(validateDisplayMessage({ type: 'media', command: 'media.keysUsable', args: { id: 1 } }));
+  assert.equal(validateDisplayMessage({ type: 'media', command: 'eme.reply', args: {} }), null);
+});

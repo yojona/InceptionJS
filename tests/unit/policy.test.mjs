@@ -20,6 +20,12 @@ test('valid choices are kept, anything else falls back to the default', () => {
   assert.equal(resolvePolicy({ maxDownloadBytes: 10 }).maxDownloadBytes, 10);
 });
 
+test('isolation \'site\' keeps other sites\' cookies away unless the embedder allows them', () => {
+  assert.equal(POLICY_DEFAULTS.thirdPartyCookies, 'block');
+  assert.equal(resolvePolicy({ thirdPartyCookies: 'allow' }).thirdPartyCookies, 'allow');
+  assert.equal(resolvePolicy({ thirdPartyCookies: true }).thirdPartyCookies, 'block');
+});
+
 test('file names from a server cannot carry paths or control characters', () => {
   assert.equal(safeFilename('report.pdf'), 'report.pdf');
   assert.equal(safeFilename('../../etc/passwd'), 'passwd');
