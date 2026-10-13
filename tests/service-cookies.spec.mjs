@@ -91,3 +91,14 @@ test('cookies outlive a service crash; content engines ask again after it restar
   expect(await evaluate(page, second, 'document.cookie')).toBe('kept=yes');
   expect(await evaluate(page, first, 'document.cookie')).toBe('kept=yes');
 });
+
+test('a host that is itself a public suffix keeps its cookies, from a redirect and from script', async ({ page }) => {
+  const [first, second] = await open(page);
+  // httpbin.org is on the public suffix list's private section.
+  await harness(page, 'navigate', first, 'https://httpbin.org/cookies/set?fromredirect=1', 'location.pathname === "/cookies" && document.readyState === "complete"');
+  expect(await evaluate(page, first, 'document.body.innerText')).toContain('fromredirect');
+  await harness(page, 'navigate', second, 'https://httpbin.org/html');
+  await evaluate(page, second, 'document.cookie = "fromscript=2; path=/"; "ok"');
+  await expect.poll(() => evaluate(page, second, 'document.cookie')).toContain('fromredirect=1');
+  expect(await evaluate(page, second, 'document.cookie')).toContain('fromscript=2');
+});
