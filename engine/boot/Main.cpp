@@ -56,7 +56,7 @@ int inception_gfx_page_context_cap();
 // worker stacks are smaller than Chromium's and Firefox's.
 EM_JS(int, inception_host_recursion_depth, (), {
     const agent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
-    return /AppleWebKit/.test(agent) && !/Chrome|Chromium|Edg/.test(agent) ? 40 : 0;
+    return /AppleWebKit/.test(agent) && !/Chrome|Chromium|Edg/.test(agent) ? 24 : 0;
 });
 
 namespace Inception {
