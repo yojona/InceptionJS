@@ -14,6 +14,7 @@
 #include "net/Download.h"
 #include "net/RemoteLoad.h"
 #include "net/ServiceLoad.h"
+#include "net/SharedCookies.h"
 #include "net/Sockets.h"
 #include "net/WebSocketChannel.h"
 #include "storage/Disk.h"
@@ -101,6 +102,7 @@ static void startProfileService(JSON::Object& args)
         applyPreferences(*preferences);
     installServiceLoads();
     installServiceWebSockets();
+    installCookieService();
     Download::installService();
     History::installService();
 
@@ -143,6 +145,7 @@ static void registerCommands()
             setRole(Role::Content);
             RemoteLoad::install();
             installRemoteWebSockets();
+            installCookieProxy();
         }
         auto cssSize = sizeFrom(args);
         float scale = args.getDouble("deviceScaleFactor"_s).value_or(1);

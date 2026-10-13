@@ -3,6 +3,8 @@
 
 #include "CookieJar.h"
 #include "CookieJarDB.h"
+#include "link/Link.h"
+#include "net/SharedCookies.h"
 #include "storage/Profile.h"
 #include "CurlResponse.h"
 #include "HTTPHeaderNames.h"
@@ -33,6 +35,8 @@ class SessionProvider final : public StorageSessionProvider {
 
 Ref<CookieJar> createCookieJar()
 {
+    if (role() == Role::Content)
+        return createProxyCookieJar();
     return CookieJar::create(adoptRef(*new SessionProvider));
 }
 
@@ -54,12 +58,16 @@ void storeResponseCookies(const ResourceRequest& request, const CurlResponse& re
     if (!request.allowCookies())
         return;
     constexpr auto prefix = "set-cookie:"_s;
+    bool changed = false;
     for (auto& line : response.headers) {
         if (!line.startsWithIgnoringASCIICase(prefix))
             continue;
         auto value = line.substring(prefix.length()).trim(isASCIIWhitespace<char16_t>);
         networkSession().setCookiesFromHTTPResponse(request.firstPartyForCookies(), response.url, value);
+        changed = true;
     }
+    if (changed)
+        cookiesChanged(response.url);
 }
 
 } // namespace Inception

@@ -48,6 +48,13 @@ enum class Message : uint16_t {
     HistoryVisit,
     HistoryTitle,
 
+    // Cookies (net/SharedCookies.cpp). Content to service:
+    CookiesForHost = 250,
+    CookieSet,
+    CookieDelete,
+    // Service to content:
+    CookiesForHostChanged,
+
     // Page WebSockets (net/WebSocketChannel.cpp). Content to service:
     SocketConnect = 300,
     SocketSend,
