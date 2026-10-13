@@ -12,11 +12,18 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     baseURL,
-    channel: 'chrome',
     headless: true,
     viewport: { width: 1024, height: 700 },
-    launchOptions: { args: ['--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] },
   },
+  // `npm test` runs Chrome; pick the others with --project=firefox / --project=webkit.
+  projects: [
+    {
+      name: 'chrome',
+      use: { channel: 'chrome', launchOptions: { args: ['--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] } },
+    },
+    { name: 'firefox', use: { browserName: 'firefox' } },
+    { name: 'webkit', use: { browserName: 'webkit' } },
+  ],
   webServer: process.env.BASE_URL
     ? undefined
     : { command: 'node tests/serve.mjs', url: baseURL, reuseExistingServer: true, cwd: '..' },
