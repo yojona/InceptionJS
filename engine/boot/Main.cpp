@@ -19,7 +19,9 @@
 #include "net/WebSocketChannel.h"
 #include "storage/Disk.h"
 #include "storage/History.h"
+#include "storage/IndexedDB.h"
 #include "storage/Profile.h"
+#include "storage/WebStorage.h"
 #include "wasm/GuestWasm.h"
 #include "platform/Strategies.h"
 #include "view/Clients.h"
@@ -31,6 +33,7 @@
 #include "CurlRequestScheduler.h"
 #include "CurlStreamScheduler.h"
 #include "CommonVM.h"
+#include "ProcessIdentifier.h"
 #include <JavaScriptCore/InitializeThreading.h>
 #include <JavaScriptCore/JSLock.h>
 #include <JavaScriptCore/Options.h>
@@ -38,6 +41,7 @@
 #include <cstdlib>
 #include <emscripten.h>
 #include <wtf/MainThread.h>
+#include <wtf/CryptographicallyRandomNumber.h>
 #include <wtf/RunLoop.h>
 
 extern "C" {
@@ -88,6 +92,16 @@ static Ref<JSON::Object> startedEvent()
     return started;
 }
 
+// The host numbers each content engine of a document; without a number, a
+// random one.
+static void setContentIdentifier(int number)
+{
+    uint64_t raw = number > 0 ? static_cast<uint64_t>(number) : cryptographicallyRandomNumber<uint64_t>();
+    if (!ProcessIdentifier::isValidIdentifier(raw))
+        raw = 1;
+    Process::setIdentifier(ProcessIdentifier { raw });
+}
+
 // "init" with role "profile": the profile's files, cookies, storage and
 // network, and no page. {profile, freshProfile, ephemeral?, wispUrl,
 // preferences?} -> "ready" {version, role, persistent}.
@@ -103,6 +117,8 @@ static void startProfileService(JSON::Object& args)
     installServiceLoads();
     installServiceWebSockets();
     installCookieService();
+    installStorageService();
+    installIDBService();
     Download::installService();
     History::installService();
 
@@ -146,6 +162,11 @@ static void registerCommands()
             RemoteLoad::install();
             installRemoteWebSockets();
             installCookieProxy();
+            installStorageProxy();
+            installIDBProxy();
+            // Its IDB connection is known to the service by this process
+            // identifier: unique among the service's engines.
+            setContentIdentifier(args.getInteger("engine"_s).value_or(0));
         }
         auto cssSize = sizeFrom(args);
         float scale = args.getDouble("deviceScaleFactor"_s).value_or(1);

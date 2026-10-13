@@ -55,6 +55,21 @@ enum class Message : uint16_t {
     // Service to content:
     CookiesForHostChanged,
 
+    // localStorage (storage/WebStorage.cpp). Content to service:
+    StorageLoad = 270,
+    StorageChange,
+    // Service to content:
+    StorageChanged,
+
+    // IndexedDB (storage/IndexedDB.cpp): each frame is one call of WebCore's
+    // IDB client or server.
+    IDBHello = 280,
+    IDBToServer,
+    IDBToClient,
+    // Blob values of records: written to and read from the service's files.
+    IDBBlobWrite,
+    IDBBlobRead,
+
     // Page WebSockets (net/WebSocketChannel.cpp). Content to service:
     SocketConnect = 300,
     SocketSend,
