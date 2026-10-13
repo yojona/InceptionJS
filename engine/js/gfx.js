@@ -99,10 +99,29 @@ addToLibrary({
     if (canvas.height !== height) canvas.height = height;
   },
 
-  inception_gfx_present__deps: ['$inceptionGfx', '$inceptionReport'],
+  // WebKit returns a blank bitmap from transferToImageBitmap() on a WebGL
+  // canvas that no page compositing step has displayed, which is every frame
+  // in a worker. Drawing the canvas into a 2D one and transferring that gives
+  // the frame reliably; other engines keep the copy-free path.
+  $inceptionGfxBitmap__deps: ['$inceptionGfx'],
+  $inceptionGfxBitmap: () => {
+    const source = inceptionGfx.canvas;
+    if (inceptionGfx.copyFrames === undefined)
+      inceptionGfx.copyFrames = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg\//.test(navigator.userAgent);
+    if (!inceptionGfx.copyFrames) return source.transferToImageBitmap();
+    const copy = inceptionGfx.copy ??= new OffscreenCanvas(source.width, source.height);
+    if (copy.width !== source.width) copy.width = source.width;
+    if (copy.height !== source.height) copy.height = source.height;
+    const context = inceptionGfx.copyContext ??= copy.getContext('2d');
+    context.clearRect(0, 0, copy.width, copy.height);
+    context.drawImage(source, 0, 0);
+    return copy.transferToImageBitmap();
+  },
+
+  inception_gfx_present__deps: ['$inceptionGfx', '$inceptionGfxBitmap', '$inceptionReport'],
   inception_gfx_present: (window) => {
     try {
-      const bitmap = inceptionGfx.canvas.transferToImageBitmap();
+      const bitmap = inceptionGfxBitmap();
       postMessage({ inceptionFrame: bitmap, window }, [bitmap]);
     } catch (e) {
       inceptionReport('error', `present failed: ${e}`);
