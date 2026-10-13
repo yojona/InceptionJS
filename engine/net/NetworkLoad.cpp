@@ -37,6 +37,11 @@ void NetworkLoad::setLogging(bool enabled)
     s_logging = enabled;
 }
 
+bool NetworkLoad::loggingEnabled()
+{
+    return s_logging;
+}
+
 unsigned NetworkLoad::inFlight()
 {
     return s_inFlight;

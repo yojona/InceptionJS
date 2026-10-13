@@ -83,6 +83,9 @@ void RemoteLoad::start(const ResourceRequest& request)
     Encoder encoder;
     encoder.u64(m_id);
     encoder << m_request;
+    // The fetch mode: a service that locks this engine to a site filters
+    // responses of other sites by it (net/ServiceLoad.cpp).
+    encoder.u8(static_cast<uint8_t>(m_loader ? m_loader->options().mode : FetchOptions::Mode::NoCors));
     m_link->send(Message::LoadStart, WTF::move(encoder));
 }
 

@@ -21,6 +21,7 @@ public:
 
     // Development aid: report every request and response.
     static void setLogging(bool);
+    static bool loggingEnabled();
     // Loads not finished yet, for "network idle".
     static unsigned inFlight();
 
