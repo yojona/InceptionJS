@@ -4,6 +4,7 @@ import { Preferences } from './preferences.js';
 import { ENGINE_VERSION, defaultUserAgent } from './identity.js';
 import { PROVENANCE_STYLE, Provenance } from './provenance.js';
 import { MediaHost, probeMediaCapabilities } from './media.js';
+import { probeOpfs } from './opfs.js';
 import { EncryptedMedia } from './eme.js';
 import { AudioHost } from './audio.js';
 import { Modules } from './modules.js';
@@ -679,6 +680,7 @@ export class InceptionView extends HTMLElement {
     const [wasmPolyfill, pageShims] = await Promise.all(['./guest-wasm.js', './page-shims.js'].map((path) => fetch(new URL(path, import.meta.url)).then((r) => r.text())));
     this.#pageCode = { wasmPolyfill, pageShims: pageShims.replaceAll('__INCEPTION_VERSION__', ENGINE_VERSION) + userStylesShim(this.userStyles ?? config.userStyles) };
     this.#mediaCapabilities = await probeMediaCapabilities();
+    this.#opfsUsable = await probeOpfs();
     // Activation is sticky for the host page's lifetime: the first gesture
     // anywhere in it lets every later video play with sound.
     const gesture = () => {
@@ -780,6 +782,7 @@ export class InceptionView extends HTMLElement {
 
   #pageCode = null;
   #mediaCapabilities = null;
+  #opfsUsable = true;
 
   // A new engine for this view (not started): its runtime and the host
   // objects that serve it.
@@ -833,7 +836,7 @@ export class InceptionView extends HTMLElement {
     const content = !!this.#service;
     runtime.send('init', {
       width, height, deviceScaleFactor, gpu: gpu !== 'off',
-      media: this.#mediaCapabilities, ...this.#pageCode,
+      media: this.#mediaCapabilities, opfs: this.#opfsUsable, ...this.#pageCode,
       // A content engine gets no relay address and no profile: the service
       // has them.
       ...(content ? { role: 'content', engine: slot.number } : { wispUrl: config.relayUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true }),
