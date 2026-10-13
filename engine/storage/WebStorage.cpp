@@ -20,6 +20,7 @@
 #include "StorageType.h"
 #include "link/IDBCoders.h"
 #include "link/Link.h"
+#include "net/LinkPolicy.h"
 #include "storage/Profile.h"
 #include "view/View.h"
 #include <pal/SessionID.h>
@@ -253,6 +254,7 @@ public:
     void forget()
     {
         m_loaded = false;
+        m_local = false;
         m_sequence = 0;
         m_map.clear();
     }
@@ -277,6 +279,15 @@ private:
         if (!reply)
             return;
         Decoder decoder { reply->span() };
+        auto allowed = decoder.boolean();
+        if (allowed && !*allowed) {
+            // The service keeps this origin's items from this engine (another
+            // site's, under isolation 'site'): the area lives here only, empty
+            // to start with, like a partitioned one.
+            m_local = true;
+            m_loaded = true;
+            return;
+        }
         auto sequence = decoder.u64();
         auto items = decoder.decode<Vector<std::pair<String, String>>>();
         if (!items)
@@ -293,7 +304,7 @@ private:
     void send(LocalFrame& frame, StorageChange change, const String& key, const String& value)
     {
         RefPtr link = Link::service();
-        if (!link)
+        if (!link || m_local)
             return;
         RefPtr document = frame.document();
         Encoder encoder;
@@ -312,6 +323,7 @@ private:
     StorageMap m_map;
     uint64_t m_sequence { 0 };
     bool m_loaded { false };
+    bool m_local { false };
 };
 
 // The service's localStorage for one origin: the items and their file, and
@@ -406,10 +418,14 @@ static ServiceStorageArea& serviceArea(const SecurityOriginData& origin)
 void installStorageService()
 {
     // {origin} -> {sequence, items}
-    Link::handleSync(Message::StorageLoad, [](Link&, Decoder& decoder, Encoder& reply) {
+    Link::handleSync(Message::StorageLoad, [](Link& link, Decoder& decoder, Encoder& reply) {
         auto origin = decoder.decode<SecurityOriginData>();
         if (!origin)
             return false;
+        bool allowed = LinkPolicy::allowsSiteData(link.id(), origin->toURL());
+        reply.boolean(allowed);
+        if (!allowed)
+            return true;
         auto& area = serviceArea(*origin);
         reply.u64(area.sequence);
         reply << area.items();
@@ -423,7 +439,7 @@ void installStorageService()
         auto key = decoder.string();
         auto value = decoder.string();
         auto url = decoder.string();
-        if (!url)
+        if (!url || !LinkPolicy::allowsSiteData(link.id(), origin->toURL()))
             return;
         auto& area = serviceArea(*origin);
         String oldValue;
@@ -433,7 +449,7 @@ void installStorageService()
         // Every content engine hears it: those holding the map apply it, and
         // documents of the origin elsewhere get their storage event.
         for (auto& target : Link::all()) {
-            if (!target->isServiceEnd() || !target->isOpen())
+            if (!target->isServiceEnd() || !target->isOpen() || !LinkPolicy::allowsSiteData(target->id(), origin->toURL()))
                 continue;
             auto holder = target->id();
             Encoder encoder;
