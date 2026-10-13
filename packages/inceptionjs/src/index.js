@@ -5,6 +5,7 @@ export { Inception, InceptionView } from './host/inception-view.js';
 export {
   PROTOCOL_VERSION,
   ErrorCode,
+  REASON_CODES,
   ProtocolError,
   ProtocolClient,
   createPostMessageTransport,

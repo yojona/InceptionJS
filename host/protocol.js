@@ -15,6 +15,42 @@ export const ErrorCode = Object.freeze({
   VersionMismatch: -32000,
   NotNegotiated: -32001,
   CapabilityMissing: -32002,
+  // Failures of view and agent methods. Each also carries its stable name in
+  // error.data.reason (see REASON_CODES).
+  NotReady: -32010,
+  NoSuchRef: -32011,
+  StaleRef: -32012,
+  Timeout: -32013,
+  NavigationFailed: -32014,
+  DeniedByPolicy: -32015,
+  NotSupported: -32016,
+  ControlHeld: -32017,
+  EngineCrashed: -32018,
+  RateLimited: -32019,
+  NotActionable: -32020,
+  UnsupportedMode: -32021,
+});
+
+// Stable error names, as data.reason, and their codes. Names the engine
+// reports that are not listed map to InvalidParams.
+export const REASON_CODES = Object.freeze({
+  not_ready: ErrorCode.NotReady,
+  no_such_ref: ErrorCode.NoSuchRef,
+  stale_ref: ErrorCode.StaleRef,
+  timeout: ErrorCode.Timeout,
+  navigation_failed: ErrorCode.NavigationFailed,
+  denied_by_policy: ErrorCode.DeniedByPolicy,
+  not_supported: ErrorCode.NotSupported,
+  control_held: ErrorCode.ControlHeld,
+  engine_crashed: ErrorCode.EngineCrashed,
+  rate_limited: ErrorCode.RateLimited,
+  not_actionable: ErrorCode.NotActionable,
+  not_visible: ErrorCode.NotActionable,
+  not_editable: ErrorCode.NotActionable,
+  focus_changed: ErrorCode.NotActionable,
+  no_such_option: ErrorCode.NotActionable,
+  unsupported_mode: ErrorCode.UnsupportedMode,
+  invalid_params: ErrorCode.InvalidParams,
 });
 
 export class ProtocolError extends Error {
@@ -22,6 +58,16 @@ export class ProtocolError extends Error {
     super(message);
     this.code = code;
     this.data = data;
+  }
+
+  // The stable name of the failure ('stale_ref', 'denied_by_policy', ...).
+  get reason() {
+    return this.data?.reason;
+  }
+
+  // A failure by name, with its code: fail('stale_ref', 'the node is gone').
+  static fromReason(reason, message, data = {}) {
+    return new ProtocolError(REASON_CODES[reason] ?? ErrorCode.InvalidParams, message, { ...data, reason });
   }
 }
 
