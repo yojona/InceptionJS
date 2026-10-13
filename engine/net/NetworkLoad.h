@@ -21,6 +21,8 @@ public:
 
     // Development aid: report every request and response.
     static void setLogging(bool);
+    // Loads not finished yet, for "network idle".
+    static unsigned inFlight();
 
     void start(const WebCore::ResourceRequest&);
     void cancel();

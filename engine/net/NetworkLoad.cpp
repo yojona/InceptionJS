@@ -22,19 +22,27 @@ using namespace WebCore;
 static constexpr unsigned maxRedirects = 20;
 
 static bool s_logging;
+static unsigned s_inFlight;
 
 void NetworkLoad::setLogging(bool enabled)
 {
     s_logging = enabled;
 }
 
+unsigned NetworkLoad::inFlight()
+{
+    return s_inFlight;
+}
+
 NetworkLoad::NetworkLoad(ResourceLoader& loader)
     : m_loader(&loader)
 {
+    ++s_inFlight;
 }
 
 NetworkLoad::~NetworkLoad()
 {
+    --s_inFlight;
     stopCurl();
 }
 
