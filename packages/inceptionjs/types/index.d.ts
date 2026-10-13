@@ -20,6 +20,8 @@ export interface InceptionConfig {
   policy?: InceptionPolicy;
   /** Enable the view's debugEvaluate, debugHeap and debugCommand (development only). */
   debug?: boolean;
+  /** How far a view's engine memory may grow, in MiB (default 2048, 512 to 4096); past it the view crashes with kind 'out_of_memory'. */
+  maxMemoryMB?: number;
   /** Offer the agent namespace (view.agent) on every view: true, or its options. Off by default. */
   agent?: boolean | AgentOptions;
   modules?: Partial<Record<'geolocation' | 'notifications', ModuleSetting>>;

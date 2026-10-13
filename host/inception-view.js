@@ -27,7 +27,8 @@ export const Inception = {
   // notifications (host/modules.js); policy: what pages may do to the person's
   // browser, safe unless the embedder opts in (host/policy.js); debug: enable
   // the view's debugEvaluate, debugCommand and debugHeap (development only);
-  // agent: true or the agent options (host/agent.js) to offer the agent
+  // maxMemoryMB: how far a view's engine memory may grow (default 2048, 512
+  // to 4096); agent: true or the agent options (host/agent.js) to offer the agent
   // namespace on every view, which is off otherwise.
   configure(options) {
     const { wispUrl, ...rest } = options;
@@ -341,7 +342,7 @@ export class InceptionView extends HTMLElement {
       if (!acquired) throw new Error(`The profile "${profile}" is already open in another tab or window. Close it there, or open this page with a different profile.`);
     }
     navigator.storage?.persist?.().catch(() => {});
-    this.#runtime = new EngineRuntime({ engineUrl: config.engineUrl, relayUrl: config.relayUrl, canvas: this.#canvas });
+    this.#runtime = new EngineRuntime({ engineUrl: config.engineUrl, relayUrl: config.relayUrl, canvas: this.#canvas, maxMemoryMB: config.maxMemoryMB });
     this.#server = this.#createServer();
     const [serverSide, clientSide] = createInPagePair();
     this.#server.connect(serverSide);

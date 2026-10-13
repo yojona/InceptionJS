@@ -23,6 +23,21 @@ export function parseEngineMessage(text) {
   return { event: value.event, payload };
 }
 
+// The engine's memory, in 64 KiB pages: it starts at 256 MiB and may grow to
+// `maxMemoryMB` (default 2 GiB, at most the 4 GiB the engine is built for), so
+// one page cannot take all of the person's memory.
+const PAGE_BYTES = 64 * 1024;
+const INITIAL_MEMORY_MB = 256;
+export const DEFAULT_MAX_MEMORY_MB = 2048;
+
+export function memoryLimitPages(maxMemoryMB) {
+  const megabytes = Math.min(4096, Math.max(512, Math.floor(Number(maxMemoryMB) || DEFAULT_MAX_MEMORY_MB)));
+  return (megabytes * 1024 * 1024) / PAGE_BYTES;
+}
+
+// A crash caused by the memory limit, told apart from the rest.
+export const isOutOfMemory = (message) => /out of memory|\bOOM\b|Cannot enlarge memory|memory access out of bounds.*grow/i.test(String(message));
+
 export class EngineRuntime extends EventTarget {
   #module = null;
   #worker = null;
@@ -31,9 +46,12 @@ export class EngineRuntime extends EventTarget {
   #pixelContext = null;
   #pending = [];
 
-  constructor({ engineUrl, relayUrl, canvas }) {
+  #maxMemoryMB;
+
+  constructor({ engineUrl, relayUrl, canvas, maxMemoryMB }) {
     super();
     this.engineUrl = engineUrl;
+    this.#maxMemoryMB = maxMemoryMB;
     this.relayUrl = relayUrl;
     this.#canvas = canvas;
   }
@@ -56,6 +74,7 @@ export class EngineRuntime extends EventTarget {
     };
     try {
       this.#module = await createEngine({
+        wasmMemory: new WebAssembly.Memory({ initial: (INITIAL_MEMORY_MB * 1024 * 1024) / PAGE_BYTES, maximum: memoryLimitPages(this.#maxMemoryMB), shared: true }),
         locateFile: (path) => new URL(path, this.engineUrl).href,
         print: (text) => console.log('[engine]', text),
         printErr: (text) => console.warn('[engine]', text),
@@ -104,7 +123,7 @@ export class EngineRuntime extends EventTarget {
 
   #crashed({ message, stack }) {
     if (this.crash) return;
-    this.crash = { message, stack };
+    this.crash = { message, stack, ...(isOutOfMemory(message) ? { kind: 'out_of_memory' } : {}) };
     console.error(`[engine] crashed: ${message}\n${stack}`);
     this.dispatchEvent(new CustomEvent('crash', { detail: this.crash }));
   }
