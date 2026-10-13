@@ -12,7 +12,9 @@
 #include "bridge/Bridge.h"
 #include "SameSiteInfo.h"
 #include "StorageSessionProvider.h"
+#include "ResourceRequest.h"
 #include "link/Link.h"
+#include "net/LinkPolicy.h"
 #include "net/Session.h"
 #include <pal/SessionID.h>
 #include <wtf/HashMap.h>
@@ -185,26 +187,37 @@ void installCookieService()
         if (!host || host->isEmpty() || host->length() > 1024)
             return false;
         auto lowered = host->convertToASCIILowercase();
+        // A link locked to a site gets no list of another site's cookies
+        // (net/LinkPolicy.h): an empty one, never kept up to date.
+        if (!LinkPolicy::allowsSiteData(link.id(), URL { makeString("https://"_s, lowered, '/') })) {
+            reply << lowered << s_version << Vector<Cookie> { };
+            return true;
+        }
         subscriptions().ensure(link.id(), [] { return HashSet<String> { }; }).iterator->value.add(lowered);
         encodeHost(reply, lowered);
         return true;
     });
     // {firstParty, sameSite, url, value}: document.cookie = value.
-    Link::handle(Message::CookieSet, [](Link&, Decoder& decoder) {
+    Link::handle(Message::CookieSet, [](Link& link, Decoder& decoder) {
         auto firstParty = decoder.decode<URL>();
         auto sameSite = decoder.decode<SameSiteInfo>();
         auto url = decoder.decode<URL>();
         auto value = decoder.string();
-        if (!value || !url->protocolIsInHTTPFamily())
+        if (!value || !url->protocolIsInHTTPFamily() || !LinkPolicy::allowsSiteData(link.id(), *url))
             return;
-        networkSession().setCookiesFromDOM(*firstParty, *sameSite, *url, std::nullopt, std::nullopt, ApplyTrackingPrevention::Yes, RequiresScriptTrackingPrivacy::No, *value, ShouldRelaxThirdPartyCookieBlocking::No, IsKnownCrossSiteTracker::No);
+        // The first party is the link's site when it has one, whatever the
+        // content engine says.
+        ResourceRequest checked { URL { *url } };
+        checked.setFirstPartyForCookies(*firstParty);
+        LinkPolicy::restrict(link.id(), checked);
+        networkSession().setCookiesFromDOM(checked.firstPartyForCookies(), *sameSite, *url, std::nullopt, std::nullopt, ApplyTrackingPrevention::Yes, RequiresScriptTrackingPrivacy::No, *value, ShouldRelaxThirdPartyCookieBlocking::No, IsKnownCrossSiteTracker::No);
         cookiesChanged(*url);
     });
     // {url, name}: the cookie store API's delete.
-    Link::handle(Message::CookieDelete, [](Link&, Decoder& decoder) {
+    Link::handle(Message::CookieDelete, [](Link& link, Decoder& decoder) {
         auto url = decoder.decode<URL>();
         auto name = decoder.string();
-        if (!name || !url->protocolIsInHTTPFamily())
+        if (!name || !url->protocolIsInHTTPFamily() || !LinkPolicy::allowsSiteData(link.id(), *url))
             return;
         networkSession().deleteCookie(*url, *url, *name, [] { });
         cookiesChanged(*url);

@@ -711,7 +711,7 @@ void ServiceWebSocket::install()
             return;
         }
         sockets().add({ link.id(), *id }, socket);
-        socket->connection().connect(*url, *protocol, *userAgent, *origin, *allowCookies);
+        socket->connection().connect(*url, *protocol, *userAgent, *origin, *allowCookies && LinkPolicy::allowsSiteData(link.id(), *url));
     });
     // {id, binary, bytes}
     Link::handle(Message::SocketSend, [](Link& link, Decoder& decoder) {
