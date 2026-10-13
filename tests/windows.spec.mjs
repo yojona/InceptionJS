@@ -300,3 +300,28 @@ test('GPU: WebGL in two windows, context loss repaints both, alternating sizes s
   await expect.poll(() => pixel(page, 1, 60, 60), { timeout: 20_000 }).toEqual([255, 0, 255]);
   await expect.poll(() => pixel(page, second, 60, 60), { timeout: 20_000 }).toEqual([0, 255, 255]);
 });
+
+test('the engine refuses commands for a window that is not a positive integer or does not exist', async ({ page }) => {
+  await start(page);
+  const second = await openWindow(page);
+  await write(page, second, '<title>two</title>');
+  for (const window of [0, -1, 1.5, '1', '2', null, true, {}, [], 99, 1e12]) {
+    await view(page).evaluate((el, w) => el.debugCommand('load', { url: 'about:blank#hijacked', window: w }), window);
+    await view(page).evaluate((el, w) => el.debugCommand('window.close', { window: w }), window);
+  }
+  // Window 1 cannot be closed by a raw command either.
+  await view(page).evaluate((el) => el.debugCommand('window.close', { window: 1 }));
+  await page.waitForTimeout(500);
+  expect(await evaluateIn(page, 1, 'location.hash + document.title')).toBe('one');
+  expect(await evaluateIn(page, second, 'location.hash + document.title')).toBe('two');
+  expect(await view(page).evaluate((el) => el.windows.map((w) => w.window))).toEqual([1, second]);
+  // A tab of window 1 cannot be activated or closed from window 2.
+  await view(page).evaluate((el) => el.createTab('about:blank', { activate: false }));
+  await expect.poll(() => view(page).evaluate((el) => el.tabs.length)).toBe(2);
+  const other = await view(page).evaluate((el) => el.tabs.find((t) => !t.active).id);
+  await view(page).evaluate((el, [w, tab]) => el.debugCommand('tab.activate', { window: w, tab }), [second, other]);
+  await view(page).evaluate((el, [w, tab]) => el.debugCommand('tab.close', { window: w, tab }), [second, other]);
+  await page.waitForTimeout(300);
+  expect(await view(page).evaluate((el) => el.tabs.map((t) => t.active))).toEqual([true, false]);
+  expect(await evaluateIn(page, 1, 'document.title')).toBe('one');
+});
