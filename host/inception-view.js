@@ -13,8 +13,9 @@ import { resolvePolicy } from './policy.js';
 import { EngineRuntime } from './runtime.js';
 import { WasmTranslator } from './wasm-translator.js';
 import { ProtocolClient, ProtocolServer, createInPagePair } from './protocol.js';
+import { AgentClient, AgentHost } from './agent.js';
 
-const config = { engineUrl: null, relayUrl: null, binaryenUrl: null, storage: null, policy: null, debug: false, webglContexts: 0, modules: {} };
+const config = { engineUrl: null, relayUrl: null, binaryenUrl: null, storage: null, policy: null, debug: false, agent: null, webglContexts: 0, modules: {} };
 const policy = () => resolvePolicy(config.policy);
 let translator = null;
 
@@ -25,7 +26,9 @@ export const Inception = {
   // from the browser's renderer); modules: what pages get for geolocation and
   // notifications (host/modules.js); policy: what pages may do to the person's
   // browser, safe unless the embedder opts in (host/policy.js); debug: enable
-  // the view's debugEvaluate, debugCommand and debugHeap (development only).
+  // the view's debugEvaluate, debugCommand and debugHeap (development only);
+  // agent: true or the agent options (host/agent.js) to offer the agent
+  // namespace on every view, which is off otherwise.
   configure(options) {
     const { wispUrl, ...rest } = options;
     // wispUrl: the earlier name of relayUrl, still accepted.
@@ -52,10 +55,12 @@ const VIEW_EVENTS = ['navigate', 'title', 'loading', 'popup', 'console', 'crash'
 // What the view's own client negotiates; remote clients get less (serve()).
 const PROTOCOL_CAPABILITIES = ['view', 'history', 'find', 'observe'];
 const EVENT_CAPABILITY = { console: 'observe', 'find.result': 'find' };
-const DOM_EVENT_NAMES = { contextmenu: 'contextmenurequest', 'navigation.state': 'navigationstate', 'find.result': 'findresult' };
+const DOM_EVENT_NAMES = { contextmenu: 'contextmenurequest', 'navigation.state': 'navigationstate', 'find.result': 'findresult', 'agent.action': 'agentaction', 'agent.blocked': 'agentblocked' };
+// Events of the agent namespace (host/agent.js), re-dispatched the same way.
+const AGENT_EVENTS = ['control', 'agent.action', 'agent.blocked'];
 
 // <inception-view src gpu="auto|on|off" muted media profile fresh-profile user-agent
-//                 provenance-corner provenance="off">
+//                 provenance-corner provenance="off" agent>
 //
 // A thin client: it speaks the protocol to a server bound to its own engine,
 // exactly as a remote agent would. `serve(transport)` connects more clients.
@@ -84,6 +89,11 @@ export class InceptionView extends HTMLElement {
   #lastInput = -Infinity;
   #ready = null;
   #state = { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, zoom: 1 };
+  #agentHost = null;
+  #agentClient = new AgentClient(async (method, params) => {
+    await this.ready;
+    return this.#client.request(method, params);
+  });
   #tabs = new Tabs(this, (command, args) => this.#runtime?.send(command, args), policy);
 
   constructor() {
@@ -269,10 +279,44 @@ export class InceptionView extends HTMLElement {
   // Connects another protocol client (an iframe, a worker, a remote agent).
   // It may negotiate only `capabilities`: by default just 'view' (navigation,
   // tabs, state). The rest need naming here: 'find' (a text search is an oracle
-  // on the page's content), 'history' (the browsing history) and 'observe'
-  // (the page's console).
+  // on the page's content), 'history' (the browsing history), 'observe' (the
+  // page's console) and 'agent' (the agent namespace, when it is enabled).
+  // ['agent'] alone keeps an agent runtime to the policed agent namespace.
   serve(transport, { capabilities = ['view'] } = {}) {
     return this.#server.connect(transport, { allow: capabilities });
+  }
+
+  // The agent namespace (host/agent.js), or null unless the embedder enabled
+  // it: the `agent` attribute or Inception.configure({ agent }).
+  get agent() {
+    return this.#agentEnabled() ? this.#agentClient : null;
+  }
+
+  // Who drives the view: 'human' or 'agent'. Any input from the person takes
+  // control back; a "control" event reports each change.
+  get control() {
+    return this.#agentHost?.control ?? 'human';
+  }
+
+  async requestControl() {
+    return this.#requireAgent().requestControl();
+  }
+
+  async releaseControl() {
+    return this.#requireAgent().releaseControl();
+  }
+
+  #agentEnabled() {
+    return this.hasAttribute('agent') || !!config.agent;
+  }
+
+  #capabilities() {
+    return this.#agentEnabled() ? [...PROTOCOL_CAPABILITIES, 'agent'] : PROTOCOL_CAPABILITIES;
+  }
+
+  #requireAgent() {
+    if (!this.#agentEnabled()) throw new Error('The agent namespace is off: set the agent attribute or Inception.configure({ agent: true })');
+    return this.#agentClient;
   }
 
   async #start() {
@@ -293,7 +337,7 @@ export class InceptionView extends HTMLElement {
     const [serverSide, clientSide] = createInPagePair();
     this.#server.connect(serverSide);
     this.#client = new ProtocolClient(clientSide);
-    for (const name of VIEW_EVENTS)
+    for (const name of [...VIEW_EVENTS, ...AGENT_EVENTS])
       this.#client.addEventListener(name, (e) => this.dispatchEvent(new CustomEvent(DOM_EVENT_NAMES[name] ?? name, { detail: e.detail })));
 
     // Videos play in the host page, under the canvas (host/media.js).
@@ -351,7 +395,7 @@ export class InceptionView extends HTMLElement {
       this.#runtime.addEventListener('crash', (e) => reject(new Error(`the engine crashed while starting: ${e.detail.message}`)), { once: true });
     });
     await this.#runtime.start();
-    await this.#client.hello(PROTOCOL_CAPABILITIES);
+    await this.#client.hello(this.#capabilities());
 
     const { width, height } = this.#cssSize();
     const gpu = this.getAttribute('gpu') ?? 'auto';
@@ -361,7 +405,8 @@ export class InceptionView extends HTMLElement {
     this.#runtime.addEventListener('crash', (e) => this.dispatchEvent(new CustomEvent('crash', { detail: { reason: e.detail.message, stack: e.detail.stack } })));
     if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');
     this.dataset.renderer = ready.renderer;
-    attachInput(this, this.#canvas, this.#textInput, (command, args) => this.#runtime.send(command, args), { clipboard: policy().clipboard !== false });
+    const send = (command, args) => this.#runtime.send(command, args);
+    attachInput(this, this.#canvas, this.#textInput, this.#agentHost ? this.#agentHost.watchInput(send) : send, { clipboard: policy().clipboard !== false });
     if (document.activeElement === this) this.focusInput();
 
     document.addEventListener('fullscreenchange', () => {
@@ -413,8 +458,20 @@ export class InceptionView extends HTMLElement {
   }
 
   #createServer() {
-    const server = new ProtocolServer(PROTOCOL_CAPABILITIES, { optIn: ['history', 'find', 'observe'] });
+    const agent = this.#agentEnabled();
+    const server = new ProtocolServer(this.#capabilities(), { optIn: ['history', 'find', 'observe', 'agent'] });
     const runtime = this.#runtime;
+    if (agent) {
+      this.#agentHost = new AgentHost({
+        element: this,
+        runtime,
+        server,
+        shadow: this.#shadow,
+        options: () => (typeof config.agent === 'object' && config.agent ? config.agent : {}),
+        state: () => ({ ...this.#state }),
+        captureFrame: () => this.#canvas,
+      });
+    }
     server.handle('view.navigate', ({ url }) => {
       if (typeof url !== 'string' || !url) throw new TypeError('url must be a non-empty string');
       runtime.send('load', { url });

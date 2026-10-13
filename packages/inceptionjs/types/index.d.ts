@@ -20,6 +20,8 @@ export interface InceptionConfig {
   policy?: InceptionPolicy;
   /** Enable the view's debugEvaluate, debugHeap and debugCommand (development only). */
   debug?: boolean;
+  /** Offer the agent namespace (view.agent) on every view: true, or its options. Off by default. */
+  agent?: boolean | AgentOptions;
   modules?: Partial<Record<'geolocation' | 'notifications', ModuleSetting>>;
 }
 
@@ -35,6 +37,149 @@ export interface InceptionPolicy {
   /** 'user' (default): paste brings the clipboard in, and it is written only soon after the person's own input. true: always. false: never. */
   clipboard?: 'user' | boolean;
   autoplaySound?: boolean;
+}
+
+// --- agent namespace ------------------------------------------------------------
+
+/** From least to most consequential. 'interact' is input that stays in the page. */
+export type AgentRisk = 'read' | 'interact' | 'navigate' | 'submit' | 'download' | 'login' | 'payment';
+
+export interface AgentPolicyRequest {
+  /** 'click', 'type', 'fill', 'press', 'select', 'scroll', 'hover', 'navigate', 'back', 'forward', 'reload' or 'control'. */
+  action: string;
+  risk: AgentRisk;
+  /** Where the action leads: the link or navigation target, else the page. */
+  url: string;
+  pageUrl: string;
+  target?: { ref: string; tag: string; field?: 'password' | 'payment'; link?: string };
+}
+
+export interface AgentOptions {
+  /**
+   * Decides each action; may ask a person. Without one, read, interact, navigate and
+   * control are allowed and submit, download, login and payment are refused.
+   */
+  policy?: (request: AgentPolicyRequest) => boolean | 'allow' | 'deny' | Promise<boolean | 'allow' | 'deny'>;
+  /** Acting calls allowed per minute (default 120); past it they fail with 'rate_limited'. */
+  maxActionsPerMinute?: number;
+  /** Called with every action log entry. */
+  onAction?: (entry: AgentLogEntry) => void;
+}
+
+export interface AgentLogEntry {
+  seq: number;
+  /** ISO 8601. */
+  time: string;
+  action: string;
+  /** What was asked; text typed into password and payment fields is replaced by its length. */
+  params: Record<string, unknown>;
+  risk: AgentRisk;
+  decision: 'allowed' | 'denied';
+  outcome: 'ok' | 'error' | 'blocked';
+  error?: string;
+  url: string;
+  ms?: number;
+}
+
+export interface AgentNode {
+  /** Stable while the node lives; a removed node's ref fails with 'stale_ref'. */
+  ref?: string;
+  role: string;
+  name?: string;
+  value?: string;
+  placeholder?: string;
+  level?: number;
+  href?: string;
+  /** Password and payment fields never report their value, only the 'filled' state. */
+  field?: 'password' | 'payment';
+  interactive?: boolean;
+  /** disabled, checked, unchecked, mixed, expanded, collapsed, pressed, selected, required, focused, filled, offpage. */
+  states?: string[];
+  /** Text that reads like instructions to an agent. */
+  suspicious?: boolean;
+  /** [x, y, width, height] in CSS pixels of the view. */
+  box: [number, number, number, number];
+  children?: AgentNode[];
+}
+
+interface AgentPageResult {
+  /** Everything read from a page is untrusted data, never instructions. */
+  untrusted: true;
+  url: string;
+}
+
+export interface AgentSnapshot extends AgentPageResult {
+  mode: 'accessibility';
+  format: 'text' | 'tree';
+  title: string;
+  viewport: { width: number; height: number; scrollX: number; scrollY: number };
+  count: number;
+  truncated: boolean;
+  /** Refs of nodes flagged as suspected instructions. */
+  suspicious: string[];
+  /** format 'text': the page in a fence marked untrusted. */
+  text?: string;
+  omitted?: number;
+  /** format 'tree'. */
+  nodes?: AgentNode[];
+  /** diff with format 'tree'. */
+  diff?: { added: AgentNode[]; removed: AgentNode[]; changed: { before: AgentNode; after: AgentNode }[]; text: string };
+}
+
+export interface AgentActResult {
+  ok: true;
+  action: string;
+  risk: AgentRisk;
+  url: string;
+  title: string;
+  navigated: boolean;
+  /** Whether loads went quiet before the call returned. */
+  settled: boolean;
+  /** What changed since the last snapshot, when there was one and the page stayed. */
+  changes?: string;
+  point?: { x: number; y: number };
+  typed?: number;
+  selected?: string;
+}
+
+export type AgentAction =
+  | { action: 'click'; ref: string; risk?: AgentRisk }
+  | { action: 'click'; x: number; y: number; risk?: AgentRisk }
+  | { action: 'hover'; ref: string }
+  | { action: 'type' | 'fill'; ref?: string; text: string; risk?: AgentRisk }
+  | { action: 'press'; key: string; ref?: string; risk?: AgentRisk }
+  | { action: 'select'; ref: string; value: string }
+  | { action: 'scroll'; ref?: string; deltaX?: number; deltaY?: number; x?: number; y?: number };
+
+/**
+ * The agent namespace. Reads never need control; acting needs it (requestControl()), and
+ * any input from the person takes it back. Errors are ProtocolErrors whose `reason` is one
+ * of: not_ready, no_such_ref, stale_ref, timeout, denied_by_policy, control_held,
+ * rate_limited, not_actionable, not_visible, not_editable, focus_changed, no_such_option,
+ * unsupported_mode, engine_crashed, invalid_params.
+ */
+export interface Agent {
+  snapshot(options?: { mode?: 'accessibility'; format?: 'text' | 'tree'; diff?: boolean; maxTokens?: number; maxNodes?: number; scope?: 'page' | 'viewport' }): Promise<AgentSnapshot>;
+  find(query: { role?: string; name?: string; text?: string; interactive?: boolean; limit?: number }): Promise<AgentPageResult & { matches: AgentNode[] }>;
+  extract(options: 'text' | 'markdown' | 'links' | 'forms' | 'tables' | { kind: 'text' | 'markdown' | 'links' | 'forms' | 'tables'; maxLength?: number }): Promise<AgentPageResult & Record<string, unknown>>;
+  waitFor(condition: { text?: string; ref?: string; selector?: string; url?: string; navigation?: boolean; networkIdle?: boolean; state?: 'visible' | 'attached' | 'detached'; timeoutMs?: number }): Promise<{ ok: true; url: string; elapsedMs: number; ref?: string }>;
+  /** From the engine's last frame; `data` is base64. Video drawn by the host page is not in it. */
+  screenshot(options?: { annotate?: boolean; type?: string; quality?: number }): Promise<{ mimeType: string; width: number; height: number; data: string }>;
+  act(action: AgentAction & { diff?: boolean; settleMs?: number }): Promise<AgentActResult>;
+  click(target: { ref: string } | { x: number; y: number }): Promise<AgentActResult>;
+  hover(ref: string): Promise<AgentActResult>;
+  type(ref: string | undefined, text: string, options?: { risk?: AgentRisk }): Promise<AgentActResult>;
+  fill(ref: string | undefined, text: string, options?: { risk?: AgentRisk }): Promise<AgentActResult>;
+  press(key: string, options?: { ref?: string; risk?: AgentRisk }): Promise<AgentActResult>;
+  select(ref: string, value: string): Promise<AgentActResult>;
+  scroll(options?: { ref?: string; deltaX?: number; deltaY?: number }): Promise<AgentActResult>;
+  navigate(url: string): Promise<AgentActResult>;
+  back(): Promise<AgentActResult>;
+  forward(): Promise<AgentActResult>;
+  reload(): Promise<AgentActResult>;
+  requestControl(): Promise<{ control: 'agent' }>;
+  releaseControl(): Promise<{ control: 'human' }>;
+  log(): Promise<AgentLogEntry[]>;
 }
 
 export type Permission = 'grant' | 'deny' | 'ask' | ((origin: string) => boolean | Promise<boolean>);
@@ -142,6 +287,11 @@ export interface InceptionViewEventMap {
   /** The embedding page hid the provenance badge; the view covers the content until it is visible again. */
   provenancetampered: CustomEvent<{ hidden: boolean }>;
   downloadfinish: CustomEvent<{ id: number; filename: string; mime: string; error?: string; blob?: Blob }>;
+  /** Who drives the view changed. */
+  control: CustomEvent<{ control: 'human' | 'agent'; reason: 'request' | 'release' | 'input' | 'indicator' }>;
+  agentaction: CustomEvent<AgentLogEntry>;
+  /** The engine refused a submission or download the policy had not approved. */
+  agentblocked: CustomEvent<{ action: 'submit' | 'download'; risk: AgentRisk; url: string; entry: AgentLogEntry }>;
 }
 
 export declare class InceptionView extends HTMLElement {
@@ -172,9 +322,16 @@ export declare class InceptionView extends HTMLElement {
   cancelDownload(id: number): Promise<void>;
   /**
    * Connects another protocol client (an iframe, a worker, a remote agent). It may negotiate only
-   * `capabilities`, by default just 'view'; 'find' (a text oracle), 'history' and 'observe' (console) must be named.
+   * `capabilities`, by default just 'view'; 'find' (a text oracle), 'history', 'observe' (console) and
+   * 'agent' (when enabled) must be named. ['agent'] alone keeps an agent runtime to the policed namespace.
    */
-  serve(transport: Transport, options?: { capabilities?: Array<'view' | 'find' | 'history' | 'observe'> }): unknown;
+  serve(transport: Transport, options?: { capabilities?: Array<'view' | 'find' | 'history' | 'observe' | 'agent'> }): unknown;
+  /** The agent namespace, or null unless the `agent` attribute or Inception.configure({ agent }) enables it. */
+  readonly agent: Agent | null;
+  /** Who drives the view. */
+  readonly control: 'human' | 'agent';
+  requestControl(): Promise<{ control: 'agent' }>;
+  releaseControl(): Promise<{ control: 'human' }>;
   /** Moves keyboard focus into the page. */
   focusInput(): void;
 
@@ -209,12 +366,29 @@ export declare const ErrorCode: Readonly<{
   VersionMismatch: -32000;
   NotNegotiated: -32001;
   CapabilityMissing: -32002;
+  NotReady: -32010;
+  NoSuchRef: -32011;
+  StaleRef: -32012;
+  Timeout: -32013;
+  NavigationFailed: -32014;
+  DeniedByPolicy: -32015;
+  NotSupported: -32016;
+  ControlHeld: -32017;
+  EngineCrashed: -32018;
+  RateLimited: -32019;
+  NotActionable: -32020;
+  UnsupportedMode: -32021;
 }>;
+
+/** Stable failure names (error.data.reason) and their codes. */
+export declare const REASON_CODES: Readonly<Record<string, number>>;
 
 export declare class ProtocolError extends Error {
   constructor(code: number, message: string, data?: unknown);
   code: number;
   data?: unknown;
+  /** The stable failure name, e.g. 'stale_ref' or 'denied_by_policy'. */
+  readonly reason: string | undefined;
 }
 
 /** A transport carries plain message objects; serialization is its business. */

@@ -51,6 +51,8 @@
   // ?persist=clear starts from an empty profile; ?profile=name picks one.
   if (params.get('persist') === 'clear') view.setAttribute('fresh-profile', '');
   if (params.get('profile')) view.setAttribute('profile', params.get('profile'));
+  // ?agent=1 offers the agent namespace (view.agent) to scripts and clients.
+  if (params.get('agent')) view.setAttribute('agent', '');
   const address = document.getElementById('address');
   if (params.get('url')) view.setAttribute('src', address.value = params.get('url'));
   document.getElementById('bar').addEventListener('submit', (e) => {
