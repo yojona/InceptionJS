@@ -34,6 +34,7 @@ const ATTRIBUTES = {
   userAgent: 'user-agent',
   gpu: 'gpu',
   autoplaySound: 'autoplay-sound',
+  debug: 'debug',
   provenanceCorner: 'provenance-corner',
 };
 

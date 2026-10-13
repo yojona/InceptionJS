@@ -19,6 +19,8 @@ export interface InceptionViewProps {
   userAgent?: string;
   gpu?: 'auto' | 'on' | 'off';
   autoplaySound?: boolean;
+  /** Enables the handle's debug methods (development only). */
+  debug?: boolean;
   provenanceCorner?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
   preferences?: Partial<Preferences>;
   style?: CSSProperties;

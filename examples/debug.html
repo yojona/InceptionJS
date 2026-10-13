@@ -30,6 +30,7 @@
   Inception.configure({
     engineUrl: new URL('../engine/inception-engine.js', import.meta.url).href,
     relayUrl: params.get('relay') ?? params.get('wisp') ?? `ws://${location.hostname}:5001/`,
+    debug: true,
   });
 
   const view = document.getElementById('view');

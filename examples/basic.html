@@ -41,6 +41,10 @@
     engineUrl: new URL('../engine/inception-engine.js', import.meta.url).href,
     relayUrl: params.get('relay') ?? params.get('wisp') ?? `ws://${location.hostname}:5001/`,
     webglContexts: Number(params.get('webgl-contexts') ?? 0),
+    debug: params.get('debug') !== '0',
+    // This page is a browser, so it opts in to what a browser does. ?policy={}
+    // (or any JSON object) replaces these with the library's own defaults.
+    policy: params.has('policy') ? JSON.parse(params.get('policy')) : { downloads: 'save', newTabs: 'foreground', dialogs: 'native', clipboard: true },
   });
 
   const view = document.getElementById('view');

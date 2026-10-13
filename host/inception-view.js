@@ -9,11 +9,13 @@ import { AudioHost } from './audio.js';
 import { Modules } from './modules.js';
 import { Downloads } from './downloads.js';
 import { Tabs } from './tabs.js';
+import { resolvePolicy } from './policy.js';
 import { EngineRuntime } from './runtime.js';
 import { WasmTranslator } from './wasm-translator.js';
 import { ProtocolClient, ProtocolServer, createInPagePair } from './protocol.js';
 
-const config = { engineUrl: null, relayUrl: null, binaryenUrl: null, storage: null, policy: null, webglContexts: 0, modules: {} };
+const config = { engineUrl: null, relayUrl: null, binaryenUrl: null, storage: null, policy: null, debug: false, webglContexts: 0, modules: {} };
+const policy = () => resolvePolicy(config.policy);
 let translator = null;
 
 export const Inception = {
@@ -21,7 +23,9 @@ export const Inception = {
   // wss://); binaryenUrl: binaryen.js, loaded when a page first uses WebAssembly;
   // webglContexts: how many WebGL contexts pages may hold (default: derived
   // from the browser's renderer); modules: what pages get for geolocation and
-  // notifications (host/modules.js).
+  // notifications (host/modules.js); policy: what pages may do to the person's
+  // browser, safe unless the embedder opts in (host/policy.js); debug: enable
+  // the view's debugEvaluate, debugCommand and debugHeap (development only).
   configure(options) {
     const { wispUrl, ...rest } = options;
     // wispUrl: the earlier name of relayUrl, still accepted.
@@ -71,7 +75,7 @@ export class InceptionView extends HTMLElement {
   #debugRequests = 0;
   #ready = null;
   #state = { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, zoom: 1 };
-  #tabs = new Tabs(this, (command, args) => this.#runtime?.send(command, args), () => config.policy);
+  #tabs = new Tabs(this, (command, args) => this.#runtime?.send(command, args), policy);
 
   constructor() {
     super();
@@ -178,8 +182,17 @@ export class InceptionView extends HTMLElement {
   async resumeDownload(id) { await this.ready; this.#runtime.send('download.resume', { id }); }
   async deleteHistory(range) { await this.ready; return this.#client.request('history.delete', range); }
 
+  // The debug methods run script in the page's realm and send raw engine
+  // commands, so they exist only when the embedder asks for them: the `debug`
+  // attribute or Inception.configure({ debug: true }).
+  #requireDebug() {
+    if (!this.hasAttribute('debug') && config.debug !== true)
+      throw new Error('Debug methods are off: set the debug attribute or Inception.configure({ debug: true })');
+  }
+
   // Development aid: evaluates script in the engine's main frame.
   async debugEvaluate(source) {
+    this.#requireDebug();
     await this.ready;
     const id = ++this.#debugRequests;
     return new Promise((resolve) => {
@@ -196,6 +209,7 @@ export class InceptionView extends HTMLElement {
   // Development aid: sends a raw engine command.
   // JS heap and wasm memory sizes, in bytes.
   async debugHeap() {
+    this.#requireDebug();
     await this.ready;
     const reply = new Promise((resolve) => this.#runtime.addEventListener('debug.heap', (e) => resolve(e.detail), { once: true }));
     this.#runtime.send('debug.heap');
@@ -203,6 +217,7 @@ export class InceptionView extends HTMLElement {
   }
 
   async debugCommand(command, args = {}) {
+    this.#requireDebug();
     await this.ready;
     this.#runtime.send(command, args);
   }
@@ -234,7 +249,7 @@ export class InceptionView extends HTMLElement {
 
     // Videos play in the host page, under the canvas (host/media.js).
     // `autoplay-sound`: the embedder knows playback with sound is allowed here.
-    const soundAllowed = this.hasAttribute('autoplay-sound') || config.policy?.autoplaySound === true;
+    const soundAllowed = this.hasAttribute('autoplay-sound') || policy().autoplaySound;
     const eme = new EncryptedMedia((command, args) => this.#runtime.send(command, args), { onKeysUsable: (mediaKeys) => this.#media.keysUsable(mediaKeys) });
     const audio = new AudioHost(() => this.#runtime.memory(), { soundAllowed });
     this.#audio = audio;
@@ -263,7 +278,7 @@ export class InceptionView extends HTMLElement {
       if (name === 'select.hide') this.#selectMenu.hide(data.id);
       if (name === 'file.choose') chooseFiles(this, this.#runtime, data);
       if (name === 'field.focus') this.#provenance.fieldFocused(data.kind);
-      if (name === 'clipboard.write' && config.policy?.clipboard !== false) writeClipboard(data.items);
+      if (name === 'clipboard.write' && policy().clipboard !== false) writeClipboard(data.items);
     };
     this.#selectMenu = new SelectMenu(this.#shadow, (command, args) => this.#runtime.send(command, args));
     this.#runtime.onAsk = (question) => answerDialog(this, question);
@@ -297,7 +312,7 @@ export class InceptionView extends HTMLElement {
     this.#runtime.addEventListener('crash', (e) => this.dispatchEvent(new CustomEvent('crash', { detail: { reason: e.detail.message, stack: e.detail.stack } })));
     if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');
     this.dataset.renderer = ready.renderer;
-    attachInput(this, this.#canvas, this.#textInput, (command, args) => this.#runtime.send(command, args), { clipboard: config.policy?.clipboard !== false });
+    attachInput(this, this.#canvas, this.#textInput, (command, args) => this.#runtime.send(command, args), { clipboard: policy().clipboard !== false });
     if (document.activeElement === this) this.focusInput();
 
     document.addEventListener('fullscreenchange', () => {

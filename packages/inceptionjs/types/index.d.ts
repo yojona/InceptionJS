@@ -16,8 +16,25 @@ export interface InceptionConfig {
   /** How many WebGL contexts pages may hold (0 = derived from the browser). */
   webglContexts?: number;
   storage?: { profile?: string; fresh?: boolean };
-  policy?: { autoplaySound?: boolean; clipboard?: boolean };
+  /** What pages may do to the person's browser. Every default is the safe one. */
+  policy?: InceptionPolicy;
+  /** Enable the view's debugEvaluate, debugHeap and debugCommand (development only). */
+  debug?: boolean;
   modules?: Partial<Record<'geolocation' | 'notifications', ModuleSetting>>;
+}
+
+export interface InceptionPolicy {
+  /** 'events' (default): report downloads and hand over the Blob, save nothing. 'save': also save to disk. 'block': cancel them. */
+  downloads?: 'events' | 'save' | 'block';
+  /** Largest download kept in memory before it is cancelled (default 256 MiB). */
+  maxDownloadBytes?: number;
+  /** 'block' (default): windows pages open are closed and reported as "popupblocked". Otherwise those after a user gesture are shown. */
+  newTabs?: 'block' | 'foreground' | 'background';
+  /** 'dismiss' (default): alert, confirm, prompt and beforeunload are answered without UI. 'native': the browser's own dialogs. */
+  dialogs?: 'dismiss' | 'native';
+  /** 'user' (default): paste brings the clipboard in, and it is written only soon after the person's own input. true: always. false: never. */
+  clipboard?: 'user' | boolean;
+  autoplaySound?: boolean;
 }
 
 export type Permission = 'grant' | 'deny' | 'ask' | ((origin: string) => boolean | Promise<boolean>);
@@ -148,7 +165,7 @@ export declare class InceptionView extends HTMLElement {
   /** Moves keyboard focus into the page. */
   focusInput(): void;
 
-  /** Development aids. */
+  /** Development aids; they throw unless the `debug` attribute or `Inception.configure({ debug: true })` is set. */
   debugEvaluate(source: string): Promise<unknown>;
   /** JS heap size and capacity, and wasm memory, in bytes. */
   debugHeap(): Promise<{ heapSize: number; heapCapacity: number; memory: number }>;
