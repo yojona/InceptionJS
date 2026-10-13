@@ -11,6 +11,7 @@
   const relayUrl = params.get('relay') ?? `ws://${location.hostname}:5001/`;
   const contents = [];
   let service = null;
+  const services = [];
   const serviceEvents = [];
   let requests = 0;
 
@@ -25,7 +26,7 @@
   // `role`: 'content', or 'standalone' for an engine with its own network and
   // an ephemeral profile, to compare with.
   async function startContent(role = 'content') {
-    const runtime = new EngineRuntime({ engineUrl });
+    const runtime = new EngineRuntime({ engineUrl, role: role === 'content' ? 'content' : 'standalone' });
     await runtime.start();
     const ready = once(runtime, 'ready');
     runtime.send('init', { ...(role === 'content' ? { role } : { profile: `standalone-${Date.now()}`, freshProfile: true }), width: 320, height: 240, deviceScaleFactor: 1, gpu: false, url: '', debug: true, wispUrl: relayUrl });
@@ -119,12 +120,25 @@
       return list;
     },
     serviceSend: (command, args) => service.send(command, args),
+    runtimeOf: (index) => contents[index].runtime,
+    // Another service in this document (another profile, or an ephemeral one).
+    async startProfile(options) {
+      const other = ProfileService.acquire({ engineUrl, relayUrl, debug: true, ...options });
+      await other.start();
+      services.push(other);
+      return other;
+    },
+    connectTo(other, index) {
+      contents[index].link = other.connect(contents[index].runtime);
+      return contents[index].link;
+    },
     // Every event the service engine reports, by name, since startService.
     serviceEvents: (name) => serviceEvents.filter((e) => e.name === name).map((e) => e.data),
     // How many times the document fetched the engine's code and image.
     fetches: () => performance.getEntriesByType('resource').filter((e) => /inception-engine\.(wasm|data)$/.test(e.name)).map((e) => e.name.split('/').pop()),
     stop() {
       service?.stop();
+      for (const other of services) other.stop();
       for (const entry of contents) entry.runtime.terminate();
     },
   };
