@@ -223,3 +223,20 @@ test('a page cannot make the person\'s browser request an address the relay refu
   await expect.poll(() => evaluate(page, "[document.getElementById('v').error?.code ?? 0, document.getElementById('a').error?.code ?? 0].join()"), { timeout: 30_000 }).toBe('4,4');
   expect(requested.filter((url) => /10\.255\.255\.1|192\.168\.254\.254/.test(url))).toEqual([]);
 });
+
+test('a download only starts from the person\'s click, and arrives flagged as theirs', async ({ page }) => {
+  await open(page);
+  await write(page, '<title>dl</title><a id="l" download href="https://www.iana.org/robots.txt" style="display:block;font-size:40px">get</a>');
+  await view(page).evaluate((el) => {
+    window.seen = [];
+    el.addEventListener('downloadblocked', (e) => window.seen.push(`blocked:${e.detail.reason}`));
+    el.addEventListener('downloadstart', (e) => window.seen.push(`start:${e.detail.userGesture}`));
+  });
+  await evaluate(page, "document.getElementById('l').click(), 1");
+  // The engine itself starts nothing for a script's click; the host's
+  // gestureless check (unit-tested) is the second line for other routes.
+  await page.waitForTimeout(1500);
+  expect(await page.evaluate(() => window.seen)).toEqual([]);
+  await click(page);
+  await expect.poll(() => page.evaluate(() => window.seen)).toEqual(['start:true']);
+});

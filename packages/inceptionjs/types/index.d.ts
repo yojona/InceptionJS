@@ -30,6 +30,8 @@ export interface InceptionConfig {
 export interface InceptionPolicy {
   /** 'events' (default): report downloads and hand over the Blob, save nothing. 'save': also save to disk. 'block': cancel them. */
   downloads?: 'events' | 'save' | 'block';
+  /** 'block' (default): a download the page starts without the person's input is cancelled (downloadblocked, reason 'no-gesture'). */
+  gesturelessDownloads?: 'block' | 'allow';
   /** Largest download kept in memory before it is cancelled (default 256 MiB). */
   maxDownloadBytes?: number;
   /** 'block' (default): windows pages open are closed and reported as "popupblocked". Otherwise those after a user gesture are shown. */
@@ -291,7 +293,7 @@ export interface InceptionViewEventMap {
   downloadstart: CustomEvent<{ id: number; url: string; filename: string; mime: string; size: number; userGesture?: boolean }>;
   downloadprogress: CustomEvent<{ id: number; received: number; size: number }>;
   /** A download cancelled because policy.downloads is 'block'. */
-  downloadblocked: CustomEvent<{ url: string; filename: string; mime: string; size: number }>;
+  downloadblocked: CustomEvent<{ url: string; filename: string; mime: string; size: number; reason: 'policy' | 'no-gesture' }>;
   /** A page dialog answered without UI (the default policy). */
   dialogblocked: CustomEvent<{ type: 'alert' | 'confirm' | 'prompt' | 'beforeunload'; message: string }>;
   /** A window or tab a page opened was closed instead of shown. */

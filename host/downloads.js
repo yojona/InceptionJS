@@ -4,7 +4,7 @@
 // so (policy.downloads === 'save'); 'block' cancels downloads as they start
 // and reports them as downloadblocked. Downloads are held in memory, so one
 // larger than policy.maxDownloadBytes is cancelled with an error.
-//   downloadblocked  {url, filename, mime, size}
+//   downloadblocked  {url, filename, mime, size, reason: 'policy' | 'no-gesture'}
 //   downloadstart    {id, url, filename, mime, size, userGesture}
 //   downloadprogress {id, received, size}
 //   downloadpause    {id, received}
@@ -27,9 +27,11 @@ export class Downloads {
 
   handleEvent(name, data) {
     if (name === 'download.started') {
-      if (this.#policy().downloads === 'block') {
+      const { downloads, gesturelessDownloads } = this.#policy();
+      const reason = downloads === 'block' ? 'policy' : data.userGesture === false && gesturelessDownloads !== 'allow' ? 'no-gesture' : null;
+      if (reason) {
         this.#send('download.cancel', { id: data.id });
-        this.#view.dispatchEvent(new CustomEvent('downloadblocked', { detail: { url: data.url, filename: data.filename, mime: data.mime, size: data.size } }));
+        this.#view.dispatchEvent(new CustomEvent('downloadblocked', { detail: { url: data.url, filename: data.filename, mime: data.mime, size: data.size, reason } }));
         return;
       }
       this.#active.set(data.id, { ...data, chunks: [], received: 0 });

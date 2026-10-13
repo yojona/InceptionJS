@@ -41,3 +41,21 @@ test('a notification icon is shown only when it is an inline image', () => {
   assert.equal(safeNotificationIcon(''), undefined);
   assert.equal(safeNotificationIcon(undefined), undefined);
 });
+
+import { Downloads } from '../../host/downloads.js';
+
+test('a download without the person\'s input is cancelled unless the policy allows it', () => {
+  const run = (configured, started) => {
+    const view = new EventTarget();
+    const events = [];
+    const sent = [];
+    for (const type of ['downloadstart', 'downloadblocked']) view.addEventListener(type, (e) => events.push([type, e.detail.reason]));
+    new Downloads(view, (command) => sent.push(command), () => resolvePolicy(configured)).handleEvent('download.started', started);
+    return { events, sent };
+  };
+  const page = { id: 1, url: 'https://x/f', filename: 'f', mime: '', size: 1 };
+  assert.deepEqual(run({}, { ...page, userGesture: false }), { events: [['downloadblocked', 'no-gesture']], sent: ['download.cancel'] });
+  assert.deepEqual(run({}, { ...page, userGesture: true }), { events: [['downloadstart', undefined]], sent: [] });
+  assert.deepEqual(run({ gesturelessDownloads: 'allow' }, { ...page, userGesture: false }), { events: [['downloadstart', undefined]], sent: [] });
+  assert.deepEqual(run({ downloads: 'block' }, { ...page, userGesture: true }).events, [['downloadblocked', 'policy']]);
+});

@@ -8,6 +8,13 @@
 //                    hands the embedder the finished Blob, but saves nothing.
 //                    'save': also save it to the person's disk, as a browser
 //                    does. 'block': cancel downloads as they start.
+//   gesturelessDownloads
+//                    'block' (default): a download the page starts without the
+//                    person's input (a script clicking a link, a redirect after
+//                    a timer) is cancelled and reported as downloadblocked with
+//                    reason 'no-gesture'. 'allow': it proceeds under `downloads`.
+//                    Downloads the embedder asks for with view.download() count
+//                    as the person's.
 //   maxDownloadBytes largest download kept in memory (default 256 MiB); a bigger
 //                    one is cancelled, since a page could otherwise fill it.
 //   newTabs          'block' (default): a window or tab a page opens is closed
@@ -27,6 +34,7 @@
 
 export const POLICY_DEFAULTS = Object.freeze({
   downloads: 'events',
+  gesturelessDownloads: 'block',
   maxDownloadBytes: 256 * 1024 * 1024,
   newTabs: 'block',
   dialogs: 'dismiss',
@@ -36,6 +44,7 @@ export const POLICY_DEFAULTS = Object.freeze({
 
 const CHOICES = {
   downloads: ['events', 'save', 'block'],
+  gesturelessDownloads: ['block', 'allow'],
   newTabs: ['block', 'foreground', 'background'],
   dialogs: ['dismiss', 'native'],
   clipboard: ['user', true, false],
