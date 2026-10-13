@@ -15,7 +15,7 @@ namespace Inception::Disk {
 
 static bool s_persistent;
 
-bool mount()
+bool mount(Storage storage)
 {
     // Directories the libraries write to; empty directories are not part of
     // the preloaded file system image.
@@ -29,7 +29,7 @@ bool mount()
     struct stat info;
     if (!stat("/inception", &info))
         return s_persistent;
-    if (inception_has_opfs()) {
+    if (storage == Storage::Persistent && inception_has_opfs()) {
         if (auto backend = wasmfs_create_opfs_backend(); backend && !wasmfs_create_directory("/inception", 0777, backend)) {
             s_persistent = true;
             return true;

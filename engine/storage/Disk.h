@@ -6,7 +6,10 @@ namespace Inception::Disk {
 // private file system (OPFS), so profiles survive reloads. Everything else in
 // the file system (fonts, ICU data, /tmp) stays in memory. Without OPFS,
 // /inception is in memory too and nothing persists. Returns whether it persists.
-bool mount();
+// `Memory` keeps /inception in memory even with OPFS: a content engine has no
+// files, and an ephemeral profile leaves nothing behind.
+enum class Storage : bool { Memory, Persistent };
+bool mount(Storage = Storage::Persistent);
 bool isPersistent();
 
 } // namespace Inception::Disk
