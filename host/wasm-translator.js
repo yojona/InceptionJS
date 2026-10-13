@@ -9,14 +9,34 @@ const SUPPORTED = ['MVP', 'MutableGlobals', 'SignExt', 'NontrappingFPToInt', 'Bu
 
 const EXTERNAL_KIND = ['function', 'table', 'memory', 'global', 'tag'];
 
+// Translations are shared by every page in the view, so a module must be
+// recognised by a collision-resistant digest (a page could otherwise craft a
+// module that collides with another site's and be handed its translation, or
+// hand its own to that site), and the cache is bounded.
+const CACHE_ENTRIES = 32;
+const CACHE_CHARS = 128 * 1024 * 1024;
+
 export class WasmTranslator {
   #binaryenUrl;
   #binaryen = null;
   #cache = new Map();
+  #cacheChars = 0;
 
   // `binaryenUrl`: one URL, or candidates tried in order (the first that loads).
   constructor(binaryenUrl) {
     this.#binaryenUrl = [binaryenUrl].flat();
+  }
+
+  #remember(key, reply) {
+    this.#cache.set(key, reply);
+    this.#cacheChars += reply.length;
+    // Oldest first; a hit moves an entry to the end.
+    for (const [oldest, text] of this.#cache) {
+      if (this.#cache.size <= CACHE_ENTRIES && this.#cacheChars <= CACHE_CHARS) break;
+      if (oldest === key) continue;
+      this.#cache.delete(oldest);
+      this.#cacheChars -= text.length;
+    }
   }
 
   // Loaded the first time a page uses WebAssembly.
@@ -38,9 +58,13 @@ export class WasmTranslator {
   // Returns "ok:" + a script evaluating to the module factory, or "error:" +
   // a message.
   async translate(bytes) {
-    const key = hashBytes(bytes);
+    const key = await digest(bytes);
     const cached = this.#cache.get(key);
-    if (cached) return cached;
+    if (cached) {
+      this.#cache.delete(key);
+      this.#cache.set(key, cached);
+      return cached;
+    }
     let reply;
     const started = performance.now();
     try {
@@ -49,7 +73,7 @@ export class WasmTranslator {
       reply = 'error:' + String(error?.message ?? error);
     }
     console.debug(`[wasm] ${bytes.length} bytes translated in ${Math.round(performance.now() - started)} ms${reply.startsWith('error:') ? `: ${reply.slice(6)}` : ''}`);
-    this.#cache.set(key, reply);
+    this.#remember(key, reply);
     return reply;
   }
 
@@ -131,9 +155,8 @@ function describe(bytes) {
   return { imports, exports };
 }
 
-// FNV-1a over the bytes, with the length: enough to key an in-memory cache.
-function hashBytes(bytes) {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < bytes.length; i++) hash = Math.imul(hash ^ bytes[i], 0x01000193);
-  return `${bytes.length}:${(hash >>> 0).toString(16)}`;
+// SHA-256 of the bytes, as hex.
+async function digest(bytes) {
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  return Array.from(hash, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
