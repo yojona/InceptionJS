@@ -197,3 +197,19 @@ test('policy.clipboard true lets a page write it at any time, false never', asyn
   await page.mouse.click(box.x + 20, box.y + 20);
   expect(await pageCopies(page, 'never')).toEqual([]);
 });
+
+test('a connection served to another client gets navigation only; the view itself still finds and reads history', async ({ page }) => {
+  await open(page);
+  expect(await view(page).evaluate((el) => el.find('ready'))).toMatchObject({ found: true });
+  expect(Array.isArray(await view(page).evaluate((el) => el.history()))).toBe(true);
+  const remote = await view(page).evaluate(async (el) => {
+    const { ProtocolClient, createInPagePair } = await import('/host/protocol.js');
+    const [near, far] = createInPagePair();
+    el.serve(near);
+    const client = new ProtocolClient(far);
+    const { capabilities } = await client.hello(['view', 'find', 'history', 'observe']);
+    const code = (promise) => promise.then(() => 'allowed', (error) => error.code);
+    return { capabilities, find: await code(client.request('view.find', { text: 'ready' })), history: await code(client.request('history.query')), state: await code(client.request('view.state')) };
+  });
+  expect(remote).toEqual({ capabilities: ['view'], find: -32002, history: -32002, state: 'allowed' });
+});

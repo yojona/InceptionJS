@@ -168,8 +168,11 @@ export declare class InceptionView extends HTMLElement {
   deleteHistory(range: { url: string } | { from?: number; to?: number }): Promise<void>;
   download(url: string): Promise<void>;
   cancelDownload(id: number): Promise<void>;
-  /** Connects another protocol client (an iframe, a worker, a remote agent). */
-  serve(transport: Transport): unknown;
+  /**
+   * Connects another protocol client (an iframe, a worker, a remote agent). It may negotiate only
+   * `capabilities`, by default just 'view'; 'find' (a text oracle), 'history' and 'observe' (console) must be named.
+   */
+  serve(transport: Transport, options?: { capabilities?: Array<'view' | 'find' | 'history' | 'observe'> }): unknown;
   /** Moves keyboard focus into the page. */
   focusInput(): void;
 
@@ -218,8 +221,11 @@ export interface Transport {
   onmessage: ((message: unknown) => void) | null;
 }
 
-export declare function createPostMessageTransport(target: Window | MessagePort | Worker, origin?: string, source?: EventTarget): Transport;
-export declare function createWebSocketTransport(socket: WebSocket): Transport;
+/** With a Window peer, `origin` is required: other origins and windows are ignored. */
+export declare function createPostMessageTransport(target: Window, origin: string, source?: EventTarget): Transport;
+export declare function createPostMessageTransport(target: MessagePort | Worker): Transport;
+/** Messages over `maxMessageBytes` (default 1 MiB) are refused before parsing. */
+export declare function createWebSocketTransport(socket: WebSocket, options?: { maxMessageBytes?: number }): Transport;
 
 export declare class ProtocolClient extends EventTarget {
   constructor(transport: Transport);

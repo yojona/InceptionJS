@@ -36,15 +36,18 @@ export function createInPagePair() {
 }
 
 // `target` is a Window, MessagePort or Worker. With a Window, `origin` is the
-// peer's origin; messages from anywhere else are ignored.
-export function createPostMessageTransport(target, origin = '*', source = self) {
+// peer's origin and is required: messages from any other origin or window are
+// ignored, and ours are sent to that origin only. Passing '*' accepts any
+// origin, which is almost never what a page that holds a view wants.
+export function createPostMessageTransport(target, origin, source = self) {
   const isWindow = typeof Window !== 'undefined' && target instanceof Window;
+  if (isWindow && typeof origin !== 'string') throw new TypeError("a Window peer needs its origin: createPostMessageTransport(window, 'https://peer.example')");
   const transport = {
     onmessage: null,
     send: (m) => (isWindow ? target.postMessage({ inceptionProtocol: m }, origin) : target.postMessage({ inceptionProtocol: m })),
   };
   const listener = (e) => {
-    if (isWindow && origin !== '*' && e.origin !== origin) return;
+    if (isWindow && ((origin !== '*' && e.origin !== origin) || e.source !== target)) return;
     if (e.data?.inceptionProtocol) transport.onmessage?.(e.data.inceptionProtocol);
   };
   (isWindow ? source : target).addEventListener('message', listener);
@@ -52,9 +55,15 @@ export function createPostMessageTransport(target, origin = '*', source = self) 
   return transport;
 }
 
-export function createWebSocketTransport(socket) {
+// Messages from a socket are untrusted: anything over `maxMessageBytes`
+// (default 1 MiB) is refused before it is parsed.
+export function createWebSocketTransport(socket, { maxMessageBytes = 1024 * 1024 } = {}) {
   const transport = { onmessage: null, send: (m) => socket.send(JSON.stringify(m)) };
   socket.addEventListener('message', (e) => {
+    if (typeof e.data !== 'string' || e.data.length > maxMessageBytes) {
+      transport.send({ jsonrpc: '2.0', id: null, error: { code: ErrorCode.InvalidRequest, message: 'message too large or not text' } });
+      return;
+    }
     try {
       transport.onmessage?.(JSON.parse(e.data));
     } catch {
@@ -69,56 +78,69 @@ export function createWebSocketTransport(socket) {
 export class ProtocolServer {
   #methods = new Map();
   #capabilities;
+  #optIn;
   #connections = new Set();
 
   // `capabilities` lists what this server implements; each method belongs to
-  // one capability ("view.navigate" -> "view").
-  constructor(capabilities) {
+  // one capability (by default the part of its name before the dot). Those in
+  // `optIn` are sensitive: a client gets them only by asking for them by name,
+  // and only if the connection was allowed them (see connect).
+  constructor(capabilities, { optIn = [] } = {}) {
     this.#capabilities = new Set(capabilities);
+    this.#optIn = new Set(optIn);
   }
 
-  handle(name, fn) {
-    this.#methods.set(name, fn);
+  handle(name, fn, capability = name.split('.')[0]) {
+    this.#methods.set(name, { fn, capability });
   }
 
-  connect(transport) {
-    const connection = { transport, negotiated: null };
+  // `allow`: the capabilities this connection may negotiate (default: all).
+  connect(transport, { allow } = {}) {
+    const connection = { transport, negotiated: null, allow: allow ? new Set(allow) : null };
     this.#connections.add(connection);
     transport.onmessage = (message) => this.#receive(connection, message);
     return () => this.#connections.delete(connection);
   }
 
-  emit(name, data) {
+  // Events go to the connections that negotiated `capability`.
+  emit(name, data, capability = 'view') {
     for (const { transport, negotiated } of this.#connections) {
-      if (negotiated) transport.send({ jsonrpc: '2.0', method: 'event', params: { name, data } });
+      if (negotiated?.has(capability)) transport.send({ jsonrpc: '2.0', method: 'event', params: { name, data } });
     }
   }
 
   async #receive(connection, message) {
-    const { id = null, method, params = {} } = message ?? {};
-    const reply = (body) => id !== null && connection.transport.send({ jsonrpc: '2.0', id, ...body });
+    const { id: requested = null, method, params } = message ?? {};
+    const validId = requested === null || typeof requested === 'number' || typeof requested === 'string';
+    const id = validId ? requested : null;
+    // A request without an id is a notification: it gets no answer.
+    const reply = (body) => (id !== null || !validId) && connection.transport.send({ jsonrpc: '2.0', id, ...body });
     try {
-      if (message?.jsonrpc !== '2.0' || typeof method !== 'string')
+      if (!validId || message?.jsonrpc !== '2.0' || typeof method !== 'string' || method.length > 64)
         throw new ProtocolError(ErrorCode.InvalidRequest, 'not a JSON-RPC 2.0 request');
-      if (method === 'hello') return reply({ result: this.#hello(connection, params) });
+      if (params !== undefined && (params === null || typeof params !== 'object' || Array.isArray(params)))
+        throw new ProtocolError(ErrorCode.InvalidParams, 'params must be an object');
+      if (method === 'hello') return reply({ result: this.#hello(connection, params ?? {}) });
       if (!connection.negotiated) throw new ProtocolError(ErrorCode.NotNegotiated, 'call hello first');
-      const capability = method.split('.')[0];
+      const entry = this.#methods.get(method);
+      const capability = entry?.capability ?? method.split('.')[0];
       if (!connection.negotiated.has(capability))
         throw new ProtocolError(ErrorCode.CapabilityMissing, `capability "${capability}" not negotiated`);
-      const fn = this.#methods.get(method);
-      if (!fn) throw new ProtocolError(ErrorCode.MethodNotFound, `unknown method ${method}`);
-      reply({ result: (await fn(params)) ?? null });
+      if (!entry) throw new ProtocolError(ErrorCode.MethodNotFound, `unknown method ${method}`);
+      reply({ result: (await entry.fn(params ?? {})) ?? null });
     } catch (error) {
       const code = error instanceof ProtocolError ? error.code : ErrorCode.Internal;
       reply({ error: { code, message: error.message, data: error.data } });
     }
   }
 
-  #hello(connection, { version, capabilities = [] }) {
+  #hello(connection, { version, capabilities }) {
     if (version !== PROTOCOL_VERSION)
       throw new ProtocolError(ErrorCode.VersionMismatch, `server speaks protocol ${PROTOCOL_VERSION}`, { version: PROTOCOL_VERSION });
-    const wanted = capabilities.length ? capabilities : [...this.#capabilities];
-    connection.negotiated = new Set(wanted.filter((c) => this.#capabilities.has(c)));
+    if (capabilities !== undefined && (!Array.isArray(capabilities) || capabilities.some((c) => typeof c !== 'string')))
+      throw new ProtocolError(ErrorCode.InvalidParams, 'capabilities must be a list of names');
+    const wanted = capabilities?.length ? capabilities : [...this.#capabilities].filter((c) => !this.#optIn.has(c));
+    connection.negotiated = new Set(wanted.filter((c) => this.#capabilities.has(c) && (!connection.allow || connection.allow.has(c))));
     return { version: PROTOCOL_VERSION, capabilities: [...connection.negotiated] };
   }
 }

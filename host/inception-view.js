@@ -49,6 +49,9 @@ const CLIPBOARD_GESTURE_MS = 2000;
 const VIEW_EVENTS = ['navigate', 'title', 'loading', 'popup', 'console', 'crash', 'cursor', 'navigation.state', 'find.result', 'zoom', 'contextmenu'];
 // Names the view dispatches them under where the engine's would clash with
 // the element's own DOM events.
+// What the view's own client negotiates; remote clients get less (serve()).
+const PROTOCOL_CAPABILITIES = ['view', 'history', 'find', 'observe'];
+const EVENT_CAPABILITY = { console: 'observe', 'find.result': 'find' };
 const DOM_EVENT_NAMES = { contextmenu: 'contextmenurequest', 'navigation.state': 'navigationstate', 'find.result': 'findresult' };
 
 // <inception-view src gpu="auto|on|off" muted media profile fresh-profile user-agent
@@ -240,8 +243,13 @@ export class InceptionView extends HTMLElement {
     this.#runtime.send(command, args);
   }
 
-  serve(transport) {
-    return this.#server.connect(transport);
+  // Connects another protocol client (an iframe, a worker, a remote agent).
+  // It may negotiate only `capabilities`: by default just 'view' (navigation,
+  // tabs, state). The rest need naming here: 'find' (a text search is an oracle
+  // on the page's content), 'history' (the browsing history) and 'observe'
+  // (the page's console).
+  serve(transport, { capabilities = ['view'] } = {}) {
+    return this.#server.connect(transport, { allow: capabilities });
   }
 
   async #start() {
@@ -320,7 +328,7 @@ export class InceptionView extends HTMLElement {
       this.#runtime.addEventListener('crash', (e) => reject(new Error(`the engine crashed while starting: ${e.detail.message}`)), { once: true });
     });
     await this.#runtime.start();
-    await this.#client.hello();
+    await this.#client.hello(PROTOCOL_CAPABILITIES);
 
     const { width, height } = this.#cssSize();
     const gpu = this.getAttribute('gpu') ?? 'auto';
@@ -382,7 +390,7 @@ export class InceptionView extends HTMLElement {
   }
 
   #createServer() {
-    const server = new ProtocolServer(['view', 'history']);
+    const server = new ProtocolServer(PROTOCOL_CAPABILITIES, { optIn: ['history', 'find', 'observe'] });
     const runtime = this.#runtime;
     server.handle('view.navigate', ({ url }) => {
       if (typeof url !== 'string' || !url) throw new TypeError('url must be a non-empty string');
@@ -396,8 +404,8 @@ export class InceptionView extends HTMLElement {
     server.handle('view.find', ({ text, backwards, caseSensitive } = {}) => new Promise((resolve) => {
       runtime.addEventListener('find.result', (e) => resolve({ found: e.detail.found, matches: e.detail.matches }), { once: true });
       runtime.send('find', { text: String(text ?? ''), backwards: !!backwards, caseSensitive: !!caseSensitive });
-    }));
-    server.handle('view.findClear', () => runtime.send('find.clear'));
+    }), 'find');
+    server.handle('view.findClear', () => runtime.send('find.clear'), 'find');
     let historyRequests = 0;
     server.handle('history.query', (args = {}) => new Promise((resolve) => {
       const id = ++historyRequests;
@@ -430,7 +438,7 @@ export class InceptionView extends HTMLElement {
         if (name === 'loading') this.#state.loading = e.detail.loading;
         if (name === 'navigation.state') Object.assign(this.#state, e.detail);
         if (name === 'zoom') this.#state.zoom = e.detail.factor;
-        server.emit(name, e.detail);
+        server.emit(name, e.detail, EVENT_CAPABILITY[name]);
       });
     }
     return server;

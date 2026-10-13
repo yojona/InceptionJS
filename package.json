@@ -5,6 +5,7 @@
   "scripts": {
     "serve": "node tests/serve.mjs",
     "test": "playwright test -c tests/playwright.config.mjs",
+    "test:unit": "node --test tests/unit/*.test.mjs",
     "perf": "node tests/perf/run.mjs",
     "build:packages": "npm run build -w inceptionjs"
   },
