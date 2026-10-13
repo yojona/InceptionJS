@@ -17,9 +17,11 @@
 #include "storage/Profile.h"
 #include "wasm/GuestWasm.h"
 #include "platform/Strategies.h"
+#include "view/Clients.h"
 #include "view/Preferences.h"
 #include "view/Navigation.h"
 #include "view/View.h"
+#include "view/Window.h"
 #include "CurlContext.h"
 #include "CurlRequestScheduler.h"
 #include "CurlStreamScheduler.h"
@@ -66,14 +68,24 @@ static String platformForUserAgent(const String& userAgent)
     return emptyString();
 }
 
+// "started" {version, features}: what this engine speaks beyond the bridge
+// version. "windows": commands and events carry window ids.
+static Ref<JSON::Object> startedEvent()
+{
+    auto started = JSON::Object::create();
+    started->setInteger("version"_s, bridgeVersion);
+    auto features = JSON::Array::create();
+    features->pushString("windows"_s);
+    started->setArray("features"_s, WTF::move(features));
+    return started;
+}
+
 static void registerCommands()
 {
     // The host finds the engine's worker and greets it; the reply carries the
     // bridge version the host must speak.
     registerCommand("hello"_s, [](JSON::Object&) {
-        auto started = JSON::Object::create();
-        started->setInteger("version"_s, bridgeVersion);
-        emitEvent("started"_s, WTF::move(started));
+        emitEvent("started"_s, startedEvent());
     });
 
     // {width, height, deviceScaleFactor, gpu: bool, url?} -> "ready" {version, renderer}
@@ -97,6 +109,7 @@ static void registerCommands()
         Profile::select(args.getString("profile"_s), args.getBoolean("freshProfile"_s).value_or(false));
         auto mode = Renderer::singleton().initialize(expandedIntSize(FloatSize(cssSize) * scale), preferGPU, args.getInteger("webglContexts"_s).value_or(0));
         View::create(cssSize, scale);
+        setPopupsOpenWindows(args.getString("popups"_s) == "window"_s);
         auto userAgent = args.getString("userAgent"_s);
         View::singleton()->setUserAgent(userAgent);
         if (auto preferences = args.getObject("preferences"_s))
@@ -109,11 +122,58 @@ static void registerCommands()
         ready->setBoolean("persistent"_s, persistent);
         ready->setInteger("webglContexts"_s, inception_gfx_page_context_cap());
         ready->setInteger("tab"_s, View::singleton()->id());
+        ready->setInteger("window"_s, View::singleton()->window().id());
+
         emitEvent("ready"_s, WTF::move(ready));
 
         auto url = args.getString("url"_s);
         if (!url.isEmpty())
             View::singleton()->load(URL { url });
+    });
+
+    // {width, height, deviceScaleFactor, url?, opener?, visible?} ->
+    // "window.created" {window, tab, opener?}. A window starts hidden until
+    // a display shows it ("window.visibility").
+    registerCommand("window.create"_s, [](JSON::Object& args) {
+        if (!View::singleton())
+            return;
+        auto* model = Window::current();
+        auto cssSize = sizeFrom(args);
+        float scale = args.getDouble("deviceScaleFactor"_s).value_or(model ? model->deviceScaleFactor() : 1);
+        auto& window = Window::create(cssSize, scale);
+        WindowScope scope(window.id());
+        auto& tab = View::createFirst(window);
+        auto data = JSON::Object::create();
+        data->setInteger("window"_s, window.id());
+        data->setInteger("tab"_s, tab.id());
+        auto opener = args.getInteger("opener"_s).value_or(0);
+        if (opener > 0 && View::byID(opener))
+            data->setInteger("opener"_s, opener);
+        emitEvent("window.created"_s, WTF::move(data));
+        window.setVisible(args.getBoolean("visible"_s).value_or(false));
+        auto url = args.getString("url"_s);
+        if (!url.isEmpty())
+            tab.load(URL { url });
+    });
+    // {window} -> "window.closed" {window}, with "tab.closed" for each tab.
+    // Window 1 lives as long as the engine.
+    registerCommand("window.close"_s, [](JSON::Object&) {
+        auto* window = Window::current();
+        if (!window)
+            return;
+        if (window->id() == 1) {
+            auto data = JSON::Object::create();
+            data->setString("reason"_s, "window 1 cannot be closed"_s);
+            emitEvent("bad-command"_s, WTF::move(data));
+            return;
+        }
+        Window::close(window->id());
+    });
+    // {window, visible}: a hidden window does not paint; its pages keep
+    // loading and running, as hidden tabs do.
+    registerCommand("window.visibility"_s, [](JSON::Object& args) {
+        if (auto* window = Window::current())
+            window->setVisible(args.getBoolean("visible"_s).value_or(true));
     });
 
     registerCommand("load"_s, [](JSON::Object& args) {
@@ -179,6 +239,7 @@ int main()
 
     Inception::registerCommands();
     Inception::registerInputCommands();
+    Inception::ChromeClientImpl::registerCommands();
     Inception::registerPreferenceCommands();
     Inception::Media::install();
     Inception::registerModuleCommands();
@@ -189,9 +250,7 @@ int main()
 
     // The host listens on every worker it creates and recognizes the engine's
     // by this event; "hello" repeats it on request.
-    auto started = JSON::Object::create();
-    started->setInteger("version"_s, Inception::bridgeVersion);
-    Inception::emitEvent("started"_s, WTF::move(started));
+    Inception::emitEvent("started"_s, Inception::startedEvent());
 
     // The engine lives on in this worker's event loop.
     emscripten_exit_with_live_runtime();

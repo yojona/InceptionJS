@@ -2,6 +2,7 @@
 
 #include "IntSize.h"
 #include <wtf/Function.h>
+#include <wtf/HashMap.h>
 #include <wtf/Vector.h>
 
 WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
@@ -19,6 +20,11 @@ namespace Inception {
 // Paints frames and hands them to the host. GPU first: Skia on the engine's
 // WebGL2 context, presented as an ImageBitmap. When WebGL2 is unavailable (or
 // disabled), Skia rasterizes on the CPU and the pixels are posted instead.
+//
+// There is one context and one canvas for every window (a worker holds few
+// WebGL contexts). Each window paints into a render target of its own; the
+// canvas takes that window's size when its frame is presented, and every
+// presented frame is a full copy of the window's target.
 class Renderer {
 public:
     enum class Mode : uint8_t { GPU, CPU };
@@ -31,23 +37,27 @@ public:
     Mode initialize(WebCore::IntSize pixelSize, bool preferGPU, int pageContexts = 0);
     Mode mode() const { return m_mode; }
 
-    void resize(WebCore::IntSize pixelSize);
+    // Paints one frame of `window` at `pixelSize` and presents it: `paint`
+    // receives a context in device pixels with the transparent clear done.
+    void paintFrame(unsigned window, WebCore::IntSize pixelSize, const Function<void(WebCore::GraphicsContext&)>& paint);
 
-    // Paints one frame: `paint` receives a context in device pixels with the
-    // transparent clear already done.
-    void paintFrame(const Function<void(WebCore::GraphicsContext&)>& paint);
+    // Frees what a closed window painted into.
+    void releaseSurface(unsigned window);
 
 private:
-    bool initializeGPU();
+    struct Surface {
+        sk_sp<SkSurface> target;
+        Vector<uint8_t> pixels;
+    };
+
+    bool initializeGPU(WebCore::IntSize);
     void rebuildGPU();
-    void paintGPU(const Function<void(WebCore::GraphicsContext&)>&);
-    void paintCPU(const Function<void(WebCore::GraphicsContext&)>&);
+    void paintGPU(unsigned window, Surface&, WebCore::IntSize, const Function<void(WebCore::GraphicsContext&)>&);
+    void paintCPU(unsigned window, Surface&, WebCore::IntSize, const Function<void(WebCore::GraphicsContext&)>&);
 
     Mode m_mode { Mode::CPU };
     int m_requestedPageContexts { 0 };
-    WebCore::IntSize m_size;
-    Vector<uint8_t> m_pixels;
-    sk_sp<SkSurface> m_surface;
+    HashMap<unsigned, std::unique_ptr<Surface>> m_surfaces;
 };
 
 } // namespace Inception

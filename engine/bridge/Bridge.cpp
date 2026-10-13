@@ -1,10 +1,14 @@
 #include "config.h"
 #include "bridge/Bridge.h"
 
+#include "view/View.h"
+#include "view/Window.h"
+
 #include <wtf/HashMap.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/text/MakeString.h>
 #include <wtf/text/StringHash.h>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <emscripten/em_macros.h>
@@ -27,8 +31,27 @@ void registerCommand(const String& name, CommandHandler&& handler)
     commands().set(name, WTF::move(handler));
 }
 
+// Events of a page or a window say which window: the one named in the data,
+// else the window of the tab it names, else the current window. Engine-wide
+// events (downloads, history, the engine's own diagnostics) carry none.
+static void tagWindow(JSON::Object& data)
+{
+    if (data.getValue("window"_s))
+        return;
+    Window* window = nullptr;
+    if (auto tab = data.getInteger("tab"_s)) {
+        if (auto* view = View::byID(*tab))
+            window = &view->window();
+    }
+    if (!window)
+        window = Window::current();
+    if (window)
+        data.setInteger("window"_s, window->id());
+}
+
 void emitEvent(const String& name, Ref<JSON::Object>&& data)
 {
+    tagWindow(data.get());
     auto message = JSON::Object::create();
     message->setString("event"_s, name);
     message->setObject("data"_s, WTF::move(data));
@@ -54,6 +77,7 @@ void report(ASCIILiteral level, const String& message)
 RefPtr<JSON::Value> askHost(const String& question, Ref<JSON::Object>&& data)
 {
     data->setString("question"_s, question);
+    tagWindow(data.get());
     char* reply = inception_host_ask(data->toJSONString().utf8().data());
     if (!reply)
         return nullptr;
@@ -109,5 +133,17 @@ extern "C" EMSCRIPTEN_KEEPALIVE void inception_bridge_receive(const char* json)
     }
     if (!args)
         args = JSON::Object::create();
+    // {window}: the window the command acts on, window 1 when absent. It must
+    // name a window that exists; handlers then see it as the current one.
+    unsigned window = 1;
+    if (auto windowValue = args->getValue("window"_s)) {
+        auto number = windowValue->asDouble();
+        if (!number || *number < 1 || *number > 0xFFFFFFFF || *number != std::floor(*number))
+            return refuse("window is not a positive integer"_s);
+        window = static_cast<unsigned>(*number);
+        if (!Inception::Window::byID(window))
+            return refuse("no such window"_s);
+    }
+    Inception::WindowScope scope(window);
     it->value(*args);
 }

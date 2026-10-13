@@ -21,6 +21,7 @@
 #include "ScrollingCoordinatorTypes.h"
 #include "bridge/Bridge.h"
 #include "view/View.h"
+#include "view/Window.h"
 #include <wtf/MonotonicTime.h>
 
 namespace Inception {
@@ -226,13 +227,14 @@ void dispatchKey(JSON::Object& args)
     handler.keyEvent(charEvent);
 }
 
-// {focused: bool}: the view gained or lost focus in the host page.
-static void handleFocus(JSON::Object& args)
+// {focused: bool}: the window's display gained or lost focus in the host
+// page. Focusing one window takes focus from the window that had it.
+static void setWindowFocus(bool focused)
 {
     auto* view = View::singleton();
     if (!view)
         return;
-    bool focused = args.getBoolean("focused"_s).value_or(false);
+    view->window().setFocused(focused);
     auto& focus = view->page().focusController();
     focus.setActive(focused);
     focus.setFocused(focused);
@@ -240,6 +242,11 @@ static void handleFocus(JSON::Object& args)
         if (RefPtr frame = mainFrame())
             focus.setFocusedFrame(frame.get());
     }
+}
+
+static void handleFocus(JSON::Object& args)
+{
+    setWindowFocus(args.getBoolean("focused"_s).value_or(false));
 }
 
 void registerInputCommands()
@@ -278,6 +285,10 @@ void registerInputCommands()
     registerCommand("wheel"_s, dispatchWheel);
     registerCommand("key"_s, dispatchKey);
     registerCommand("focus"_s, handleFocus);
+    // {window}: the host moved focus to this window.
+    registerCommand("window.focus"_s, [](JSON::Object&) {
+        setWindowFocus(true);
+    });
 }
 
 } // namespace Inception

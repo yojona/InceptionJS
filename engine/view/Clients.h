@@ -17,6 +17,14 @@ class ChromeClientImpl final : public WebCore::EmptyChromeClient {
 public:
     explicit ChromeClientImpl(View&);
 
+    // "fullscreen.changed" and "file.chosen" for the current window.
+    static void registerCommands();
+
+    void hostFullscreenChanged(bool active, const String& error);
+    bool awaitsHostFullscreen() const { return m_willEnterFullscreen || m_hostFullscreen; }
+    void filesChosen(bool cancelled);
+    bool choosingFiles() const { return !!m_fileChooser; }
+
 private:
     WebCore::FloatRect windowRect() const final;
     WebCore::FloatRect pageRect() const final;
@@ -34,7 +42,6 @@ private:
     bool supportsFullScreenForElement(const WebCore::Element&, bool) final { return true; }
     void enterFullScreenForElement(WebCore::Element&, WebCore::HTMLMediaElementEnums::VideoFullscreenMode, CompletionHandler<void(WebCore::ExceptionOr<void>)>&& willEnter, CompletionHandler<bool(bool)>&& didEnter) final;
     void exitFullScreenForElement(WebCore::Element*, CompletionHandler<void()>&&) final;
-    void hostFullscreenChanged(bool active, const String& error);
 
     // Dialogs: the host shows them; the page waits for the answer, as it
     // would for a native one.
@@ -47,7 +54,9 @@ private:
     RefPtr<WebCore::PopupMenu> createPopupMenu(WebCore::PopupMenuClient&) const final;
 
     // window.open() and target=_blank: a new tab the host decides on
-    // ("tab.created", then "tab.show"); window.close() closes this tab.
+    // ("tab.created", then "tab.show"), or a new window when popups open
+    // windows ("window.opened"); window.close() closes this tab, or the
+    // window it opened.
     RefPtr<WebCore::Page> createWindow(WebCore::LocalFrame&, const String& openedMainFrameName, const WebCore::WindowFeatures&, const WebCore::NavigationAction&) final;
     void show() final;
     void closeWindow() final;
@@ -59,7 +68,6 @@ private:
     // The host's file picker; the chosen files are copied into the engine's
     // file system before "file.chosen" arrives.
     void runOpenPanel(WebCore::LocalFrame&, WebCore::FileChooser&) final;
-    void filesChosen(bool cancelled);
 
     void setCursor(const WebCore::Cursor&) final;
     void setCursorHiddenUntilMouseMoves(bool) final { }

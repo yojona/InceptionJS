@@ -1,11 +1,13 @@
 #include "config.h"
 #include "view/View.h"
+#include "view/Window.h"
 
 #include "CookieJar.h"
 #include "SocketProvider.h"
 #include "DatabaseProvider.h"
 #include "DocumentView.h"
 #include "EmptyClients.h"
+#include "FloatSize.h"
 #include "FrameLoadRequest.h"
 #include "FrameLoader.h"
 #include "GraphicsContext.h"
@@ -39,7 +41,7 @@
 #include <wtf/text/MakeString.h>
 
 extern "C" {
-void inception_gfx_request_frame();
+void inception_gfx_request_frame(unsigned window);
 }
 
 namespace Inception {
@@ -51,8 +53,6 @@ static Vector<View*>& views()
     return list;
 }
 
-static View* s_active;
-
 static void emitTab(const String& name, View& view)
 {
     auto data = JSON::Object::create();
@@ -63,16 +63,37 @@ static void emitTab(const String& name, View& view)
 View& View::create(IntSize cssSize, float deviceScaleFactor)
 {
     RELEASE_ASSERT(views().isEmpty());
-    auto* view = new View(cssSize, deviceScaleFactor);
+    auto& window = Window::create(cssSize, deviceScaleFactor);
+    auto& view = createFirst(window);
+    window.setVisible(true);
+    return view;
+}
+
+View& View::createFirst(Window& window)
+{
+    auto* view = new View(window, window.cssSize(), window.deviceScaleFactor());
     views().append(view);
-    s_active = view;
-    view->setVisible(true);
+    window.setActiveTab(view);
+    if (auto* other = Window::byID(1); other && other->activeTab() && other->activeTab() != view)
+        view->setUserAgent(other->activeTab()->userAgent());
+    applyPagePreferences(view->page());
+    view->setVisible(window.isVisible());
     return *view;
+}
+
+bool View::isActive() const
+{
+    return m_window->activeTab() == this;
 }
 
 View* View::singleton()
 {
-    return s_active;
+    auto* window = Window::current();
+    if (!window)
+        window = Window::focused();
+    if (!window)
+        window = Window::byID(1);
+    return window ? window->activeTab() : nullptr;
 }
 
 const Vector<View*>& View::all()
@@ -89,12 +110,34 @@ View* View::byID(unsigned id)
     return nullptr;
 }
 
+View* View::fromPage(const Page* page)
+{
+    if (!page)
+        return nullptr;
+    for (auto* view : views()) {
+        if (view->m_page.get() == page)
+            return view;
+    }
+    return nullptr;
+}
+
 View& View::createTab(unsigned openerID)
 {
-    RELEASE_ASSERT(s_active);
-    auto* view = new View(s_active->cssSize(), s_active->deviceScaleFactor());
+    auto* opener = openerID ? byID(openerID) : nullptr;
+    auto* window = opener ? &opener->window() : Window::current();
+    if (!window)
+        window = Window::byID(1);
+    RELEASE_ASSERT(window);
+    return createTab(*window, openerID);
+}
+
+View& View::createTab(Window& window, unsigned openerID)
+{
+    auto* model = window.activeTab() ? window.activeTab() : singleton();
+    auto* view = new View(window, window.cssSize(), window.deviceScaleFactor());
     views().append(view);
-    view->setUserAgent(s_active->userAgent());
+    if (model)
+        view->setUserAgent(model->userAgent());
     applyPagePreferences(view->page());
     view->setVisible(false);
     auto data = JSON::Object::create();
@@ -108,20 +151,25 @@ View& View::createTab(unsigned openerID)
 void View::activate(unsigned id)
 {
     auto* view = byID(id);
-    if (!view || view == s_active)
+    if (!view)
         return;
-    auto* previous = s_active;
-    s_active = view;
-    previous->setVisible(false);
-    // Hidden tabs keep the size they had; take the view's current one.
-    view->m_cssSize = previous->m_cssSize;
-    view->m_deviceScaleFactor = previous->m_deviceScaleFactor;
+    auto& window = view->window();
+    auto* previous = window.activeTab();
+    if (view == previous)
+        return;
+    WindowScope scope(window.id());
+    window.setActiveTab(view);
+    if (previous)
+        previous->setVisible(false);
+    // Hidden tabs keep the size they had; take the window's current one.
+    view->m_cssSize = window.cssSize();
+    view->m_deviceScaleFactor = window.deviceScaleFactor();
     view->m_page->setDeviceScaleFactor(view->m_deviceScaleFactor);
     if (RefPtr frame = view->mainFrame()) {
         if (RefPtr frameView = frame->view())
             frameView->resize(view->m_cssSize);
     }
-    view->setVisible(true);
+    view->setVisible(window.isVisible());
     emitTab("tab.activated"_s, *view);
     emitNavigationState();
     view->setNeedsPaint();
@@ -130,27 +178,41 @@ void View::activate(unsigned id)
 void View::close(unsigned id)
 {
     auto* view = byID(id);
-    if (!view || views().size() == 1)
+    if (!view || view->window().tabs().size() == 1)
         return;
     // Script may be running in the tab that asked to close (window.close()).
     RunLoop::mainSingleton().dispatch([id] {
         auto* view = byID(id);
-        if (!view || views().size() == 1)
+        if (!view)
             return;
-        if (view == s_active) {
-            auto index = views().find(view);
-            activate(views()[index ? index - 1 : 1]->id());
+        auto tabs = view->window().tabs();
+        if (tabs.size() == 1)
+            return;
+        if (view->isActive()) {
+            auto index = tabs.find(view);
+            activate(tabs[index ? index - 1 : 1]->id());
         }
-        views().removeFirst(view);
-        delete view;
-        auto data = JSON::Object::create();
-        data->setInteger("tab"_s, id);
-        emitEvent("tab.closed"_s, WTF::move(data));
+        destroy(*view);
     });
 }
 
-View::View(IntSize cssSize, float deviceScaleFactor)
-    : m_cssSize(cssSize)
+void View::destroy(View& view)
+{
+    unsigned id = view.id();
+    unsigned windowID = view.window().id();
+    if (view.isActive())
+        view.window().setActiveTab(nullptr);
+    views().removeFirst(&view);
+    delete &view;
+    auto data = JSON::Object::create();
+    data->setInteger("tab"_s, id);
+    data->setInteger("window"_s, windowID);
+    emitEvent("tab.closed"_s, WTF::move(data));
+}
+
+View::View(Window& window, IntSize cssSize, float deviceScaleFactor)
+    : m_window(&window)
+    , m_cssSize(cssSize)
     , m_deviceScaleFactor(deviceScaleFactor)
 {
     static unsigned lastID;
@@ -166,8 +228,10 @@ View::View(IntSize cssSize, float deviceScaleFactor)
     configuration.storageNamespaceProvider = createStorageNamespaceProvider();
     configuration.editorClient = makeUniqueRef<EditorClientImpl>();
     configuration.backForwardClient = BackForwardList::create([this] {
-        if (isActive())
+        if (isActive()) {
+            WindowScope scope(*this);
             emitNavigationState();
+        }
     });
     configuration.mainFrameCreationParameters = PageConfiguration::LocalMainFrameCreationParameters {
         CompletionHandler<UniqueRef<LocalFrameLoaderClient>(LocalFrame&, FrameLoader&)> { [this](auto& frame, auto& frameLoader) {
@@ -178,6 +242,9 @@ View::View(IntSize cssSize, float deviceScaleFactor)
     };
 
     m_page = Page::create(WTF::move(configuration));
+    // Every page in one group: storage events reach the profile's other tabs
+    // and windows, as in a browser.
+    m_page->setGroupName("inception"_s);
 #if ENABLE(ENCRYPTED_MEDIA)
     Media::provideMediaKeySystem(*m_page);
 #endif
@@ -281,12 +348,12 @@ void View::resize(IntSize cssSize, float deviceScaleFactor)
 {
     if (!isActive())
         return;
+    m_window->setSize(cssSize, deviceScaleFactor);
     m_cssSize = cssSize;
     if (deviceScaleFactor != m_deviceScaleFactor) {
         m_deviceScaleFactor = deviceScaleFactor;
         m_page->setDeviceScaleFactor(deviceScaleFactor);
     }
-    Renderer::singleton().resize(expandedIntSize(FloatSize(cssSize) * deviceScaleFactor));
     if (RefPtr frame = mainFrame()) {
         if (RefPtr view = frame->view())
             view->resize(cssSize);
@@ -303,13 +370,15 @@ void View::setNeedsPaint()
 
 void View::requestFrame()
 {
-    inception_gfx_request_frame();
+    if (isActive() && m_window->isVisible())
+        inception_gfx_request_frame(m_window->id());
 }
 
 void View::frame()
 {
-    if (!isActive())
+    if (!isActive() || !m_window->isVisible())
         return;
+    WindowScope scope(*this);
     m_page->updateRendering();
     m_page->finalizeRenderingUpdate({ });
 
@@ -325,25 +394,29 @@ void View::frame()
     if (m_paintedFrames++ < 3)
         report("debug"_s, makeString("frame "_s, m_paintedFrames, ' ', m_cssSize.width(), 'x', m_cssSize.height(), " @"_s, m_deviceScaleFactor));
 
-    Renderer::singleton().paintFrame([&](GraphicsContext& context) {
+    Renderer::singleton().paintFrame(m_window->id(), expandedIntSize(FloatSize(m_cssSize) * m_deviceScaleFactor), [&](GraphicsContext& context) {
         context.scale(m_deviceScaleFactor);
         frameView->paint(context, IntRect({ }, m_cssSize));
     });
-    Media::endFrame();
+    Media::endFrame(m_window->id());
 }
 
 } // namespace Inception
 
-// js/gfx.js: the engine's WebGL context was restored; the next frame rebuilds
-// Skia's context and repaints everything.
+// js/gfx.js: the engine's WebGL context was restored; the next frame of
+// every window rebuilds Skia's context and repaints everything.
 extern "C" EMSCRIPTEN_KEEPALIVE void inception_gfx_context_restored()
 {
-    if (auto* view = Inception::View::singleton())
-        view->setNeedsPaint();
+    for (auto* window : Inception::Window::all()) {
+        if (auto* view = window->activeTab())
+            view->setNeedsPaint();
+    }
 }
 
-extern "C" EMSCRIPTEN_KEEPALIVE void inception_gfx_frame()
+// The host's animation frame for one window (0, from an older host: window 1).
+extern "C" EMSCRIPTEN_KEEPALIVE void inception_gfx_frame(unsigned windowID)
 {
-    if (auto* view = Inception::View::singleton())
+    auto* window = Inception::Window::byID(windowID ? windowID : 1);
+    if (auto* view = window ? window->activeTab() : nullptr)
         view->frame();
 }

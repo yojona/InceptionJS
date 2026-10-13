@@ -26,6 +26,8 @@ public:
     static void forEach(const Function<void(HostMediaPlayer&)>&);
     HostMediaSource* mediaSource() const { return m_mediaSource.get(); }
     unsigned id() const { return m_id; }
+    // The window of the element's page, fixed at creation.
+    unsigned window() const { return m_window; }
 
     void update(JSON::Object& state);
     // The host <video> met encrypted media: {initDataType, initData}.
@@ -95,6 +97,7 @@ private:
 
     ThreadSafeWeakPtr<WebCore::MediaPlayer> m_player;
     unsigned m_id;
+    unsigned m_window { 1 };
     // The engine's fetch of a plain src, which the host plays (0: none).
     uint64_t m_sourceFetch { 0 };
 #if ENABLE(WEB_AUDIO)

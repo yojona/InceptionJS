@@ -11,7 +11,11 @@
 #include "media/HostCDM.h"
 #include "media/HostMediaSource.h"
 #include "media/MediaBridge.h"
+#include "CachedResourceLoader.h"
+#include "Document.h"
+#include "DocumentPage.h"
 #include "view/View.h"
+#include "view/Window.h"
 #include <wtf/HashMap.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/TZoneMallocInlines.h>
@@ -45,6 +49,11 @@ HostMediaPlayer::HostMediaPlayer(MediaPlayer& player)
     : m_player(player)
     , m_id(nextPlayerID())
 {
+    if (auto* loader = player.cachedResourceLoader()) {
+        RefPtr document = loader->document();
+        if (auto* view = View::fromPage(document ? document->page() : nullptr))
+            m_window = view->window().id();
+    }
     players().add(m_id, this);
     sendToHost("media.create"_s);
 }
@@ -61,6 +70,7 @@ HostMediaPlayer::~HostMediaPlayer()
 void HostMediaPlayer::sendToHost(const String& event, Ref<JSON::Object>&& data)
 {
     data->setInteger("id"_s, m_id);
+    data->setInteger("window"_s, m_window);
     emitEvent(event, WTF::move(data));
 }
 
@@ -229,7 +239,8 @@ void HostMediaPlayer::paint(GraphicsContext& context, const FloatRect& rect)
     if (context.paintingDisabled() || rect.isEmpty())
         return;
     context.clearRect(rect);
-    float scale = View::singleton() ? View::singleton()->deviceScaleFactor() : 1;
+    auto* window = Window::byID(m_window);
+    float scale = window ? window->deviceScaleFactor() : 1;
     auto deviceRect = context.getCTM().mapRect(rect);
     deviceRect.scale(1 / scale);
     m_paintedRect = deviceRect;

@@ -176,11 +176,13 @@ static void registerEngines(MediaEngineRegistrar registrar)
     registrar(makeUnique<HostMediaEngineFactory>());
 }
 
-void endFrame()
+void endFrame(unsigned window)
 {
-    // Players painted this frame report their box; the rest are hidden.
-    HostMediaPlayer::forEach([](HostMediaPlayer& player) {
-        player.reportLayoutIfChanged(player.takePaintedRect());
+    // The window's players painted this frame report their box; its other
+    // players are hidden. Other windows' players are not this frame's.
+    HostMediaPlayer::forEach([window](HostMediaPlayer& player) {
+        if (player.window() == window)
+            player.reportLayoutIfChanged(player.takePaintedRect());
     });
 }
 

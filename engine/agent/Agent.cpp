@@ -39,6 +39,8 @@
 #include "input/Input.h"
 #include "net/NetworkLoad.h"
 #include "view/View.h"
+#include "view/Window.h"
+#include <wtf/HashMap.h>
 #include <wtf/HashSet.h>
 #include <wtf/MonotonicTime.h>
 #include <wtf/NeverDestroyed.h>
@@ -74,10 +76,27 @@ struct State {
     HashSet<uint64_t> issued;
 };
 
+static HashMap<unsigned, std::unique_ptr<State>>& states()
+{
+    static NeverDestroyed<HashMap<unsigned, std::unique_ptr<State>>> map;
+    return map;
+}
+
+static State& stateOf(unsigned window)
+{
+    return *states().ensure(window ? window : 1u, [] { return std::make_unique<State>(); }).iterator->value;
+}
+
+// The state of the window the running command acts on.
 static State& state()
 {
-    static NeverDestroyed<State> instance;
-    return instance;
+    auto* window = Window::current();
+    return stateOf(window ? window->id() : 1);
+}
+
+void windowClosed(unsigned window)
+{
+    states().remove(window);
 }
 
 static void reply(int id, Ref<JSON::Object>&& result)
@@ -263,14 +282,19 @@ static Field filledSecrets(Document& document)
     return found;
 }
 
-static bool approved(StringView risk)
+static bool approved(State& current, StringView risk)
 {
-    auto& current = state();
     return MonotonicTime::now() < current.approvedUntil && current.approved.contains(risk.toString());
 }
 
-static void emitBlocked(ASCIILiteral action, ASCIILiteral risk, const URL& url)
+static bool approved(StringView risk)
 {
+    return approved(state(), risk);
+}
+
+static void emitBlocked(View& view, ASCIILiteral action, ASCIILiteral risk, const URL& url)
+{
+    WindowScope scope(view);
     auto data = JSON::Object::create();
     data->setString("action"_s, action);
     data->setString("risk"_s, risk);
@@ -278,24 +302,26 @@ static void emitBlocked(ASCIILiteral action, ASCIILiteral risk, const URL& url)
     emitEvent("agent.blocked"_s, WTF::move(data));
 }
 
-bool allowsNavigation(const NavigationAction& action, const ResourceRequest& request, FormState* formState)
+bool allowsNavigation(View& view, const NavigationAction& action, const ResourceRequest& request, FormState* formState)
 {
-    if (!state().agentInControl || !formState)
+    auto& current = stateOf(view.window().id());
+    if (!current.agentInControl || !formState)
         return true;
     if (action.type() != NavigationType::FormSubmitted && action.type() != NavigationType::FormResubmitted)
         return true;
     auto risk = formRisk(formState->form());
-    if (risk == "navigate"_s || approved(risk))
+    if (risk == "navigate"_s || approved(current, risk))
         return true;
-    emitBlocked("submit"_s, risk, request.url());
+    emitBlocked(view, "submit"_s, risk, request.url());
     return false;
 }
 
-bool allowsDownload(const URL& url)
+bool allowsDownload(View& view, const URL& url)
 {
-    if (!state().agentInControl || approved("download"_s))
+    auto& current = stateOf(view.window().id());
+    if (!current.agentInControl || approved(current, "download"_s))
         return true;
-    emitBlocked("download"_s, "download"_s, url);
+    emitBlocked(view, "download"_s, "download"_s, url);
     return false;
 }
 

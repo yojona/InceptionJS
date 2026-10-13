@@ -21,7 +21,7 @@ void setCapabilities(JSON::Object&);
 bool hostSupports(const WebCore::ContentType&, bool mediaSource);
 
 // Called after each painted frame: tells the host where each video is now.
-void endFrame();
+void endFrame(unsigned window);
 
 unsigned nextPlayerID();
 

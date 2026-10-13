@@ -1,9 +1,15 @@
 // Engine-side graphics: the engine owns an OffscreenCanvas and its WebGL2
 // context; each finished frame moves to the host as an ImageBitmap (no copy).
+// Every window of the engine shares that canvas and context; frames are
+// requested, ticked and presented per window, and a message without a window
+// (from an older peer) means window 1.
 addToLibrary({
-  $inceptionGfx: { canvas: null, frameRequested: false, contextState: 0 },
+  // `requested`: window id -> true while that window waits for a tick. Plain
+  // JSON, as library state must be.
+  $inceptionGfx: { canvas: null, requested: {}, contextState: 0 },
 
-  // How many WebGL contexts pages may hold at once. Browsers lose their oldest
+  // How many WebGL contexts pages may hold at once, shared by every window
+  // of this engine (the cap is per worker). Browsers lose their oldest
   // context past a cap, and the engine's own is created first, so pages get
   // the cap minus that one. Every context here lives in a worker, where
   // Chromium's cap is four whatever the GPU; elsewhere it is sixteen on a GPU,
@@ -103,10 +109,10 @@ addToLibrary({
   },
 
   inception_gfx_present__deps: ['$inceptionGfx', '$inceptionReport'],
-  inception_gfx_present: () => {
+  inception_gfx_present: (window) => {
     try {
       const bitmap = inceptionGfx.canvas.transferToImageBitmap();
-      postMessage({ inceptionFrame: bitmap }, [bitmap]);
+      postMessage({ inceptionFrame: bitmap, window }, [bitmap]);
     } catch (e) {
       inceptionReport('error', `present failed: ${e}`);
     }
@@ -114,19 +120,19 @@ addToLibrary({
 
   // CPU fallback: the pixels live in shared memory, which cannot be transferred,
   // so they are copied once into a buffer the host receives without another copy.
-  inception_gfx_present_pixels: (pixels, width, height) => {
+  inception_gfx_present_pixels: (window, pixels, width, height) => {
     const bytes = HEAPU8.slice(pixels, pixels + width * height * 4);
-    postMessage({ inceptionPixels: { width, height, buffer: bytes.buffer } }, [bytes.buffer]);
+    postMessage({ inceptionPixels: { width, height, buffer: bytes.buffer }, window }, [bytes.buffer]);
   },
 
   // Frames are paced by the host page's requestAnimationFrame: the engine asks
   // once, the host answers on its next frame. Worker-side rAF is not reliable
   // for a canvas that is not tied to the page.
   inception_gfx_request_frame__deps: ['$inceptionGfx'],
-  inception_gfx_request_frame: () => {
-    if (inceptionGfx.frameRequested) return;
-    inceptionGfx.frameRequested = true;
-    postMessage({ inceptionWantsFrame: 1 });
+  inception_gfx_request_frame: (window) => {
+    if (inceptionGfx.requested[window]) return;
+    inceptionGfx.requested[window] = true;
+    postMessage({ inceptionWantsFrame: window });
   },
 
   $inceptionGfxInstall__deps: ['$inceptionGfx', 'inception_loop_schedule'],
@@ -134,9 +140,11 @@ addToLibrary({
   $inceptionGfxInstall: () => {
     if (!ENVIRONMENT_IS_PTHREAD) return;
     self.addEventListener('message', (e) => {
-      if (!e.data?.inceptionFrameTick) return;
-      inceptionGfx.frameRequested = false;
-      Module._inception_gfx_frame();
+      const tick = e.data?.inceptionFrameTick;
+      if (!tick) return;
+      const window = Number.isInteger(tick) && tick > 0 ? tick : 1;
+      delete inceptionGfx.requested[window];
+      Module._inception_gfx_frame(window);
       _inception_loop_schedule(0);
     });
   },

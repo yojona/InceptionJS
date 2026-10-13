@@ -45,7 +45,9 @@
 #include "net/Download.h"
 #include "storage/History.h"
 #include "view/SelectMenu.h"
+#include "view/Navigation.h"
 #include "view/View.h"
+#include "view/Window.h"
 #include "wasm/GuestWasm.h"
 #include <JavaScriptCore/ConsoleTypes.h>
 #include <emscripten/em_macros.h>
@@ -62,13 +64,47 @@ void runInjectedScript(LocalFrame&, DOMWrapperWorld&);
 ChromeClientImpl::ChromeClientImpl(View& view)
     : m_view(view)
 {
-    // {active, error?}
-    registerCommand("fullscreen.changed"_s, [this](JSON::Object& args) {
-        hostFullscreenChanged(args.getBoolean("active"_s).value_or(false), args.getString("error"_s));
+}
+
+static ChromeClientImpl& chromeClient(View& view)
+{
+    return static_cast<ChromeClientImpl&>(view.page().chrome().client());
+}
+
+static bool s_popupsOpenWindows;
+
+void setPopupsOpenWindows(bool windows)
+{
+    s_popupsOpenWindows = windows;
+}
+
+void ChromeClientImpl::registerCommands()
+{
+    // {active, error?}: to the tab of the window that asked for fullscreen
+    // or holds it, else the window's shown tab.
+    registerCommand("fullscreen.changed"_s, [](JSON::Object& args) {
+        auto* window = Window::current();
+        if (!window)
+            return;
+        View* target = window->activeTab();
+        for (auto* view : window->tabs()) {
+            if (chromeClient(*view).awaitsHostFullscreen())
+                target = view;
+        }
+        if (target)
+            chromeClient(*target).hostFullscreenChanged(args.getBoolean("active"_s).value_or(false), args.getString("error"_s));
     });
-    // {cancelled}
-    registerCommand("file.chosen"_s, [this](JSON::Object& args) {
-        filesChosen(args.getBoolean("cancelled"_s).value_or(false));
+    // {cancelled}: to the window's tab whose file chooser is open.
+    registerCommand("file.chosen"_s, [](JSON::Object& args) {
+        auto* window = Window::current();
+        if (!window)
+            return;
+        for (auto* view : window->tabs()) {
+            if (chromeClient(*view).choosingFiles()) {
+                chromeClient(*view).filesChosen(args.getBoolean("cancelled"_s).value_or(false));
+                return;
+            }
+        }
     });
     SelectMenu::registerCommands();
 }
@@ -83,11 +119,13 @@ static Ref<JSON::Object> dialogData(LocalFrame& frame, const String& message)
 
 void ChromeClientImpl::runJavaScriptAlert(LocalFrame& frame, const String& message)
 {
+    WindowScope scope(m_view);
     askHost("alert"_s, dialogData(frame, message));
 }
 
 bool ChromeClientImpl::runJavaScriptConfirm(LocalFrame& frame, const String& message)
 {
+    WindowScope scope(m_view);
     auto reply = askHost("confirm"_s, dialogData(frame, message));
     return reply && reply->asBoolean().value_or(false);
 }
@@ -96,6 +134,7 @@ bool ChromeClientImpl::runJavaScriptPrompt(LocalFrame& frame, const String& mess
 {
     auto data = dialogData(frame, message);
     data->setString("defaultValue"_s, defaultValue);
+    WindowScope scope(m_view);
     auto reply = askHost("prompt"_s, WTF::move(data));
     if (!reply || reply->type() != JSON::Value::Type::String)
         return false;
@@ -105,13 +144,14 @@ bool ChromeClientImpl::runJavaScriptPrompt(LocalFrame& frame, const String& mess
 
 bool ChromeClientImpl::runBeforeUnloadConfirmPanel(String&& message, LocalFrame& frame)
 {
+    WindowScope scope(m_view);
     auto reply = askHost("beforeunload"_s, dialogData(frame, message));
     return !reply || reply->asBoolean().value_or(true);
 }
 
 RefPtr<PopupMenu> ChromeClientImpl::createPopupMenu(PopupMenuClient& client) const
 {
-    return SelectMenu::create(client);
+    return SelectMenu::create(client, m_view.window().id());
 }
 
 // Files the host has copied in for the pending chooser.
@@ -138,6 +178,7 @@ void ChromeClientImpl::runOpenPanel(LocalFrame&, FileChooser& chooser)
         accept->pushString(extension);
     data->setArray("accept"_s, WTF::move(accept));
     data->setBoolean("userGesture"_s, UserGestureIndicator::processingUserGesture());
+    WindowScope scope(m_view);
     emitEvent("file.choose"_s, WTF::move(data));
 }
 
@@ -165,6 +206,7 @@ void ChromeClientImpl::enterFullScreenForElement(Element& element, HTMLMediaElem
     m_fullscreenMode = mode;
     auto data = JSON::Object::create();
     data->setBoolean("active"_s, true);
+    WindowScope scope(m_view);
     emitEvent("fullscreen"_s, WTF::move(data));
 }
 
@@ -175,6 +217,7 @@ void ChromeClientImpl::exitFullScreenForElement(Element* element, CompletionHand
     if (m_hostFullscreen) {
         auto data = JSON::Object::create();
         data->setBoolean("active"_s, false);
+        WindowScope scope(m_view);
         emitEvent("fullscreen"_s, WTF::move(data));
     }
     completion();
@@ -299,16 +342,32 @@ static ASCIILiteral cssCursor(Cursor::Type type)
     return "default"_s;
 }
 
-RefPtr<Page> ChromeClientImpl::createWindow(LocalFrame&, const String& openedMainFrameName, const WindowFeatures&, const NavigationAction& action)
+RefPtr<Page> ChromeClientImpl::createWindow(LocalFrame&, const String& openedMainFrameName, const WindowFeatures& features, const NavigationAction& action)
 {
-    auto& tab = View::createTab(m_view.id());
     auto data = JSON::Object::create();
-    data->setInteger("tab"_s, tab.id());
     data->setInteger("opener"_s, m_view.id());
     data->setString("url"_s, action.url().string());
     if (!openedMainFrameName.isEmpty())
         data->setString("name"_s, openedMainFrameName);
     data->setBoolean("userGesture"_s, UserGestureIndicator::processingUserGesture());
+    if (s_popupsOpenWindows) {
+        // A new window, hidden until a display shows it, sized as asked or
+        // as the opener's.
+        auto& opener = m_view.window();
+        IntSize size {
+            features.width ? std::clamp(static_cast<int>(*features.width), 100, 8192) : opener.cssSize().width(),
+            features.height ? std::clamp(static_cast<int>(*features.height), 100, 8192) : opener.cssSize().height(),
+        };
+        auto& window = Window::create(size, opener.deviceScaleFactor());
+        auto& tab = View::createFirst(window);
+        data->setInteger("window"_s, window.id());
+        data->setInteger("tab"_s, tab.id());
+        data->setInteger("openerWindow"_s, opener.id());
+        emitEvent("window.opened"_s, WTF::move(data));
+        return &tab.page();
+    }
+    auto& tab = View::createTab(m_view.id());
+    data->setInteger("tab"_s, tab.id());
     emitEvent("tab.opened"_s, WTF::move(data));
     return &tab.page();
 }
@@ -324,15 +383,25 @@ void ChromeClientImpl::show()
 
 void ChromeClientImpl::closeWindow()
 {
-    View::close(m_view.id());
+    // The last tab of a window other than window 1 takes its window along.
+    auto& window = m_view.window();
+    if (window.id() != 1 && window.tabs().size() == 1)
+        Window::close(window.id());
+    else
+        View::close(m_view.id());
 }
 
+// window.focus(): only the person may move focus, so the embedder decides
+// ("tab.focus" for a hidden tab, "window.focus" for another window).
 void ChromeClientImpl::focus()
 {
+    auto data = JSON::Object::create();
     if (!m_view.isActive()) {
-        auto data = JSON::Object::create();
         data->setInteger("tab"_s, m_view.id());
         emitEvent("tab.focus"_s, WTF::move(data));
+    } else if (Window::focused() != &m_view.window()) {
+        data->setInteger("window"_s, m_view.window().id());
+        emitEvent("window.focus"_s, WTF::move(data));
     }
 }
 
@@ -356,6 +425,7 @@ void ChromeClientImpl::setCursor(const Cursor& cursor)
     m_cursor = css;
     auto data = JSON::Object::create();
     data->setString("cursor"_s, css);
+    WindowScope scope(m_view);
     emitEvent("cursor"_s, WTF::move(data));
 }
 
@@ -383,6 +453,7 @@ void ChromeClientImpl::focusedElementChanged(Element* element, LocalFrame* frame
     data->setString("kind"_s, kind);
     if (frame && frame->document())
         data->setString("origin"_s, frame->document()->securityOrigin().toString());
+    WindowScope scope(m_view);
     emitEvent("field.focus"_s, WTF::move(data));
 }
 
@@ -410,6 +481,7 @@ void ChromeClientImpl::addMessageToConsole(JSC::MessageSource, JSC::MessageLevel
     data->setString("source"_s, sourceID);
     data->setInteger("line"_s, lineNumber);
     data->setInteger("column"_s, columnNumber);
+    WindowScope scope(m_view);
     emitEvent("console"_s, WTF::move(data));
 }
 
@@ -441,7 +513,7 @@ String FrameLoaderClientImpl::userAgent(const URL& url) const
 
 void FrameLoaderClientImpl::dispatchDecidePolicyForNavigationAction(const NavigationAction& action, const ResourceRequest& request, const ResourceResponse&, FormState* formState, const String&, std::optional<NavigationIdentifier>, std::optional<HitTestResult>&&, bool, NavigationUpgradeToHTTPSBehavior, SandboxFlags, PolicyDecisionMode, FramePolicyFunction&& function)
 {
-    function(Agent::allowsNavigation(action, request, formState) ? PolicyAction::Use : PolicyAction::Ignore);
+    function(Agent::allowsNavigation(m_view, action, request, formState) ? PolicyAction::Use : PolicyAction::Ignore);
 }
 
 void FrameLoaderClientImpl::dispatchDecidePolicyForResponse(const ResourceResponse& response, const ResourceRequest& request, const String& downloadAttribute, FramePolicyFunction&& function)
@@ -453,7 +525,7 @@ void FrameLoaderClientImpl::dispatchDecidePolicyForResponse(const ResourceRespon
         return;
     }
     function(PolicyAction::Ignore);
-    if (request.url().protocolIsInHTTPFamily() && Agent::allowsDownload(request.url())) {
+    if (request.url().protocolIsInHTTPFamily() && Agent::allowsDownload(m_view, request.url())) {
         bool userGesture = UserGestureIndicator::processingUserGesture();
         RefPtr loader = m_frame->loader().policyDocumentLoader();
         if (!loader)
@@ -475,7 +547,7 @@ RefPtr<HistoryItem> FrameLoaderClientImpl::createHistoryItemTree(bool clipAtTarg
 // <a download> and similar: straight to a download.
 void FrameLoaderClientImpl::startDownload(const ResourceRequest& request, const String& suggestedName, FromDownloadAttribute)
 {
-    if (request.url().protocolIsInHTTPFamily() && Agent::allowsDownload(request.url()))
+    if (request.url().protocolIsInHTTPFamily() && Agent::allowsDownload(m_view, request.url()))
         Download::start(request, suggestedName, UserGestureIndicator::processingUserGesture());
 }
 
@@ -484,7 +556,7 @@ void FrameLoaderClientImpl::startDownload(const ResourceRequest& request, const 
 // already blocked by WebCore.
 void FrameLoaderClientImpl::dispatchDecidePolicyForNewWindowAction(const NavigationAction& action, const ResourceRequest& request, FormState* formState, const String&, std::optional<HitTestResult>&&, FramePolicyFunction&& function)
 {
-    function(Agent::allowsNavigation(action, request, formState) ? PolicyAction::Use : PolicyAction::Ignore);
+    function(Agent::allowsNavigation(m_view, action, request, formState) ? PolicyAction::Use : PolicyAction::Ignore);
 }
 
 bool FrameLoaderClientImpl::canShowMIMEType(const String& mimeType) const

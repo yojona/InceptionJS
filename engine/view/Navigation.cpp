@@ -12,6 +12,7 @@
 #include "bridge/Bridge.h"
 #include "view/Navigation.h"
 #include "view/View.h"
+#include "view/Window.h"
 
 namespace Inception {
 using namespace WebCore;
@@ -33,13 +34,30 @@ void emitNavigationState()
     emitEvent("navigation.state"_s, WTF::move(state));
 }
 
+// The tab a command names, if it belongs to the command's window: a window
+// never acts on another window's tabs.
+static View* tabOfCurrentWindow(JSON::Object& args)
+{
+    auto* view = View::byID(args.getInteger("tab"_s).value_or(0));
+    if (!view)
+        return nullptr;
+    if (&view->window() != Window::current()) {
+        auto data = JSON::Object::create();
+        data->setString("reason"_s, "the tab belongs to another window"_s);
+        emitEvent("bad-command"_s, WTF::move(data));
+        return nullptr;
+    }
+    return view;
+}
+
 void registerNavigationCommands()
 {
     // {url?, activate?} -> "tab.created" {tab}; then "tab.activated" if asked.
     registerCommand("tab.create"_s, [](JSON::Object& args) {
-        if (!View::singleton())
+        auto* window = Window::current();
+        if (!View::singleton() || !window)
             return;
-        auto& tab = View::createTab();
+        auto& tab = View::createTab(*window);
         auto url = args.getString("url"_s);
         if (!url.isEmpty())
             tab.load(URL { url });
@@ -48,11 +66,13 @@ void registerNavigationCommands()
     });
     // {tab}
     registerCommand("tab.activate"_s, [](JSON::Object& args) {
-        View::activate(args.getInteger("tab"_s).value_or(0));
+        if (auto* view = tabOfCurrentWindow(args))
+            View::activate(view->id());
     });
-    // {tab} -> "tab.closed" {tab}; the last tab stays.
+    // {tab} -> "tab.closed" {tab}; a window's last tab stays.
     registerCommand("tab.close"_s, [](JSON::Object& args) {
-        View::close(args.getInteger("tab"_s).value_or(0));
+        if (auto* view = tabOfCurrentWindow(args))
+            View::close(view->id());
     });
 
     registerCommand("back"_s, [](JSON::Object&) {

@@ -26,8 +26,8 @@ extern "C" {
 int inception_gfx_create_context(int width, int height, int requestedPageContexts);
 int inception_gfx_take_context_state();
 void inception_gfx_resize(int width, int height);
-void inception_gfx_present();
-void inception_gfx_present_pixels(const uint8_t*, int width, int height);
+void inception_gfx_present(unsigned window);
+void inception_gfx_present_pixels(unsigned window, const uint8_t*, int width, int height);
 }
 
 namespace Inception {
@@ -41,15 +41,14 @@ Renderer& Renderer::singleton()
 
 Renderer::Mode Renderer::initialize(IntSize pixelSize, bool preferGPU, int pageContexts)
 {
-    m_size = pixelSize;
     m_requestedPageContexts = pageContexts;
-    m_mode = preferGPU && initializeGPU() ? Mode::GPU : Mode::CPU;
+    m_mode = preferGPU && initializeGPU(pixelSize) ? Mode::GPU : Mode::CPU;
     return m_mode;
 }
 
-bool Renderer::initializeGPU()
+bool Renderer::initializeGPU(IntSize pixelSize)
 {
-    auto handle = inception_gfx_create_context(m_size.width(), m_size.height(), m_requestedPageContexts);
+    auto handle = inception_gfx_create_context(pixelSize.width(), pixelSize.height(), m_requestedPageContexts);
     if (!handle)
         return false;
     setSharedWebGLContext(handle);
@@ -72,21 +71,20 @@ bool Renderer::initializeGPU()
     return true;
 }
 
-void Renderer::resize(IntSize pixelSize)
+void Renderer::paintFrame(unsigned window, IntSize pixelSize, const Function<void(GraphicsContext&)>& paint)
 {
-    m_size = pixelSize;
+    if (pixelSize.isEmpty())
+        return;
+    auto& surface = *m_surfaces.ensure(static_cast<unsigned>(window), [] { return std::make_unique<Surface>(); }).iterator->value;
     if (m_mode == Mode::GPU)
-        inception_gfx_resize(m_size.width(), m_size.height());
+        paintGPU(window, surface, pixelSize, paint);
+    else
+        paintCPU(window, surface, pixelSize, paint);
 }
 
-void Renderer::paintFrame(const Function<void(GraphicsContext&)>& paint)
+void Renderer::releaseSurface(unsigned window)
 {
-    if (m_size.isEmpty())
-        return;
-    if (m_mode == Mode::GPU)
-        paintGPU(paint);
-    else
-        paintCPU(paint);
+    m_surfaces.remove(window);
 }
 
 // The WebGL context came back after a loss: every GL object Skia held is gone.
@@ -100,13 +98,16 @@ void Renderer::rebuildGPU()
         if (auto* grContext = display.skiaGrContext())
             grContext->abandonContext();
     }
-    m_surface = nullptr;
+    // Every window's target belonged to the lost context; each is made again
+    // at its next frame (the caller marks every window as needing paint).
+    for (auto& surface : m_surfaces.values())
+        surface->target = nullptr;
     display.clearGLContexts();
     if (!display.skiaGLContext() || !display.skiaGrContext())
         report("error"_s, "Skia could not use the restored WebGL context"_s);
 }
 
-void Renderer::paintGPU(const Function<void(GraphicsContext&)>& paint)
+void Renderer::paintGPU(unsigned window, Surface& windowSurface, IntSize size, const Function<void(GraphicsContext&)>& paint)
 {
     switch (inception_gfx_take_context_state()) {
     case 1:
@@ -124,12 +125,13 @@ void Renderer::paintGPU(const Function<void(GraphicsContext&)>& paint)
     // canvas's default framebuffer: Skia will not wrap WebGL's default
     // framebuffer directly. Bottom-left origin, like the canvas, so the blit
     // needs no flip.
-    if (!m_surface || m_surface->width() != m_size.width() || m_surface->height() != m_size.height()) {
-        auto info = SkImageInfo::Make(m_size.width(), m_size.height(), kRGBA_8888_SkColorType, kPremul_SkAlphaType, SkColorSpace::MakeSRGB());
+    auto& renderTarget = windowSurface.target;
+    if (!renderTarget || renderTarget->width() != size.width() || renderTarget->height() != size.height()) {
+        auto info = SkImageInfo::Make(size.width(), size.height(), kRGBA_8888_SkColorType, kPremul_SkAlphaType, SkColorSpace::MakeSRGB());
         auto properties = FontRenderOptions::singleton().createSurfaceProps();
-        m_surface = SkSurfaces::RenderTarget(grContext, skgpu::Budgeted::kNo, info, 0, kBottomLeft_GrSurfaceOrigin, &properties);
-        if (!m_surface) {
-            report("error"_s, makeString("Skia could not create a "_s, m_size.width(), 'x', m_size.height(), " render target (RGBA8 surface "_s,
+        renderTarget = SkSurfaces::RenderTarget(grContext, skgpu::Budgeted::kNo, info, 0, kBottomLeft_GrSurfaceOrigin, &properties);
+        if (!renderTarget) {
+            report("error"_s, makeString("Skia could not create a "_s, size.width(), 'x', size.height(), " render target (RGBA8 surface "_s,
                 grContext->colorTypeSupportedAsSurface(kRGBA_8888_SkColorType) ? "supported"_s : "unsupported"_s, ", max target "_s, grContext->maxRenderTargetSize(),
                 ", max texture "_s, grContext->maxTextureSize(), ", abandoned "_s, grContext->abandoned() ? "yes"_s : "no"_s,
                 ", renderable format "_s, grContext->defaultBackendFormat(kRGBA_8888_SkColorType, GrRenderable::kYes).isValid() ? "yes"_s : "no"_s,
@@ -140,7 +142,7 @@ void Renderer::paintGPU(const Function<void(GraphicsContext&)>& paint)
             return;
         }
     }
-    auto* surface = m_surface.get();
+    auto* surface = renderTarget.get();
 
     auto* canvas = surface->getCanvas();
     // The surface, and so its canvas and matrix, lives across frames: each
@@ -161,22 +163,26 @@ void Renderer::paintGPU(const Function<void(GraphicsContext&)>& paint)
     GrGLFramebufferInfo framebuffer;
     if (!GrBackendRenderTargets::GetGLFramebufferInfo(target, &framebuffer))
         return;
+    // The canvas is shared by every window: it takes this one's size first.
+    // Presenting resets it, so nothing of another window's frame remains.
+    inception_gfx_resize(size.width(), size.height());
     glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer.fFBOID);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     // The blit obeys the scissor test, and Skia leaves it set to whatever it
     // drew last; without this only that region reaches the canvas.
     glDisable(GL_SCISSOR_TEST);
-    glBlitFramebuffer(0, 0, m_size.width(), m_size.height(), 0, 0, m_size.width(), m_size.height(), GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBlitFramebuffer(0, 0, size.width(), size.height(), 0, 0, size.width(), size.height(), GL_COLOR_BUFFER_BIT, GL_NEAREST);
     grContext->resetContext();
-    inception_gfx_present();
+    inception_gfx_present(window);
 }
 
-void Renderer::paintCPU(const Function<void(GraphicsContext&)>& paint)
+void Renderer::paintCPU(unsigned window, Surface& windowSurface, IntSize size, const Function<void(GraphicsContext&)>& paint)
 {
-    auto info = SkImageInfo::Make(m_size.width(), m_size.height(), kRGBA_8888_SkColorType, kPremul_SkAlphaType, SkColorSpace::MakeSRGB());
-    m_pixels.resize(info.computeMinByteSize());
+    auto info = SkImageInfo::Make(size.width(), size.height(), kRGBA_8888_SkColorType, kPremul_SkAlphaType, SkColorSpace::MakeSRGB());
+    auto& pixels = windowSurface.pixels;
+    pixels.resize(info.computeMinByteSize());
     auto properties = FontRenderOptions::singleton().createSurfaceProps();
-    auto surface = SkSurfaces::WrapPixels(info, m_pixels.mutableSpan().data(), info.minRowBytes(), &properties);
+    auto surface = SkSurfaces::WrapPixels(info, pixels.mutableSpan().data(), info.minRowBytes(), &properties);
     if (!surface)
         return;
 
@@ -186,7 +192,7 @@ void Renderer::paintCPU(const Function<void(GraphicsContext&)>& paint)
         GraphicsContextSkia context(*canvas, RenderingMode::Unaccelerated, RenderingPurpose::Unspecified);
         paint(context);
     }
-    inception_gfx_present_pixels(m_pixels.span().data(), m_size.width(), m_size.height());
+    inception_gfx_present_pixels(window, pixels.span().data(), size.width(), size.height());
 }
 
 } // namespace Inception

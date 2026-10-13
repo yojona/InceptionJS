@@ -19,8 +19,9 @@ static HashMap<unsigned, SelectMenu*>& menus()
     return menus;
 }
 
-SelectMenu::SelectMenu(PopupMenuClient& client)
+SelectMenu::SelectMenu(PopupMenuClient& client, unsigned window)
     : m_client(&client)
+    , m_window(window)
 {
     static unsigned lastID;
     m_id = ++lastID;
@@ -36,6 +37,7 @@ void SelectMenu::sendItems(const String& event, const IntRect* rect, int selecte
 {
     auto data = JSON::Object::create();
     data->setInteger("id"_s, m_id);
+    data->setInteger("window"_s, m_window);
     if (rect) {
         auto box = JSON::Object::create();
         box->setInteger("x"_s, rect->x());
@@ -79,6 +81,7 @@ void SelectMenu::hide()
     m_showing = false;
     auto data = JSON::Object::create();
     data->setInteger("id"_s, m_id);
+    data->setInteger("window"_s, m_window);
     emitEvent("select.hide"_s, WTF::move(data));
     if (m_client)
         m_client->popupDidHide();
