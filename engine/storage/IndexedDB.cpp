@@ -25,6 +25,7 @@
 #include <pal/SessionID.h>
 #include <wtf/Lock.h>
 #include <wtf/RunLoop.h>
+#include <wtf/NeverDestroyed.h>
 
 namespace Inception {
 using namespace WebCore;
@@ -161,9 +162,13 @@ private:
     Ref<LocalIDBServer> m_server { LocalIDBServer::create() };
 };
 
+// One server for the profile, shared by every tab of every window: two
+// servers on the same files would neither see each other's writes nor
+// coordinate version changes.
 Ref<DatabaseProvider> createDatabaseProvider()
 {
-    return adoptRef(*new IDBDatabaseProvider);
+    static NeverDestroyed<Ref<IDBDatabaseProvider>> provider { adoptRef(*new IDBDatabaseProvider) };
+    return provider.get().copyRef();
 }
 
 } // namespace Inception

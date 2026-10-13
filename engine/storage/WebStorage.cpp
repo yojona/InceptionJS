@@ -23,6 +23,7 @@
 #include <wtf/Function.h>
 #include <wtf/HashMap.h>
 #include <wtf/WeakHashMap.h>
+#include <wtf/NeverDestroyed.h>
 
 namespace Inception {
 using namespace WebCore;
@@ -118,7 +119,10 @@ private:
         RefPtr page = frame.page();
         if (!document || !page)
             return;
-        Function<bool(Storage&)> isSource = [this](Storage& storage) { return &storage.area() == static_cast<StorageArea*>(this); };
+        // The window that made the change gets no event; every other window
+        // of the origin does, also those sharing this area (other tabs and
+        // windows).
+        Function<bool(Storage&)> isSource = [&frame](Storage& storage) { return storage.frame() == &frame; };
         if (m_type == StorageType::Session)
             StorageEventDispatcher::dispatchSessionStorageEvents(key, oldValue, newValue, *page, document->securityOrigin(), document->url().string(), isSource);
         else
@@ -143,7 +147,8 @@ public:
 
     const SecurityOrigin* topLevelOrigin() const final { return nullptr; }
 
-    // Only one page exists; a copy shares nothing with the original.
+    // A copy (sessionStorage for a page another opened) shares nothing with
+    // the original.
     Ref<StorageNamespace> copy(Page&) final { return create(m_type, m_sessionID); }
     PAL::SessionID sessionID() const final { return m_sessionID; }
     void setSessionIDForTesting(PAL::SessionID sessionID) final { m_sessionID = sessionID; }
@@ -185,9 +190,13 @@ class WebStorageNamespaceProvider final : public StorageNamespaceProvider {
     WeakHashMap<Page, Ref<WebStorageNamespace>> m_sessionNamespaces;
 };
 
+// One provider for every tab of every window, so localStorage is one map per
+// origin (pages saw stale copies with a provider each); sessionStorage stays
+// per page.
 Ref<StorageNamespaceProvider> createStorageNamespaceProvider()
 {
-    return adoptRef(*new WebStorageNamespaceProvider);
+    static NeverDestroyed<Ref<WebStorageNamespaceProvider>> provider { adoptRef(*new WebStorageNamespaceProvider) };
+    return provider.get().copyRef();
 }
 
 } // namespace Inception
