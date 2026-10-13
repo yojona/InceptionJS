@@ -751,8 +751,8 @@ export class InceptionView extends HTMLElement {
       this.#showMessage('The tab that holds this profile went away. Waiting for another one to take over...');
       this.dispatchEvent(new CustomEvent('hostlost'));
     });
-    connection.addEventListener('attached', (e) => {
-      if (!e.detail.host) return;
+    // Back on a new host: the window is open there again.
+    remote.addEventListener('attached', () => {
       this.dataset.role = 'client';
       this.#hideMessage();
       this.dispatchEvent(new CustomEvent('reattached'));
