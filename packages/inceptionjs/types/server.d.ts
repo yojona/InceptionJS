@@ -24,6 +24,7 @@ export declare class RelayTokenError extends Error {}
 
 export interface RelayOptions {
   port?: number;
+  /** Where to listen (default 127.0.0.1). Anything but loopback requires `secret`. */
   host?: string;
   /** Require ?token= signed with this secret (default: $INCEPTION_RELAY_SECRET). */
   secret?: string;
@@ -32,9 +33,19 @@ export interface RelayOptions {
   /** Allow loopback connections to devPorts (development only). */
   dev?: boolean;
   devPorts?: number[];
+  /** Streams per session (default 256). */
   maxStreams?: number;
+  /** Open sessions in total (default 500). */
+  maxConnections?: number;
+  /** Bytes a session may move in both directions (default 4 GiB). */
+  maxBytes?: number;
+  /** New streams a session may open per minute (default 600). */
+  connectsPerMinute?: number;
   connectTimeoutMs?: number;
+  /** Receives destinations, ports and sizes, never content. */
   log?: (level: 'info' | 'warn', message: string) => void;
+  /** Replace DNS resolution and TCP connection, for tests. */
+  hooks?: { resolve?(hostname: string): Promise<Array<{ address: string }>>; connect?(options: { host: string; port: number }): import('node:net').Socket };
 }
 
 export interface Relay {

@@ -186,7 +186,7 @@ async function relay(argv) {
     devPorts: values['dev-ports'].split(',').filter(Boolean).map(Number),
     origins: values.origin,
     secret,
-  });
+  }).catch((error) => fail(`[relay] ${error.message}`));
   const stop = () => server.close().then(() => process.exit(0));
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
