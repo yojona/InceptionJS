@@ -4,6 +4,25 @@
 
 export const BRIDGE_VERSION = 1;
 
+// Everything the engine sends is untrusted, a crashed or compromised engine
+// included: an event is a bounded JSON text naming a short event and carrying
+// an object, or it is dropped.
+const MAX_EVENT_CHARS = 64 * 1024 * 1024;
+const MAX_EVENT_NAME = 64;
+
+export function parseEngineMessage(text) {
+  if (typeof text !== 'string' || text.length > MAX_EVENT_CHARS) return null;
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== 'object' || typeof value.event !== 'string' || !value.event || value.event.length > MAX_EVENT_NAME) return null;
+  const payload = value.data && typeof value.data === 'object' && !Array.isArray(value.data) ? value.data : {};
+  return { event: value.event, payload };
+}
+
 export class EngineRuntime extends EventTarget {
   #module = null;
   #worker = null;
@@ -64,8 +83,9 @@ export class EngineRuntime extends EventTarget {
     if (data.inceptionAsk) return this.#answer(data.inceptionAsk);
     if (data.inceptionAudioDecode) return this.onAudioDecode?.(data.inceptionAudioDecode);
     if (data.inceptionDownload) return this.onDownloadChunk?.(data.inceptionDownload);
-    if (typeof data.inception !== 'string') return;
-    const { event, data: payload } = JSON.parse(data.inception);
+    const message = parseEngineMessage(data.inception);
+    if (!message) return;
+    const { event, payload } = message;
     if (event === 'started') {
       if (this.#worker) return;
       if (payload.version !== BRIDGE_VERSION)
@@ -73,7 +93,12 @@ export class EngineRuntime extends EventTarget {
       this.#worker = worker;
       for (const message of this.#pending.splice(0)) worker.postMessage(message);
     }
-    this.onEngineEvent?.(event, payload);
+    // One handler failing on a malformed payload must not keep the rest from the event.
+    try {
+      this.onEngineEvent?.(event, payload);
+    } catch (error) {
+      console.error(`[host] could not handle the engine event "${event}"`, error);
+    }
     this.dispatchEvent(new CustomEvent(event, { detail: payload }));
   }
 
