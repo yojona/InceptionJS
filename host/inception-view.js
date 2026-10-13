@@ -281,7 +281,7 @@ export class InceptionView extends HTMLElement {
       if (name === 'clipboard.write' && policy().clipboard !== false) writeClipboard(data.items);
     };
     this.#selectMenu = new SelectMenu(this.#shadow, (command, args) => this.#runtime.send(command, args));
-    this.#runtime.onAsk = (question) => answerDialog(this, question);
+    this.#runtime.onAsk = (question) => answerDialog(this, question, policy);
     this.#runtime.onMediaAppend = ({ id, sb, seq, bytes }) => this.#media.append(id, sb, seq, bytes);
     // binaryen next to the host modules (the package ships it there), or in the
     // repository's node_modules; resolved from this module, so a plain

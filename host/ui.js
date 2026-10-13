@@ -183,24 +183,34 @@ export class SelectMenu {
 }
 
 // alert / confirm / prompt / beforeunload. The engine is blocked until this
-// resolves; the reply is what the page's call returns.
-export async function answerDialog(host, question) {
+// resolves; the reply is what the page's call returns. The embedder can draw
+// its own dialog from the cancelable "dialog" event. Otherwise, by default,
+// nothing is shown (a page must not raise the browser's own dialogs, which
+// look like the embedder's and freeze it): alert returns, confirm answers
+// false, prompt null, and leaving the page is allowed. The "dialogblocked"
+// event reports it. policy.dialogs === 'native' uses the browser's dialogs.
+export async function answerDialog(host, question, policy) {
   let respond;
   const reply = new Promise((resolve) => (respond = resolve));
-  const event = new CustomEvent('dialog', { cancelable: true, detail: { ...question, type: question.question, respond } });
+  const detail = { ...question, type: question.question, respond };
+  const event = new CustomEvent('dialog', { cancelable: true, detail });
   if (!host.dispatchEvent(event)) return reply;
-  switch (question.question) {
-  case 'alert':
-    alert(question.message);
+  if (policy().dialogs === 'native') {
+    switch (question.question) {
+    case 'alert':
+      alert(question.message);
+      return null;
+    case 'confirm':
+      return confirm(question.message);
+    case 'prompt':
+      return prompt(question.message, question.defaultValue ?? '');
+    case 'beforeunload':
+      return confirm('Leave this page? Changes you made may not be saved.');
+    }
     return null;
-  case 'confirm':
-    return confirm(question.message);
-  case 'prompt':
-    return prompt(question.message, question.defaultValue ?? '');
-  case 'beforeunload':
-    return confirm('Leave this page? Changes you made may not be saved.');
   }
-  return null;
+  host.dispatchEvent(new CustomEvent('dialogblocked', { detail: { type: question.question, message: question.message } }));
+  return question.question === 'confirm' ? false : question.question === 'beforeunload' ? true : null;
 }
 
 // <input type=file>: the host's picker; chosen files are copied into the

@@ -131,6 +131,14 @@ export interface InceptionViewEventMap {
   permissionrequest: CustomEvent<{ kind: string; origin: string; grant(): void; deny(): void }>;
   downloadstart: CustomEvent<{ id: number; url: string; filename: string; mime: string; size: number }>;
   downloadprogress: CustomEvent<{ id: number; received: number; size: number }>;
+  /** A download cancelled because policy.downloads is 'block'. */
+  downloadblocked: CustomEvent<{ url: string; filename: string; mime: string; size: number }>;
+  /** A page dialog answered without UI (the default policy). */
+  dialogblocked: CustomEvent<{ type: 'alert' | 'confirm' | 'prompt' | 'beforeunload'; message: string }>;
+  /** A window or tab a page opened was closed instead of shown. */
+  popupblocked: CustomEvent<{ tab: number; opener: number; url: string; userGesture: boolean }>;
+  /** A page opened a tab: preventDefault() closes it, allow() shows it. */
+  newtab: CustomEvent<{ tab: number; opener: number; url: string; userGesture: boolean; allow(mode?: 'foreground' | 'background'): void }>;
   downloadfinish: CustomEvent<{ id: number; filename: string; mime: string; error?: string; blob?: Blob }>;
 }
 

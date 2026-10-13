@@ -112,3 +112,42 @@ test('policy.newTabs "foreground" shows a popup that follows a gesture', async (
   await click(page);
   await expect.poll(() => view(page).evaluate((el) => el.activeTab)).not.toBe(first);
 });
+
+const ask = (page) => evaluate(page, "JSON.stringify([alert('a'), confirm('c'), prompt('p', 'd')])");
+
+test('page dialogs are answered without showing any by default', async ({ page }) => {
+  const native = [];
+  page.on('dialog', (dialog) => {
+    native.push(dialog.type());
+    dialog.dismiss();
+  });
+  await open(page);
+  const blocked = view(page).evaluate((el) => new Promise((resolve) => {
+    const types = [];
+    el.addEventListener('dialogblocked', (e) => types.push(e.detail.type));
+    el.addEventListener('dialogblocked', () => types.length === 3 && resolve(types));
+  }));
+  expect(await ask(page)).toBe('[null,false,null]');
+  expect(await blocked).toEqual(['alert', 'confirm', 'prompt']);
+  expect(native).toEqual([]);
+});
+
+test('policy.dialogs "native" uses the browser dialogs', async ({ page }) => {
+  const native = [];
+  page.on('dialog', (dialog) => {
+    native.push(dialog.type());
+    dialog.accept(dialog.type() === 'prompt' ? 'typed' : undefined);
+  });
+  await open(page, { dialogs: 'native' });
+  expect(await ask(page)).toBe('[null,true,"typed"]');
+  expect(native).toEqual(['alert', 'confirm', 'prompt']);
+});
+
+test('the embedder can draw its own dialog from the event', async ({ page }) => {
+  await open(page);
+  await view(page).evaluate((el) => el.addEventListener('dialog', (e) => {
+    e.preventDefault();
+    e.detail.respond(e.detail.type === 'confirm' ? true : e.detail.type === 'prompt' ? 'mine' : null);
+  }));
+  expect(await ask(page)).toBe('[null,true,"mine"]');
+});
