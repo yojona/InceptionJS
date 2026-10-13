@@ -6,7 +6,8 @@ test.use({ deviceScaleFactor: 2 });
 
 // At a device pixel ratio of 2, with no resize, the view's backing store must
 // keep the size its box asks for, and the page must stay painted.
-test('view size is stable at dpr 2 without resizes', async ({ page }) => {
+test('view size is stable at dpr 2 without resizes', async ({ page, browserName }) => {
+  test.skip(browserName === 'firefox', 'Playwright\'s Firefox does not emulate the device pixel ratio');
   test.setTimeout(150_000);
   await page.goto(`${PAGE}?url=${encodeURIComponent('https://www.wikipedia.org/')}`);
   await expect(page).toHaveTitle('Wikipedia', { timeout: 60_000 });
