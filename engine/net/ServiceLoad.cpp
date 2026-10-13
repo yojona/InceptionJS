@@ -14,6 +14,7 @@
 #include "bridge/Bridge.h"
 #include "link/Link.h"
 #include "link/NetCoders.h"
+#include "net/LinkPolicy.h"
 #include "net/PingLoad.h"
 #include "net/Session.h"
 #include "view/Preferences.h"
@@ -90,6 +91,11 @@ void ServiceLoad::start(ResourceRequest&& request)
     m_request = WTF::move(request);
     if (!m_request.url().protocolIsInHTTPFamily()) {
         fail(ResourceError(errorDomainWebKitInternal, 0, m_request.url(), "Only http and https loads are allowed"_s));
+        return;
+    }
+    // Every hop: a redirect may not lead where the window may not go.
+    if (!LinkPolicy::allows(m_link->id(), m_request.url())) {
+        fail(ResourceError(errorDomainWebKitInternal, 0, m_request.url(), "Blocked by the embedder's policy"_s));
         return;
     }
     if (!m_started)
@@ -247,9 +253,9 @@ void installServiceLoads()
     });
 
     // {request} -> {error, response}: a ping or beacon.
-    Link::handleCall(Message::PingLoad, [](Link&, Decoder& decoder, Reply&& reply) {
+    Link::handleCall(Message::PingLoad, [](Link& link, Decoder& decoder, Reply&& reply) {
         auto request = decoder.decode<ResourceRequest>();
-        if (!request || !request->url().protocolIsInHTTPFamily())
+        if (!request || !request->url().protocolIsInHTTPFamily() || !LinkPolicy::allows(link.id(), request->url()))
             return;
         PingLoad::start(*request, [reply = WTF::move(reply)](const ResourceError& error, const ResourceResponse& response) mutable {
             Encoder encoder;

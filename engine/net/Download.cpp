@@ -12,6 +12,7 @@
 #include "bridge/Bridge.h"
 #include "link/Link.h"
 #include "link/NetCoders.h"
+#include "net/LinkPolicy.h"
 #include "net/Session.h"
 #include "view/Preferences.h"
 #include <emscripten/em_js.h>
@@ -132,7 +133,7 @@ void Download::installService()
         auto request = decoder.decode<ResourceRequest>();
         auto filename = decoder.string();
         auto userGesture = decoder.boolean();
-        if (userGesture && request->url().protocolIsInHTTPFamily())
+        if (userGesture && request->url().protocolIsInHTTPFamily() && LinkPolicy::allows(link.id(), request->url()))
             startForLink(*request, *filename, *userGesture, link.id());
     });
     // {id, request, media}
@@ -140,7 +141,7 @@ void Download::installService()
         auto id = decoder.u64();
         auto request = decoder.decode<ResourceRequest>();
         auto mediaID = decoder.decode<unsigned>();
-        if (!mediaID || !*id || !request->url().protocolIsInHTTPFamily() || mediaFetches().contains({ link.id(), *id }))
+        if (!mediaID || !*id || !request->url().protocolIsInHTTPFamily() || mediaFetches().contains({ link.id(), *id }) || !LinkPolicy::allows(link.id(), request->url()))
             return;
         Ref download = adoptRef(*new Download(*request, { }));
         download->m_mediaID = *mediaID;

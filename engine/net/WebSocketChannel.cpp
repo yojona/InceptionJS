@@ -18,6 +18,7 @@
 #include "WebTransportSession.h"
 #include "link/Link.h"
 #include "link/NetCoders.h"
+#include "net/LinkPolicy.h"
 #include <JavaScriptCore/ArrayBuffer.h>
 #include <wtf/HashMap.h>
 #include <wtf/NeverDestroyed.h>
@@ -704,6 +705,11 @@ void ServiceWebSocket::install()
         if (!url->protocolIs("ws"_s) && !url->protocolIs("wss"_s))
             return;
         Ref socket = create(link, *id);
+        if (!LinkPolicy::allows(link.id(), *url)) {
+            sockets().add({ link.id(), *id }, socket);
+            socket->connection().fail("Blocked by the embedder's policy"_s);
+            return;
+        }
         sockets().add({ link.id(), *id }, socket);
         socket->connection().connect(*url, *protocol, *userAgent, *origin, *allowCookies);
     });
