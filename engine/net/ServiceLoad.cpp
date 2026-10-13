@@ -217,7 +217,7 @@ void ServiceLoad::sendResponse(const ResourceResponse& response)
     if (m_blocked) {
         // What a page may know of a response it may not read: that there was
         // one, with nothing in it.
-        ResourceResponse empty { response.url(), String { }, 0, String { } };
+        ResourceResponse empty { URL { response.url() }, String { }, 0, String { } };
         empty.setHTTPStatusCode(response.httpStatusCode());
         encoder << empty;
         if (NetworkLoad::loggingEnabled())
