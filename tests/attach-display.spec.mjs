@@ -163,6 +163,58 @@ test('Web Audio of a window of the host\'s one engine plays in the tab that show
   await expect.poll(async () => (await stats()).peak, { timeout: 10_000 }).toBeGreaterThan(0.45);
 });
 
+test('fullscreen a page asks for puts the showing tab\'s canvas in fullscreen, and leaving it there tells the page', async ({ context }) => {
+  const profile = profileName();
+  const host = await startHost(context, profile);
+  const { page, id } = await startClient(context, profile);
+  await expect.poll(() => evaluateIn(host, id, 'document.readyState'), { timeout: 30_000 }).toBe('complete');
+  await write(host, id, '<title>fs</title><body style="margin:0;height:100vh"><script>window.changes = []; document.addEventListener("fullscreenchange", () => changes.push(!!document.fullscreenElement)); document.body.onclick = () => document.documentElement.requestFullscreen().then(() => changes.push("ok"), (e) => changes.push("refused " + e.name));</script></body>');
+  await expect.poll(() => evaluateIn(host, id, 'String(window.changes?.length)')).toBe('0');
+  await page.locator('#screen').click({ position: { x: 50, y: 50 } });
+  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id ?? null), { timeout: 10_000 }).toBe('screen');
+  await expect.poll(() => evaluateIn(host, id, 'JSON.stringify(changes)'), { timeout: 10_000 }).toContain('"ok"');
+  expect(await evaluateIn(host, id, 'String(!!document.fullscreenElement)')).toBe('true');
+  // The person leaves fullscreen in the tab that shows it.
+  await page.evaluate(() => document.exitFullscreen());
+  await expect.poll(() => evaluateIn(host, id, 'String(!!document.fullscreenElement)'), { timeout: 10_000 }).toBe('false');
+});
+
+test('EME of a window runs in the tab that shows it, with that browser\'s CDM', async ({ context }) => {
+  const profile = profileName();
+  // An engine per window: its EME objects are that window's.
+  const host = await startHost(context, profile, '&isolation=window');
+  const { page, id } = await startClient(context, profile);
+  await page.evaluate(() => {
+    window.accessRequests = 0;
+    const original = navigator.requestMediaKeySystemAccess.bind(navigator);
+    navigator.requestMediaKeySystemAccess = (...args) => { window.accessRequests++; return original(...args); };
+  });
+  await expect.poll(() => evaluateIn(host, id, 'document.readyState'), { timeout: 30_000 }).toBe('complete');
+  await evaluateIn(host, id, `(async () => {
+    const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+    const kid = new Uint8Array(16).fill(1), key = new Uint8Array(16).fill(2);
+    window.emeResult = 'pending';
+    try {
+      const access = await navigator.requestMediaKeySystemAccess('org.w3.clearkey', [{ initDataTypes: ['keyids'], videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.42E01E"' }] }]);
+      const keys = await access.createMediaKeys();
+      const session = keys.createSession();
+      const message = new Promise((resolve) => session.addEventListener('message', (e) => resolve(e), { once: true }));
+      const statuses = new Promise((resolve) => session.addEventListener('keystatuseschange', resolve, { once: true }));
+      await session.generateRequest('keyids', new TextEncoder().encode(JSON.stringify({ kids: [b64url(kid)] })));
+      const request = JSON.parse(new TextDecoder().decode((await message).message));
+      await session.update(new TextEncoder().encode(JSON.stringify({ keys: [{ kty: 'oct', kid: request.kids[0], k: b64url(key) }] })));
+      await statuses;
+      const seen = [];
+      session.keyStatuses.forEach((status) => seen.push(status));
+      window.emeResult = JSON.stringify({ keySystem: access.keySystem, statuses: seen });
+    } catch (e) {
+      window.emeResult = 'error: ' + e;
+    }
+  })(), 'started'`);
+  await expect.poll(() => evaluateIn(host, id, 'emeResult'), { timeout: 30_000 }).toBe(JSON.stringify({ keySystem: 'org.w3.clearkey', statuses: ['usable'] }));
+  expect(await page.evaluate(() => window.accessRequests)).toBeGreaterThan(0);
+});
+
 test('a file chosen in the tab that shows the window reaches the page', async ({ context }) => {
   const profile = profileName();
   const host = await startHost(context, profile);
