@@ -6,6 +6,7 @@
 #include "BlobRegistryImpl.h"
 #include "CachedResource.h"
 #include "Document.h"
+#include "DocumentPage.h"
 #include "JSDOMGlobalObject.h"
 #include "JSExecState.h"
 #include "LoaderStrategy.h"
