@@ -87,6 +87,34 @@ export class FrameRouter {
   }
 }
 
+// The engine's code and file system image, fetched and compiled once per
+// document and shared by every engine started from the same URL: a second
+// engine costs its own memory, not another compile (about 165 MB of code in
+// Chromium) or another download.
+const shared = new Map();
+
+export function loadEngine(engineUrl) {
+  let entry = shared.get(engineUrl);
+  if (!entry) {
+    const file = (name) => new URL(name, engineUrl).href;
+    const fetched = (name) => fetch(file(name)).then((response) => {
+      if (!response.ok) throw new Error(`could not load ${name}: HTTP ${response.status}`);
+      return response;
+    });
+    // Streaming needs the application/wasm type, which not every server sends.
+    const compile = () => fetched('inception-engine.wasm').then((response) =>
+      WebAssembly.compileStreaming(response.clone()).catch(() => response.arrayBuffer().then((bytes) => WebAssembly.compile(bytes))));
+    entry = {
+      module: compile(),
+      data: fetched('inception-engine.data').then((response) => response.arrayBuffer()),
+    };
+    // A failed load is retried by the next engine, not remembered.
+    Promise.all([entry.module, entry.data]).catch(() => shared.delete(engineUrl));
+    shared.set(engineUrl, entry);
+  }
+  return Promise.all([entry.module, entry.data]).then(([module, data]) => ({ module, data }));
+}
+
 export class EngineRuntime extends EventTarget {
   #module = null;
   #worker = null;
@@ -94,12 +122,16 @@ export class EngineRuntime extends EventTarget {
   #pending = [];
 
   #maxMemoryMB;
+  #shareCode;
 
-  // `canvas`, when given, shows window 1.
-  constructor({ engineUrl, relayUrl, canvas, maxMemoryMB }) {
+  // `canvas`, when given, shows window 1. `shareCode` (default true): start
+  // from the document's one compiled module (loadEngine) instead of letting
+  // the engine fetch and compile its own.
+  constructor({ engineUrl, relayUrl, canvas, maxMemoryMB, shareCode = true }) {
     super();
     this.engineUrl = engineUrl;
     this.#maxMemoryMB = maxMemoryMB;
+    this.#shareCode = shareCode;
     this.relayUrl = relayUrl;
     if (canvas) this.attachDisplay(1, canvasSink(canvas));
   }
@@ -120,7 +152,7 @@ export class EngineRuntime extends EventTarget {
   async start() {
     if (!crossOriginIsolated)
       throw new Error('InceptionJS needs a cross-origin isolated page (COOP: same-origin, COEP: require-corp)');
-    const { default: createEngine } = await import(this.engineUrl);
+    const [{ default: createEngine }, code] = await Promise.all([import(this.engineUrl), this.#shareCode ? loadEngine(this.engineUrl) : null]);
     const started = new Promise((resolve) => this.addEventListener('started', resolve, { once: true }));
     // The engine's thread announces itself as soon as it runs, possibly before
     // the module promise settles, so listeners go on each worker as it is
@@ -130,6 +162,7 @@ export class EngineRuntime extends EventTarget {
     globalThis.Worker = class extends NativeWorker {
       constructor(...args) {
         super(...args);
+        runtime.#workers.add(this);
         this.addEventListener('message', (e) => runtime.#onWorkerMessage(this, e.data));
       }
     };
@@ -139,6 +172,13 @@ export class EngineRuntime extends EventTarget {
         locateFile: (path) => new URL(path, this.engineUrl).href,
         print: (text) => console.log('[engine]', text),
         printErr: (text) => console.warn('[engine]', text),
+        ...(code ? {
+          instantiateWasm(imports, receive) {
+            WebAssembly.instantiate(code.module, imports).then((instance) => receive(instance, code.module));
+            return {};
+          },
+          getPreloadedPackage: () => code.data,
+        } : {}),
       });
     } finally {
       globalThis.Worker = NativeWorker;
@@ -147,13 +187,33 @@ export class EngineRuntime extends EventTarget {
   }
 
   send(command, args = {}) {
-    const message = { inception: JSON.stringify({ command, args }) };
-    if (this.#worker) this.#worker.postMessage(message);
-    else this.#pending.push(message);
+    this.postToEngine({ inception: JSON.stringify({ command, args }) });
   }
 
+  // A message for the engine's thread itself (link ports, files), queued
+  // until it has started.
+  postToEngine(message, transfer = []) {
+    if (this.#worker) this.#worker.postMessage(message, transfer);
+    else this.#pending.push([message, transfer]);
+  }
+
+  // Stops every thread of the engine: what a crashed engine still holds (its
+  // files' access handles, its sockets) is released.
+  terminate() {
+    this.#terminated = true;
+    try {
+      this.#module?.PThread?.terminateAllThreads?.();
+    } catch {}
+    for (const worker of this.#workers) worker.terminate();
+    this.#workers.clear();
+    this.#worker = null;
+  }
+
+  #workers = new Set();
+  #terminated = false;
+
   #onWorkerMessage(worker, data) {
-    if (!data || typeof data !== 'object') return;
+    if (!data || typeof data !== 'object' || this.#terminated) return;
     if (data.inceptionWantsFrame) {
       const window = frameWindow(data.inceptionWantsFrame);
       return requestAnimationFrame(() => worker.postMessage({ inceptionFrameTick: window }));
@@ -175,7 +235,7 @@ export class EngineRuntime extends EventTarget {
         throw new Error(`engine speaks bridge v${payload.version}, host speaks v${BRIDGE_VERSION}`);
       this.#worker = worker;
       this.features = Array.isArray(payload.features) ? payload.features.filter((f) => typeof f === 'string') : [];
-      for (const message of this.#pending.splice(0)) worker.postMessage(message);
+      for (const [message, transfer] of this.#pending.splice(0)) worker.postMessage(message, transfer);
     }
     // One handler failing on a malformed payload must not keep the rest from the event.
     try {
