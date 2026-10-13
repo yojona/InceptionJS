@@ -41,6 +41,7 @@
 #include <JavaScriptCore/VM.h>
 #include <cstdlib>
 #include <emscripten.h>
+#include <emscripten/em_js.h>
 #include <wtf/MainThread.h>
 #include <wtf/CryptographicallyRandomNumber.h>
 #include <wtf/RunLoop.h>
@@ -49,6 +50,14 @@ extern "C" {
 void inception_loop_schedule(double delayMs);
 int inception_gfx_page_context_cap();
 }
+
+// How many interpreter entries may nest on this thread, 0 for the default (see
+// the recursion patch): the thread's native stack is the host browser's, and WebKit's
+// worker stacks are smaller than Chromium's and Firefox's.
+EM_JS(int, inception_host_recursion_depth, (), {
+    const agent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+    return /AppleWebKit/.test(agent) && !/Chrome|Chromium|Edg\//.test(agent) ? 40 : 0;
+});
 
 namespace Inception {
 using namespace WebCore;
@@ -301,6 +310,11 @@ int main()
     // allow (some ten thousand frames), and shallow enough that runaway
     // recursion fails fast.
     setenv("JSC_maxPerThreadStackUsage", "2097152", 1);
+
+    // The count of nested entries starts above zero, which leaves `depth` of
+    // the limit to the page.
+    if (unsigned depth = inception_host_recursion_depth())
+        JSC::cloopEntryDepth = JSC::maxCLoopEntryDepth - depth;
 
     JSC::initialize();
     WTF::initializeMainThread();
