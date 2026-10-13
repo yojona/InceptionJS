@@ -11,8 +11,15 @@
 //   {type: 'resize', width, height, deviceScaleFactor}
 //   {type: 'visibility', visible}
 //   {type: 'close'}                  the display goes away (the window stays)
+//   {type: 'probe', ok}              whether the probe bitmap arrived
 // host to display:
-//   {type: 'frame', bitmap}          transferred
+//   {type: 'probe', bitmap}          a 1x1 bitmap, once, at attach time
+//   {type: 'frame', bitmap}          transferred, when the probe arrived
+//   {type: 'pixels', width, height, buffer}
+//                                    RGBA, transferred, otherwise: some
+//                                    browsers drop a bitmap posted through a
+//                                    port to another document (WebKit always,
+//                                    Firefox when not isolated)
 //   {type: 'event', name, data}      cursor, select.show|update|hide, control
 //   {type: 'closed'}                 the window was closed
 // Messages from a display are untrusted: anything not of this shape is
@@ -62,6 +69,8 @@ export function validateDisplayMessage(message) {
       return typeof message.visible === 'boolean' ? { type: 'visibility', visible: message.visible } : null;
     case 'close':
       return { type: 'close' };
+    case 'probe':
+      return typeof message.ok === 'boolean' ? { type: 'probe', ok: message.ok } : null;
     default:
       return null;
   }
@@ -124,11 +133,16 @@ export class Display {
   }
 }
 
-// The host's end of a display channel for window `window`: frames go out on
-// the port, validated input comes in to `send` (the window's sender). Returns
-// {sink, post(event), close()}; `onClose` runs when the display goes away.
-export function serveDisplay(port, { send, onVisibility, onClose }) {
+// The host's end of a display channel for one window: frames go out on the
+// port, validated input comes in to `send` (the window's sender). `frames`:
+// 'auto' (bitmaps if the display received the probe, RGBA otherwise),
+// 'bitmap' or 'pixels'. Returns {sink, post(name, data), close()}; `onClose`
+// runs when the display goes away.
+export function serveDisplay(port, { send, onVisibility, onClose, frames = 'auto' }) {
   let open = true;
+  // Until the display answers the probe, frames go as pixels: they always arrive.
+  let bitmaps = frames === 'bitmap';
+  let scratch = null;
   const close = (notify) => {
     if (!open) return;
     open = false;
@@ -142,14 +156,30 @@ export function serveDisplay(port, { send, onVisibility, onClose }) {
     if (message.type === 'input') send(message.command, message.args);
     else if (message.type === 'resize') send('resize', { width: message.width, height: message.height, deviceScaleFactor: message.deviceScaleFactor });
     else if (message.type === 'visibility') onVisibility?.(message.visible);
+    else if (message.type === 'probe') bitmaps = frames === 'auto' ? message.ok : bitmaps;
     else if (message.type === 'close') close(false);
   });
   port.start();
+  if (frames === 'auto') {
+    createImageBitmap(new ImageData(1, 1)).then((bitmap) => open && port.postMessage({ type: 'probe', bitmap }, [bitmap]), () => {});
+  }
+  // One readback per frame: the bitmap is drawn and its pixels transferred.
+  const pixels = (bitmap) => {
+    const { width, height } = bitmap;
+    if (!scratch || scratch.canvas.width !== width || scratch.canvas.height !== height)
+      scratch = new OffscreenCanvas(width, height).getContext('2d', { willReadFrequently: true });
+    scratch.clearRect(0, 0, width, height);
+    scratch.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    const { data } = scratch.getImageData(0, 0, width, height);
+    port.postMessage({ type: 'pixels', width, height, buffer: data.buffer }, [data.buffer]);
+  };
   return {
     sink: {
       present(bitmap) {
         if (!open) return bitmap.close();
-        port.postMessage({ type: 'frame', bitmap }, [bitmap]);
+        if (bitmaps) port.postMessage({ type: 'frame', bitmap }, [bitmap]);
+        else pixels(bitmap);
       },
     },
     post(name, data) {
@@ -192,10 +222,22 @@ export function createDisplay(canvas, port, { clipboard = true } = {}) {
     detachInput?.();
     textInput.remove();
   };
+  // A bitmap that cannot cross into this document arrives as an error: the
+  // host then sends pixels.
+  port.addEventListener('messageerror', () => open && port.postMessage({ type: 'probe', ok: false }));
+  const MAX_PIXELS = MAX_SIZE * MAX_SIZE;
   port.addEventListener('message', (event) => {
     const message = event.data;
     if (!open || !isObject(message)) return;
-    if (message.type === 'frame' && message.bitmap) sink.present(message.bitmap);
+    if (message.type === 'probe') {
+      message.bitmap?.close?.();
+      port.postMessage({ type: 'probe', ok: !!message.bitmap });
+    } else if (message.type === 'frame' && message.bitmap) sink.present(message.bitmap);
+    else if (message.type === 'pixels' && message.buffer instanceof ArrayBuffer) {
+      const { width, height, buffer } = message;
+      if (!(width > 0 && height > 0 && width * height <= MAX_PIXELS && buffer.byteLength === width * height * 4)) return;
+      createImageBitmap(new ImageData(new Uint8ClampedArray(buffer), width, height)).then((bitmap) => open && sink.present(bitmap), () => {});
+    }
     else if (message.type === 'event' && isObject(message.data)) {
       const { name, data } = message;
       if (name === 'cursor') canvas.style.cursor = String(data.cursor ?? 'default');

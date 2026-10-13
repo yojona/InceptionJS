@@ -366,8 +366,11 @@ export declare class InceptionView extends HTMLElement {
   openWindow(options?: { width?: number; height?: number; url?: string; deviceScaleFactor?: number }): Promise<InceptionWindow>;
   /** The handle of a window other than 1, or null. */
   window(id: number): InceptionWindow | null;
-  /** A display channel for window `id`, to show it in another document with createDisplay(canvas, port). */
-  exportWindow(id: number): MessagePort;
+  /**
+   * A display channel for window `id`, to show it in another document with createDisplay(canvas, port).
+   * `frames`: 'auto' (bitmaps where the browser carries them to the other document, RGBA pixels otherwise).
+   */
+  exportWindow(id: number, options?: { frames?: 'auto' | 'bitmap' | 'pixels' }): MessagePort;
   /** The agent namespace, or null unless the `agent` attribute or Inception.configure({ agent }) enables it. */
   readonly agent: Agent | null;
   /** Who drives the view. */

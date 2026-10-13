@@ -344,11 +344,15 @@ export class InceptionView extends HTMLElement {
   // another document, which shows the window with createDisplay(canvas, port).
   // The window's earlier display, if any, is replaced. Video, audio and
   // dialogs stay in this document.
-  exportWindow(id) {
+  // `frames`: 'auto' (bitmaps where the browser carries them to the other
+  // document, RGBA pixels otherwise), 'bitmap' or 'pixels'.
+  exportWindow(id, { frames = 'auto' } = {}) {
+    if (!['auto', 'bitmap', 'pixels'].includes(frames)) throw new TypeError("frames is 'auto', 'bitmap' or 'pixels'");
     const record = this.#windows.get(id);
     if (!record || record.closed || id === 1) throw new Error(`no window ${id} to export (window 1 is the view itself)`);
     const { port1, port2 } = new MessageChannel();
     const served = serveDisplay(port1, {
+      frames,
       send: this.#inputSender(record),
       onVisibility: (visible) => this.#setVisible(record, visible),
       onClose: () => {
