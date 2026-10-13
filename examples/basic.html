@@ -45,6 +45,8 @@
     // This page is a browser, so it opts in to what a browser does. ?policy={}
     // (or any JSON object) replaces these with the library's own defaults.
     policy: params.has('policy') ? JSON.parse(params.get('policy')) : { downloads: 'save', newTabs: 'foreground', dialogs: 'native', clipboard: true },
+    // ?isolation=window: a profile service and an engine per window.
+    isolation: params.get('isolation') ?? 'shared',
   });
 
   const view = document.getElementById('view');

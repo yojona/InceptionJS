@@ -15,7 +15,16 @@ export interface InceptionConfig {
   userStyles?: string;
   /** How many WebGL contexts pages may hold (0 = derived from the browser). */
   webglContexts?: number;
-  storage?: { profile?: string; fresh?: boolean };
+  /** profile: the profile's name; fresh: start it empty; ephemeral (isolation 'window'): a profile kept in memory only, gone when the page closes. */
+  storage?: { profile?: string; fresh?: boolean; ephemeral?: boolean };
+  /**
+   * 'shared' (default): one engine runs every window of a view, the profile in it.
+   * 'window': a profile service holds the profile, its files and the only relay connection; window 1 and
+   * every window openWindow() opens run in engines of their own (with the popups their pages open),
+   * which share cookies, storage, IndexedDB and history through it. A crash in one window's engine
+   * closes only its windows; the service restarts by itself after a crash of its own.
+   */
+  isolation?: 'shared' | 'window';
   /** What pages may do to the person's browser. Every default is the safe one. */
   policy?: InceptionPolicy;
   /** Enable the view's debugEvaluate, debugHeap and debugCommand (development only). */
@@ -38,6 +47,12 @@ export interface InceptionPolicy {
   newTabs?: 'block' | 'foreground' | 'background';
   /** 'tab' (default): what a page opens is a tab of its window. 'window': a new window ("windowopen"), kept or closed by the newTabs rule. */
   popups?: 'tab' | 'window';
+  /**
+   * Hosts pages may reach (a host matches itself and its subdomains); `block` wins over `allow`, and
+   * without `allow` every host not blocked is. Enforced by the profile service, so only with isolation
+   * 'window'; openWindow({ hosts }) sets it for one window.
+   */
+  hosts?: { allow?: string[]; block?: string[] };
   /** 'dismiss' (default): alert, confirm, prompt and beforeunload are answered without UI. 'native': the browser's own dialogs. */
   dialogs?: 'dismiss' | 'native';
   /** 'user' (default): paste brings the clipboard in, and it is written only soon after the person's own input. true: always. false: never. */
@@ -363,7 +378,7 @@ export declare class InceptionView extends HTMLElement {
   /** The windows of this view's engine (one profile, cookies, storage and network), window 1 (the view) first. */
   readonly windows: WindowInfo[];
   /** Opens another window of this engine; hidden until a display shows it. */
-  openWindow(options?: { width?: number; height?: number; url?: string; deviceScaleFactor?: number }): Promise<InceptionWindow>;
+  openWindow(options?: { width?: number; height?: number; url?: string; deviceScaleFactor?: number; hosts?: { allow?: string[]; block?: string[] } }): Promise<InceptionWindow>;
   /** The handle of a window other than 1, or null. */
   window(id: number): InceptionWindow | null;
   /**
@@ -384,7 +399,10 @@ export declare class InceptionView extends HTMLElement {
   debugEvaluate(source: string, options?: { window?: number }): Promise<unknown>;
   /** JS heap size and capacity, and wasm memory, in bytes. */
   debugHeap(): Promise<{ heapSize: number; heapCapacity: number; memory: number }>;
+  /** Sends a raw engine command; `args.window` picks the window, and so the engine, it goes to. */
   debugCommand(command: string, args?: Record<string, unknown>): Promise<void>;
+  /** The profile service (isolation 'window'), or null. */
+  debugProfileService(): Promise<EventTarget | null>;
 
   addEventListener<K extends keyof InceptionViewEventMap>(type: K, listener: (this: InceptionView, ev: InceptionViewEventMap[K]) => unknown, options?: boolean | AddEventListenerOptions): void;
   addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
