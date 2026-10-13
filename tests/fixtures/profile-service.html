@@ -101,12 +101,15 @@
     waitRestart: () => once(service, 'restart', 60000),
     // Loads `url` in content engine `index` and waits until `ready` (script)
     // is true there.
-    async navigate(index, url, ready = 'document.readyState === "complete"', timeout = 60000) {
+    // `ready` defaults to: the page at `url` finished loading.
+    async navigate(index, url, ready = null, timeout = 60000) {
+      ready ??= `location.href === ${JSON.stringify(url)} && document.readyState === "complete"`;
+      await evaluate(index, 'window.__previous = true; 1');
       contents[index].runtime.send('load', { url });
       const until = performance.now() + timeout;
       while (performance.now() < until) {
         await new Promise((resolve) => setTimeout(resolve, 250));
-        if ((await evaluate(index, `location.href !== "about:blank" && (${ready})`)) === 'true') return evaluate(index, 'location.href');
+        if ((await evaluate(index, `!window.__previous && (${ready})`)) === 'true') return evaluate(index, 'location.href');
       }
       throw new Error(`${url} did not load in ${timeout} ms`);
     },
