@@ -17,7 +17,13 @@
 //                                    chooser the window raised ("file.choose"
 //                                    event); "file.chosen" input follows
 //   {type: 'media', command, args}   state of a video the display plays
-//                                    (media.state, media.bufferDone)
+//                                    (media.state, media.bufferDone,
+//                                    media.keysUsable, media.encrypted)
+//   {type: 'eme', command, args}     the display's EME answers (eme.reply,
+//                                    eme.message, eme.keyStatuses)
+//   {type: 'fullscreen', active, error?}
+//                                    the display's element went into or out
+//                                    of fullscreen, or could not
 // host to display:
 //   {type: 'probe', bitmap}          a 1x1 bitmap, once, at attach time
 //   {type: 'frame', bitmap}          transferred, when the probe arrived
@@ -36,6 +42,11 @@
 //                                    with their bytes: the display plays them
 //   {type: 'audio-port'} + [port]    a port that carries {type: 'pcm'} sound
 //                                    of the window's Web Audio (host/pcm.js)
+//   {type: 'eme', name, data}        eme.* events of the window's engine, when
+//                                    it shows no other window: the display's
+//                                    browser decrypts its videos
+// Fullscreen arrives as event "fullscreen" {active}: the display puts its
+// element in or out of fullscreen (the person's click there is what lets it).
 // Messages from a display are untrusted: anything not of this shape is
 // dropped, and the host stamps the window id itself, so whatever window a
 // display names is ignored.
@@ -44,14 +55,18 @@ import { attachInput, writeClipboard } from './input.js';
 import { SelectMenu, answerDialog, chooseFiles } from './ui.js';
 import { canvasSink } from './runtime.js';
 import { MediaHost } from './media.js';
+import { EncryptedMedia } from './eme.js';
 import { PcmPlayer, PcmTap } from './pcm.js';
 
 export const DISPLAY_INPUT_COMMANDS = new Set(['mouse', 'wheel', 'key', 'ime.set', 'ime.commit', 'ime.cancel', 'focus', 'edit', 'clipboard.set', 'select.choose', 'file.chosen']);
 // Events a display needs to draw its part.
-export const DISPLAY_EVENTS = new Set(['cursor', 'select.show', 'select.update', 'select.hide', 'control', 'file.choose', 'clipboard.write']);
+export const DISPLAY_EVENTS = new Set(['cursor', 'select.show', 'select.update', 'select.hide', 'control', 'file.choose', 'clipboard.write', 'fullscreen']);
 
-// What a display's videos may send back to the engine.
-const MEDIA_COMMANDS = new Set(['media.state', 'media.bufferDone']);
+// What a display's videos and EME may send back to the engine.
+const MEDIA_COMMANDS = new Set(['media.state', 'media.bufferDone', 'media.keysUsable', 'media.encrypted']);
+const EME_COMMANDS = new Set(['eme.reply', 'eme.message', 'eme.keyStatuses']);
+// License messages are opaque bytes in base64, up to 1 MiB each.
+const MAX_EME_CHARS = 2 * 1024 * 1024;
 
 const MAX_ARGS_CHARS = 64 * 1024;
 const MAX_SIZE = 16384;
@@ -102,16 +117,21 @@ export function validateDisplayMessage(message) {
       if (!Number.isInteger(id) || id < 1) return null;
       return { type: 'answer', id, value: value === null || typeof value === 'boolean' || typeof value === 'string' ? value : null };
     }
-    case 'media': {
-      if (!MEDIA_COMMANDS.has(message.command) || !isObject(message.args)) return null;
+    case 'media':
+    case 'eme': {
+      const commands = message.type === 'media' ? MEDIA_COMMANDS : EME_COMMANDS;
+      if (!commands.has(message.command) || !isObject(message.args)) return null;
       let text;
       try {
         text = JSON.stringify(message.args);
       } catch {
         return null;
       }
-      return text.length > MAX_ARGS_CHARS ? null : { type: 'media', command: message.command, args: JSON.parse(text) };
+      return text.length > (message.type === 'media' ? MAX_ARGS_CHARS : MAX_EME_CHARS) ? null : { type: message.type, command: message.command, args: JSON.parse(text) };
     }
+    case 'fullscreen':
+      if (typeof message.active !== 'boolean') return null;
+      return { type: 'fullscreen', active: message.active, ...(typeof message.error === 'string' ? { error: message.error.slice(0, 200) } : {}) };
     default:
       return null;
   }
@@ -186,7 +206,7 @@ export class Display {
 // `media` stands in for the window's MediaHost: the display plays the
 // window's videos, so their events and bytes cross the port and their state
 // comes back through `send`. `audio` takes the engine's audio rings.
-export function serveDisplay(port, { send, sendMedia = send, sendFile, onVisibility, onClose, frames = 'auto' }) {
+export function serveDisplay(port, { send, sendMedia = send, sendFile, onVisibility, onFullscreen, onClose, frames = 'auto' }) {
   let open = true;
   // Until the display answers the probe, frames go as pixels: they always arrive.
   let bitmaps = frames === 'bitmap';
@@ -224,7 +244,8 @@ export function serveDisplay(port, { send, sendMedia = send, sendFile, onVisibil
     else if (message.type === 'answer') {
       asks.get(message.id)?.(message.value);
       asks.delete(message.id);
-    } else if (message.type === 'media') sendMedia(message.command, message.args);
+    } else if (message.type === 'media' || message.type === 'eme') sendMedia(message.command, message.args);
+    else if (message.type === 'fullscreen') onFullscreen?.(message.active, message.error);
     else if (message.type === 'close') close(false);
   });
   port.start();
@@ -284,6 +305,12 @@ export function serveDisplay(port, { send, sendMedia = send, sendFile, onVisibil
     setMaster() {},
     userGesture() {},
   };
+  // Stands in for the engine's EncryptedMedia when the display decrypts.
+  const eme = {
+    handleEvent(name, data) {
+      if (open) port.postMessage({ type: 'eme', name, data });
+    },
+  };
   const rings = new Set();
   const audio = {
     open(ring, memory) {
@@ -323,6 +350,7 @@ export function serveDisplay(port, { send, sendMedia = send, sendFile, onVisibil
       });
     },
     media,
+    eme,
     audio,
     close: () => close(true),
   };
@@ -380,7 +408,10 @@ export function createDisplay(canvas, port, { clipboard = true, element = canvas
     layerFollows = () => Object.assign(mediaLayer.style, { left: `${canvas.offsetLeft}px`, top: `${canvas.offsetTop}px`, width: `${canvas.clientWidth}px`, height: `${canvas.clientHeight}px` });
     layerFollows();
   }
-  const mediaHost = new MediaHost(mediaLayer, (command, args) => port.postMessage({ type: 'media', command, args }), { soundAllowed });
+  // Encrypted videos decrypt with this browser's CDM: MediaKeys belong to the
+  // document of the video they are set on.
+  const eme = new EncryptedMedia((command, args) => port.postMessage({ type: 'eme', command, args }), { onKeysUsable: (mediaKeys) => mediaHost.keysUsable(mediaKeys) });
+  const mediaHost = new MediaHost(mediaLayer, (command, args) => port.postMessage({ type: 'media', command, args }), { soundAllowed, eme });
   mediaHost.setMaster({ volume, muted });
   const gesture = () => mediaHost.userGesture();
   for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, gesture, true);
@@ -405,11 +436,32 @@ export function createDisplay(canvas, port, { clipboard = true, element = canvas
   resizeObserver.observe(canvas);
   const visibility = () => port.postMessage({ type: 'visibility', visible: document.visibilityState === 'visible' });
   document.addEventListener('visibilitychange', visibility);
+  // The page asked for fullscreen: this document's element goes there, which
+  // the person's click here allows; leaving it (Esc) is reported back.
+  let fullscreen = false;
+  const fullscreenChanged = () => {
+    if (fullscreen && document.fullscreenElement !== element) {
+      fullscreen = false;
+      port.postMessage({ type: 'fullscreen', active: false });
+    }
+  };
+  document.addEventListener('fullscreenchange', fullscreenChanged);
+  const setFullscreen = async (active) => {
+    try {
+      if (active && document.fullscreenElement !== element) await element.requestFullscreen();
+      if (!active && document.fullscreenElement === element) await document.exitFullscreen();
+      fullscreen = active;
+      if (active) port.postMessage({ type: 'fullscreen', active: true });
+    } catch (error) {
+      port.postMessage({ type: 'fullscreen', active: false, error: String(error?.message ?? error) });
+    }
+  };
   let open = true;
   const stop = () => {
     open = false;
     resizeObserver.disconnect();
     document.removeEventListener('visibilitychange', visibility);
+    document.removeEventListener('fullscreenchange', fullscreenChanged);
     for (const type of ['pointerdown', 'keydown']) document.removeEventListener(type, gesture, true);
     for (const type of inputTypes) document.removeEventListener(type, used, true);
     detachInput?.();
@@ -443,6 +495,7 @@ export function createDisplay(canvas, port, { clipboard = true, element = canvas
       if (name === 'control') canvas.dataset.control = data.control === 'agent' ? 'agent' : 'human';
       if (name === 'file.choose') chooseFiles(dialogTarget, chooser, { multiple: !!data.multiple, accept: Array.isArray(data.accept) ? data.accept.map(String).slice(0, 64) : [], directory: !!data.directory });
       if (name === 'clipboard.write' && isObject(data.items) && mayWriteClipboard()) writeClipboard(Object.fromEntries(Object.entries(data.items).filter(([, value]) => typeof value === 'string')));
+      if (name === 'fullscreen') setFullscreen(!!data.active);
     } else if (message.type === 'ask' && Number.isInteger(message.id) && isObject(message.question)) {
       const { question: kind, message: text, defaultValue } = message.question;
       const question = { question: String(kind ?? '').slice(0, 32), message: String(text ?? '').slice(0, MAX_ASK_CHARS), ...(defaultValue === undefined ? {} : { defaultValue: String(defaultValue).slice(0, MAX_ASK_CHARS) }) };
@@ -453,6 +506,7 @@ export function createDisplay(canvas, port, { clipboard = true, element = canvas
     } else if (message.type === 'media-append' && message.bytes instanceof Uint8Array) mediaHost.append(message.id, message.sb, message.seq, message.bytes);
     else if (message.type === 'media-chunk' && message.bytes instanceof Uint8Array) mediaHost.fetchChunk({ id: message.id, bytes: message.bytes });
     else if (message.type === 'audio-port' && event.ports[0]) player.attach(event.ports[0]);
+    else if (message.type === 'eme' && typeof message.name === 'string' && message.name.startsWith('eme.') && isObject(message.data)) eme.handleEvent(message.name, message.data);
     else if (message.type === 'closed') {
       stop();
       canvas.dispatchEvent(new CustomEvent('closed'));
