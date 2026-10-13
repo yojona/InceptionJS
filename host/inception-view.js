@@ -8,15 +8,16 @@ import { EncryptedMedia } from './eme.js';
 import { AudioHost } from './audio.js';
 import { Modules } from './modules.js';
 import { Downloads } from './downloads.js';
-import { resolvePolicy } from './policy.js';
+import { hostRules, resolvePolicy } from './policy.js';
 import { EngineRuntime } from './runtime.js';
+import { ProfileService } from './profile-service.js';
 import { WasmTranslator } from './wasm-translator.js';
 import { ProtocolClient, ProtocolError, ProtocolServer, createInPagePair } from './protocol.js';
 import { AgentClient, AgentHost, registerAgentMethods } from './agent.js';
 import { Display, serveDisplay } from './display.js';
 import { ATTACH_DISPLAY, HostWindow, InceptionWindow } from './window.js';
 
-const config = { engineUrl: null, relayUrl: null, binaryenUrl: null, storage: null, policy: null, debug: false, agent: null, webglContexts: 0, modules: {} };
+const config = { engineUrl: null, relayUrl: null, binaryenUrl: null, storage: null, policy: null, debug: false, agent: null, webglContexts: 0, modules: {}, isolation: 'shared' };
 const policy = () => resolvePolicy(config.policy);
 let translator = null;
 
@@ -30,7 +31,11 @@ export const Inception = {
   // the view's debugEvaluate, debugCommand and debugHeap (development only);
   // maxMemoryMB: how far a view's engine memory may grow (default 2048, 512
   // to 4096); agent: true or the agent options (host/agent.js) to offer the agent
-  // namespace on every view, which is off otherwise.
+  // namespace on every view, which is off otherwise. isolation: 'shared'
+  // (default: one engine runs every window of a view, with the profile in it)
+  // or 'window' (a profile service owns the profile, the network and the
+  // files; each window opened with openWindow() gets an engine of its own,
+  // with the popups its pages open; see host/profile-service.js).
   configure(options) {
     const { wispUrl, ...rest } = options;
     // wispUrl: the earlier name of relayUrl, still accepted.
@@ -71,6 +76,53 @@ const WINDOW_EVENTS = ['windows.created', 'windows.closed', 'windows.updated'];
 const WINDOW_DOM_EVENTS = { 'windows.created': 'windowcreated', 'windows.closed': 'windowclosed', 'windows.updated': 'windowupdated' };
 // Engine events a window's display draws.
 const DISPLAY_EVENT_NAMES = new Set(['cursor', 'select.show', 'select.update', 'select.hide']);
+// Numbers for content engines and history requests, unique in the document
+// (several views may share one profile service).
+let lastEngineNumber = 0;
+let lastHistoryRequest = 0;
+
+// One engine of a view and what lives next to it in this document: its
+// runtime, encrypted media, audio and page modules, and the mapping between
+// the window ids it allocates and the ones the view gives out. With
+// isolation 'shared' there is one, and the ids are the engine's own.
+class EngineSlot {
+  constructor({ runtime, primary, allocate }) {
+    this.runtime = runtime;
+    this.primary = primary;
+    this.number = ++lastEngineNumber;
+    this.link = null;
+    this.windows = new Map();
+    this.locals = new Map();
+    this.root = null;
+    this.closed = false;
+    this.#allocate = allocate;
+    const slot = this;
+    // What a window record sends through: its window id becomes the
+    // engine's own.
+    this.adapter = {
+      send: (command, args = {}) => runtime.send(command, Number.isInteger(args?.window) ? { ...args, window: slot.localOf(args.window) } : args),
+      sendFile: (name, bytes) => runtime.sendFile(name, bytes),
+      get crash() { return runtime.crash; },
+    };
+  }
+
+  #allocate;
+
+  // The view's id for a window of this engine.
+  publicOf(local) {
+    let id = this.windows.get(local);
+    if (id === undefined) {
+      id = this.#allocate(local);
+      this.windows.set(local, id);
+      this.locals.set(id, local);
+    }
+    return id;
+  }
+
+  localOf(id) {
+    return this.locals.get(id) ?? (this.primary && id === 1 ? 1 : 0);
+  }
+}
 
 // <inception-view src gpu="auto|on|off" muted media profile fresh-profile user-agent
 //                 provenance-corner provenance="off" agent>
@@ -82,7 +134,14 @@ export class InceptionView extends HTMLElement {
 
   /** CSS for every page this view shows (see userStylesShim); set before it starts. */
   userStyles = null;
-  #runtime = null;
+  // The engine that shows window 1, and every engine of this view.
+  #primary = null;
+  #slots = [];
+  #service = null;
+  #nextWindow = 2;
+  // The engines' events, window ids already the view's, from every engine.
+  #events = new EventTarget();
+  #downloads = null;
   #server = null;
   #client = null;
   #canvas;
@@ -97,7 +156,10 @@ export class InceptionView extends HTMLElement {
   #pendingWindows = [];
   #eme = null;
   #soundAllowed = false;
-  #preferences = new Preferences((changed) => this.#runtime?.send('preferences', changed));
+  #preferences = new Preferences((changed) => {
+    for (const slot of this.#slots) slot.runtime.send('preferences', changed);
+    this.#service?.send('preferences', changed);
+  });
   #media = null;
   #audio = null;
   #volume = 1;
@@ -121,9 +183,9 @@ export class InceptionView extends HTMLElement {
     super();
     const view = this;
     const runtime = {
-      send: (command, args) => view.#runtime?.send(command, args),
-      sendFile: (name, bytes) => view.#runtime?.sendFile(name, bytes),
-      get crash() { return view.#runtime?.crash; },
+      send: (command, args) => view.#primary?.adapter.send(command, args),
+      sendFile: (name, bytes) => view.#primary?.runtime.sendFile(name, bytes),
+      get crash() { return view.#primary?.runtime.crash; },
     };
     this.#main = new HostWindow({ id: 1, runtime, target: this, policy });
     for (const type of ['keydown', 'pointerdown', 'copy', 'cut'])
@@ -190,7 +252,20 @@ export class InceptionView extends HTMLElement {
 
   #applyLevel() {
     this.#media?.setMaster({ volume: this.#volume, muted: this.#muted });
-    this.#audio?.setLevel(this.#muted ? 0 : this.#volume);
+    for (const slot of this.#slots) slot.audio?.setLevel(this.#muted ? 0 : this.#volume);
+  }
+
+  get #runtime() { return this.#primary?.runtime ?? null; }
+
+  #isolation() {
+    const value = this.getAttribute('isolation') ?? config.isolation;
+    return value === 'window' ? 'window' : 'shared';
+  }
+
+  // Downloads and history are the profile service's when there is one.
+  #profileSend(command, args = {}) {
+    if (this.#service) this.#service.send(command, { ...args, link: this.#primary?.link ?? 0 });
+    else this.#runtime?.send(command, args);
   }
 
   disconnectedCallback() {
@@ -256,8 +331,8 @@ export class InceptionView extends HTMLElement {
   async history({ text = '', limit = 100, before } = {}) { await this.ready; return this.#client.request('history.query', { text, limit, before }); }
   // {url} or {from, to} (ms since the epoch).
   // Downloads a URL with the page's cookies, as "Save link as" does.
-  async download(url) { await this.ready; this.#runtime.send('download.start', { url: String(url) }); }
-  async cancelDownload(id) { await this.ready; this.#runtime.send('download.cancel', { id }); }
+  async download(url) { await this.ready; this.#profileSend('download.start', { url: String(url) }); }
+  async cancelDownload(id) { await this.ready; this.#profileSend('download.cancel', { id }); }
   // An editing command in the focused frame: 'Copy', 'Cut', 'Paste', 'SelectAll', 'Undo', 'Redo'.
   async edit(command) {
     await this.ready;
@@ -265,8 +340,8 @@ export class InceptionView extends HTMLElement {
     this.#lastInput = performance.now();
     this.#runtime.send('edit', { command: String(command) });
   }
-  async pauseDownload(id) { await this.ready; this.#runtime.send('download.pause', { id }); }
-  async resumeDownload(id) { await this.ready; this.#runtime.send('download.resume', { id }); }
+  async pauseDownload(id) { await this.ready; this.#profileSend('download.pause', { id }); }
+  async resumeDownload(id) { await this.ready; this.#profileSend('download.resume', { id }); }
   async deleteHistory(range) { await this.ready; return this.#client.request('history.delete', range); }
 
   // The debug methods run script in the page's realm and send raw engine
@@ -287,14 +362,17 @@ export class InceptionView extends HTMLElement {
     this.#requireDebug();
     await this.ready;
     const id = ++this.#debugRequests;
+    const record = this.#windows.get(window);
+    const slot = record?.slot ?? this.#primary;
     return new Promise((resolve) => {
       const listener = (e) => {
         if (e.detail.id !== id) return;
-        this.#runtime.removeEventListener('debug.result', listener);
+        slot.runtime.removeEventListener('debug.result', listener);
         resolve(e.detail.value);
       };
-      this.#runtime.addEventListener('debug.result', listener);
-      this.#runtime.send('debug.evaluate', { id, source, ...(window !== 1 ? { window } : {}) });
+      slot.runtime.addEventListener('debug.result', listener);
+      const local = slot.localOf(window);
+      slot.runtime.send('debug.evaluate', { id, source, ...(local !== 1 ? { window: local } : {}) });
     });
   }
 
@@ -308,10 +386,19 @@ export class InceptionView extends HTMLElement {
     return reply;
   }
 
+  // `args.window` picks the window, and so the engine, it goes to.
   async debugCommand(command, args = {}) {
     this.#requireDebug();
     await this.ready;
-    this.#runtime.send(command, args);
+    const record = Number.isInteger(args?.window) ? this.#windows.get(args.window) : null;
+    (record?.slot?.adapter ?? this.#primary.adapter).send(command, args);
+  }
+
+  // Development aid: the profile service (isolation 'window'), or null.
+  async debugProfileService() {
+    this.#requireDebug();
+    await this.ready;
+    return this.#service;
   }
 
   // Connects another protocol client (an iframe, a worker, a remote agent).
@@ -335,9 +422,11 @@ export class InceptionView extends HTMLElement {
   // Opens another window of this view's engine: same profile, cookies,
   // storage and network. It is hidden (paints nothing) until a display shows
   // it: <inception-window> here, or exportWindow() for another document.
-  async openWindow({ width = 800, height = 600, url = '', deviceScaleFactor = devicePixelRatio } = {}) {
+  // `hosts` ({allow?, block?}, isolation 'window'): where its pages may go,
+  // instead of policy.hosts.
+  async openWindow({ width = 800, height = 600, url = '', deviceScaleFactor = devicePixelRatio, hosts } = {}) {
     await this.ready;
-    const { window } = await this.#client.request('windows.create', { width, height, url, deviceScaleFactor });
+    const { window } = await this.#client.request('windows.create', { width, height, url, deviceScaleFactor, ...(hosts ? { hosts } : {}) });
     return this.window(window);
   }
 
@@ -394,7 +483,7 @@ export class InceptionView extends HTMLElement {
     if (record.display && record.display !== display) record.display.close?.();
     record.display = display;
     record.detachSink?.();
-    record.detachSink = this.#runtime.attachDisplay(record.id, sink);
+    record.detachSink = record.slot.runtime.attachDisplay(record.slot.localOf(record.id), sink);
     this.#setVisible(record, true);
   }
 
@@ -455,22 +544,34 @@ export class InceptionView extends HTMLElement {
 
   async #start() {
     if (!config.engineUrl) throw new Error('Inception.configure({engineUrl, relayUrl}) first');
-    // A profile's files are open by one engine at a time: the second tab would
-    // get read-only file handles. Held for the life of this page.
     const profile = this.getAttribute('profile') ?? config.storage?.profile ?? 'default';
-    if (navigator.locks) {
+    const fresh = this.hasAttribute('fresh-profile') || config.storage?.fresh === true;
+    const isolation = this.#isolation();
+    if (isolation === 'window') {
+      // The service holds the profile (and its Web Lock); views of the same
+      // profile in this document share it.
+      this.#service = ProfileService.acquire({ engineUrl: config.engineUrl, relayUrl: config.relayUrl, profile, fresh, ephemeral: config.storage?.ephemeral === true, preferences: this.#preferences.resolved(), debug: this.#debugEnabled(), maxMemoryMB: config.maxMemoryMB });
+      await this.#service.start();
+      this.#watchService(this.#service);
+    } else if (navigator.locks) {
+      // A profile's files are open by one engine at a time: the second tab would
+      // get read-only file handles. Held for the life of this page.
       const acquired = await new Promise((resolve) => navigator.locks.request(`inception-profile:${profile}`, { ifAvailable: true }, (lock) => {
         resolve(!!lock);
         return lock ? new Promise(() => {}) : undefined;
       }));
       if (!acquired) throw new Error(`The profile "${profile}" is already open in another tab or window. Close it there, or open this page with a different profile.`);
+      navigator.storage?.persist?.().catch(() => {});
     }
-    navigator.storage?.persist?.().catch(() => {});
-    this.#runtime = new EngineRuntime({ engineUrl: config.engineUrl, relayUrl: config.relayUrl, maxMemoryMB: config.maxMemoryMB });
+    const primary = this.#createSlot({ primary: true });
+    this.#main.slot = primary;
+    primary.root = this.#main;
+    primary.windows.set(1, 1);
+    primary.locals.set(1, 1);
     // Window 1 is this view's canvas.
     this.#display = new Display({ element: this, shadow: this.#shadow, canvas: this.#canvas, textInput: this.#textInput, send: (command, args) => this.#main.channel.send(command, args) });
     this.#main.display = this.#display;
-    this.#runtime.attachDisplay(1, this.#display.sink);
+    primary.runtime.attachDisplay(1, this.#display.sink);
     this.#server = this.#createServer();
     const [serverSide, clientSide] = createInPagePair();
     this.#server.connect(serverSide);
@@ -484,76 +585,31 @@ export class InceptionView extends HTMLElement {
     // `autoplay-sound`: the embedder knows playback with sound is allowed here.
     const soundAllowed = this.hasAttribute('autoplay-sound') || policy().autoplaySound;
     this.#soundAllowed = soundAllowed;
-    const eme = new EncryptedMedia((command, args) => this.#runtime.send(command, args), { onKeysUsable: (mediaKeys) => this.#mediaHosts().forEach((media) => media.keysUsable(mediaKeys)) });
-    this.#eme = eme;
-    const audio = new AudioHost(() => this.#runtime.memory(), { soundAllowed });
-    this.#audio = audio;
-    this.#media = new MediaHost(this.#mediaLayer, (command, args) => this.#runtime.send(command, args), { soundAllowed, eme, audio });
+    this.#media = new MediaHost(this.#mediaLayer, (command, args) => primary.runtime.send(command, args), { soundAllowed, eme: primary.eme, audio: primary.audio });
     this.#applyLevel();
-    const modules = new Modules(this, (command, args) => this.#runtime.send(command, args), config.modules);
-    const downloads = new Downloads(this, (command, args) => this.#runtime.send(command, args), policy);
-    this.#runtime.onDownloadChunk = (chunk) => {
-      const media = this.#mediaHosts().find((host) => host.ownsFetch(chunk.id));
-      return media ? media.fetchChunk(chunk) : downloads.chunk(chunk);
-    };
-    this.#runtime.onAudioDecode = (request) => audio.decode(request, (size) => this.#runtime.malloc(size));
-    this.#runtime.onEngineEvent = (name, data) => {
-      const record = this.#recordOf(data);
-      if (name === 'window.created' || name === 'window.opened') return this.#windowCreated(name, data);
-      if (name === 'window.closed') return this.#windowClosed(data.window);
-      if (name === 'window.focus') return record?.target.dispatchEvent(new CustomEvent('windowfocusrequest', { detail: { window: record.id } }));
-      if (name === 'fullscreen') this.#setFullscreen(record, data.active);
-      if (name.startsWith('media.') && !name.startsWith('media.fetch.')) this.#mediaFor(data)?.handleEvent(name, data);
-      if (name.startsWith('eme.')) eme.handleEvent(name, data);
-      if (name.startsWith('download.')) downloads.handleEvent(name, data);
-      if (name.startsWith('media.fetch.')) this.#mediaHosts().forEach((media) => media.handleFetchEvent(name, data));
-      if (name.startsWith('tab.') && record) {
-        record.tabs.handleEvent(name, data);
-        if (name === 'tab.activated') this.#showTab(record, data.tab);
-      }
-      if (name === 'audio.open') audio.open(data);
-      if (name === 'audio.close') audio.close(data);
-      if (name.startsWith('permission.') || name.startsWith('geolocation.') || name.startsWith('notification.')) modules.handleEvent(name, data);
-      if (DISPLAY_EVENT_NAMES.has(name)) {
-        const display = record?.display;
-        if (display?.handleEvent) display.handleEvent(name, data);
-        else display?.post?.(name, data);
-      }
-      if (name === 'file.choose' && record) chooseFiles(record.target, record.channel, data);
-      if (name === 'field.focus') this.#provenanceOf(record)?.fieldFocused(data.kind, data.origin);
-      if (name === 'clipboard.write' && this.#mayWriteClipboard()) writeClipboard(data.items);
-      if (record && record !== this.#main) record.channel.dispatchEvent(new CustomEvent(name, { detail: data }));
-    };
-    this.#runtime.onAsk = (question) => answerDialog(this.#recordOf(question)?.target ?? this, question, policy);
-    this.#runtime.onMediaAppend = ({ id, sb, seq, bytes }) => this.#mediaHosts().find((media) => media.hasPlayer(id))?.append(id, sb, seq, bytes);
+    this.#downloads = new Downloads(this, (command, args) => this.#profileSend(command, args), policy);
     // binaryen next to the host modules (the package ships it there), or in the
     // repository's node_modules; resolved from this module, so a plain
     // <script type=module> setup needs no bundler.
     translator ??= new WasmTranslator(config.binaryenUrl ?? [new URL('./vendor/binaryen.js', import.meta.url).href, new URL('../node_modules/binaryen/index.js', import.meta.url).href]);
-    this.#runtime.wasmTranslator = translator;
     const [wasmPolyfill, pageShims] = await Promise.all(['./guest-wasm.js', './page-shims.js'].map((path) => fetch(new URL(path, import.meta.url)).then((r) => r.text())));
+    this.#pageCode = { wasmPolyfill, pageShims: pageShims.replaceAll('__INCEPTION_VERSION__', ENGINE_VERSION) + userStylesShim(this.userStyles ?? config.userStyles) };
+    this.#mediaCapabilities = await probeMediaCapabilities();
     // Activation is sticky for the host page's lifetime: the first gesture
     // anywhere in it lets every later video play with sound.
     const gesture = () => {
       for (const media of this.#mediaHosts()) media.userGesture();
-      audio.userGesture();
+      for (const slot of this.#slots) slot.audio.userGesture();
     };
     for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, gesture, { capture: true });
 
-    const engineReady = new Promise((resolve, reject) => {
-      this.#runtime.addEventListener('ready', (e) => resolve(e.detail), { once: true });
-      this.#runtime.addEventListener('crash', (e) => reject(new Error(`the engine crashed while starting: ${e.detail.message}`)), { once: true });
-    });
-    await this.#runtime.start();
-    await this.#client.hello(this.#capabilities());
-
     const { width, height } = this.#cssSize();
     const gpu = this.getAttribute('gpu') ?? 'auto';
-    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: await probeMediaCapabilities(), wasmPolyfill, pageShims: pageShims.replaceAll('__INCEPTION_VERSION__', ENGINE_VERSION) + userStylesShim(this.userStyles ?? config.userStyles), wispUrl: config.relayUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? defaultUserAgent(), preferences: this.#preferences.resolved(), webglContexts: config.webglContexts | 0 || PAGE_WEBGL_CONTEXTS, popups: policy().popups, url: this.getAttribute('src') ?? '', debug: this.#debugEnabled() });
-    const ready = await engineReady;
+    const ready = await this.#startSlot(primary, { width, height, deviceScaleFactor: devicePixelRatio, url: this.getAttribute('src') ?? '', gpu }, async () => {
+      await this.#client.hello(this.#capabilities());
+    });
     this.#tabs.started(ready.tab ?? 1);
     this.#main.size = { width, height };
-    this.#runtime.addEventListener('crash', (e) => this.#crashed(e.detail));
     if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');
     this.dataset.renderer = ready.renderer;
     this.#display.start({ input: this.#inputSender(this.#main), clipboard: policy().clipboard !== false });
@@ -566,35 +622,227 @@ export class InceptionView extends HTMLElement {
     return ready;
   }
 
-  // The engine crashed: every window's connections and handles hear it, with
-  // the windows it took down.
-  #crashed(crash) {
-    const windows = [...this.#windows.keys()];
+  #pageCode = null;
+  #mediaCapabilities = null;
+
+  // A new engine for this view (not started): its runtime and the host
+  // objects that serve it.
+  #createSlot({ primary }) {
+    const window = this.#isolation() === 'window';
+    const runtime = new EngineRuntime({ engineUrl: config.engineUrl, relayUrl: config.relayUrl, maxMemoryMB: config.maxMemoryMB, role: window ? 'content' : 'standalone' });
+    const slot = new EngineSlot({ runtime, primary, allocate: (local) => (window ? (primary && local === 1 ? 1 : this.#nextWindow++) : local) });
+    slot.eme = new EncryptedMedia((command, args) => runtime.send(command, args), { onKeysUsable: (mediaKeys) => this.#mediaHosts(slot).forEach((media) => media.keysUsable(mediaKeys)) });
+    slot.audio = new AudioHost(() => runtime.memory(), { soundAllowed: this.hasAttribute('autoplay-sound') || policy().autoplaySound });
+    slot.audio.setLevel(this.#muted ? 0 : this.#volume);
+    slot.modules = new Modules(this, (command, args) => runtime.send(command, args), config.modules);
+    if (primary) {
+      this.#primary = slot;
+      this.#eme = slot.eme;
+      this.#audio = slot.audio;
+    }
+    runtime.onDownloadChunk = (chunk) => {
+      const media = this.#mediaHosts(slot).find((host) => host.ownsFetch(chunk.id));
+      return media ? media.fetchChunk(chunk) : this.#downloads?.chunk(chunk);
+    };
+    runtime.onAudioDecode = (request) => slot.audio.decode(request, (size) => runtime.malloc(size));
+    runtime.onEngineEvent = (name, data) => this.#onSlotEvent(slot, name, data);
+    runtime.onAsk = (question) => {
+      if (Number.isInteger(question?.window)) question.window = slot.publicOf(question.window);
+      return answerDialog(this.#recordOf(question, slot)?.target ?? this, question, policy);
+    };
+    runtime.onMediaAppend = ({ id, sb, seq, bytes }) => this.#mediaHosts(slot).find((media) => media.hasPlayer(id))?.append(id, sb, seq, bytes);
+    runtime.wasmTranslator = translator;
+    this.#slots.push(slot);
+    return slot;
+  }
+
+  // Starts a slot's engine and sends "init"; `beforeInit` runs once the
+  // engine thread is up. Resolves with "ready".
+  async #startSlot(slot, { width, height, deviceScaleFactor, url, gpu = this.getAttribute('gpu') ?? 'auto' }, beforeInit) {
+    const runtime = slot.runtime;
+    const engineReady = new Promise((resolve, reject) => {
+      runtime.addEventListener('ready', (e) => resolve(e.detail), { once: true });
+      runtime.addEventListener('crash', (e) => reject(new Error(`the engine crashed while starting: ${e.detail.message}`)), { once: true });
+    });
+    runtime.wasmTranslator ??= translator;
+    await runtime.start();
+    await beforeInit?.();
+    const profile = this.getAttribute('profile') ?? config.storage?.profile ?? 'default';
+    const content = !!this.#service;
+    runtime.send('init', {
+      width, height, deviceScaleFactor, gpu: gpu !== 'off',
+      media: this.#mediaCapabilities, ...this.#pageCode,
+      // A content engine gets no relay address and no profile: the service
+      // has them.
+      ...(content ? { role: 'content', engine: slot.number } : { wispUrl: config.relayUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true }),
+      userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? defaultUserAgent(), preferences: this.#preferences.resolved(), webglContexts: config.webglContexts | 0, popups: policy().popups, url, debug: this.#debugEnabled(),
+    });
+    if (content) this.#link(slot);
+    const ready = await engineReady;
+    runtime.addEventListener('crash', (e) => this.#slotCrashed(slot, e.detail));
+    return ready;
+  }
+
+  #link(slot) {
+    if (!this.#service || slot.closed) return;
+    slot.link = this.#service.connect(slot.runtime, { onClosed: () => (slot.link = null) });
+    // Where its pages may go, enforced where the network is.
+    const hosts = slot.hosts ?? policy().hosts;
+    if (hosts) this.#service.send('link.policy', { link: slot.link, ...hosts });
+  }
+
+  // The profile service's events for this view: downloads and media fetches
+  // of its engines (by link), history answers; after a restart every engine
+  // of the view is linked again.
+  #watchService(service) {
+    const slotOf = (link) => this.#slots.find((slot) => slot.link === link) ?? null;
+    service.addEventListener('engineevent', (e) => {
+      const { name, data } = e.detail;
+      if (name === 'history.result') return this.#events.dispatchEvent(new CustomEvent(name, { detail: data }));
+      const slot = Number.isInteger(data.link) ? slotOf(data.link) : null;
+      if (!slot) return;
+      if (name.startsWith('download.')) this.#downloads?.handleEvent(name, data);
+      if (name.startsWith('media.fetch.')) this.#mediaHosts(slot).forEach((media) => media.handleFetchEvent(name, data));
+    });
+    service.addEventListener('chunk', (e) => {
+      const chunk = e.detail;
+      const slot = slotOf(chunk.link);
+      if (!slot) return;
+      if (chunk.media) this.#mediaHosts(slot).find((host) => host.ownsFetch(chunk.id))?.fetchChunk(chunk);
+      else this.#downloads?.chunk(chunk);
+    });
+    service.addEventListener('restart', () => {
+      for (const slot of this.#slots) this.#link(slot);
+    });
+  }
+
+  // An engine event: its window ids become the view's, then the view
+  // handles it and every listener of the view's engines hears it.
+  #onSlotEvent(slot, name, data) {
+    if (Number.isInteger(data.window)) data.window = slot.publicOf(data.window);
+    if (Number.isInteger(data.openerWindow)) data.openerWindow = slot.publicOf(data.openerWindow);
+    if (name === 'ready' && !slot.primary) return;
+    this.#handleEngineEvent(slot, name, data);
+    this.#events.dispatchEvent(new CustomEvent(name, { detail: data }));
+  }
+
+  #handleEngineEvent(slot, name, data) {
+    const record = this.#recordOf(data, slot);
+    if (name === 'window.created' || name === 'window.opened') return this.#windowCreated(slot, name, data);
+    if (name === 'window.closed') return this.#windowClosed(data.window);
+    if (name === 'window.focus') return record?.target.dispatchEvent(new CustomEvent('windowfocusrequest', { detail: { window: record.id } }));
+    if (name === 'fullscreen') this.#setFullscreen(record, data.active);
+    if (name.startsWith('media.') && !name.startsWith('media.fetch.')) this.#mediaFor(data, slot)?.handleEvent(name, data);
+    if (name.startsWith('eme.')) slot.eme.handleEvent(name, data);
+    if (name.startsWith('download.')) this.#downloads?.handleEvent(name, data);
+    if (name.startsWith('media.fetch.')) this.#mediaHosts(slot).forEach((media) => media.handleFetchEvent(name, data));
+    if (name.startsWith('tab.') && record) {
+      record.tabs.handleEvent(name, data);
+      if (name === 'tab.activated') this.#showTab(record, data.tab);
+    }
+    if (name === 'audio.open') slot.audio.open(data);
+    if (name === 'audio.close') slot.audio.close(data);
+    if (name.startsWith('permission.') || name.startsWith('geolocation.') || name.startsWith('notification.')) slot.modules.handleEvent(name, data);
+    if (DISPLAY_EVENT_NAMES.has(name)) {
+      const display = record?.display;
+      if (display?.handleEvent) display.handleEvent(name, data);
+      else display?.post?.(name, data);
+    }
+    if (name === 'file.choose' && record) chooseFiles(record.target, record.channel, data);
+    if (name === 'field.focus') this.#provenanceOf(record)?.fieldFocused(data.kind, data.origin);
+    if (name === 'clipboard.write' && this.#mayWriteClipboard()) writeClipboard(data.items);
+    if (record && record !== this.#main) record.channel.dispatchEvent(new CustomEvent(name, { detail: data }));
+  }
+
+  // An engine crashed. The view's own engine takes window 1 and its windows
+  // down (as a single engine always did); another engine takes only its own
+  // windows, which close.
+  #slotCrashed(slot, crash) {
+    if (slot.closed) return;
+    if (this.#service && slot.link) this.#service.disconnect(slot.link);
+    slot.link = null;
+    if (slot.primary) return this.#crashed(crash);
+    const windows = [...this.#windows.values()].filter((record) => record.slot === slot).map((record) => record.id);
     const detail = { reason: crash.message, stack: crash.stack, ...(crash.kind ? { kind: crash.kind } : {}), windows };
+    for (const id of windows) {
+      const record = this.#windows.get(id);
+      record.channel.dispatchEvent(new CustomEvent('crash', { detail: crash }));
+      record.target.dispatchEvent(new CustomEvent('crash', { detail }));
+      this.#server.emit('crash', { ...crash, windows }, 'view', id);
+    }
+    this.#closeSlot(slot);
+  }
+
+  // Stops an engine the view no longer needs (its last window closed, or it
+  // crashed): its windows close.
+  #closeSlot(slot) {
+    if (slot.closed || slot.primary) return;
+    slot.closed = true;
+    if (this.#service && slot.link) this.#service.disconnect(slot.link);
+    slot.link = null;
+    for (const record of [...this.#windows.values()]) {
+      if (record.slot === slot) this.#windowClosed(record.id);
+    }
+    slot.runtime.terminate();
+    this.#slots = this.#slots.filter((other) => other !== slot);
+  }
+
+  // isolation 'window': a window in an engine of its own.
+  async #openEngineWindow({ width, height, deviceScaleFactor, url, hosts }) {
+    const slot = this.#createSlot({ primary: false });
+    slot.hosts = hostRules(hosts);
+    try {
+      const ready = await this.#startSlot(slot, { width, height, deviceScaleFactor, url: '' });
+      // "ready" already carries the view's id for the engine's first window.
+      const id = ready.window ?? slot.publicOf(1);
+      this.#windowCreated(slot, 'window.created', { window: id, tab: ready.tab });
+      const record = this.#windows.get(id);
+      slot.root = record;
+      record.size = { width, height };
+      // Its first window starts hidden, as a window of one engine does.
+      record.channel.send('window.visibility', { visible: false });
+      if (url) record.channel.send('load', { url });
+      return record;
+    } catch (error) {
+      this.#closeSlot(slot);
+      throw error;
+    }
+  }
+
+  // The view's engine crashed: every window's connections and handles hear
+  // it, with the windows it took down (those of other engines live on).
+  #crashed(crash) {
+    const windows = [...this.#windows.values()].filter((record) => record.slot === this.#primary).map((record) => record.id);
+    const detail = { reason: crash.message, stack: crash.stack, ...(crash.kind ? { kind: crash.kind } : {}), windows };
+    this.#server.emit('crash', crash, 'view', 1);
     this.dispatchEvent(new CustomEvent('crash', { detail }));
     for (const record of this.#windows.values()) {
-      if (record === this.#main) continue;
+      if (record === this.#main || record.slot !== this.#primary) continue;
       record.channel.dispatchEvent(new CustomEvent('crash', { detail: crash }));
       record.target.dispatchEvent(new CustomEvent('crash', { detail }));
       this.#server.emit('crash', { ...crash, windows }, 'view', record.id);
     }
   }
 
-  // The window an engine event or question belongs to; window 1 when it names
-  // none (engine-wide events, an engine without windows).
-  #recordOf(data) {
+  // The window an engine event or question belongs to; when it names none
+  // (engine-wide events, an engine without windows), the first window of the
+  // engine it came from: window 1 for the view's.
+  #recordOf(data, slot = this.#primary) {
     const id = data?.window;
-    return Number.isInteger(id) ? this.#windows.get(id) ?? null : this.#main;
+    return Number.isInteger(id) ? this.#windows.get(id) ?? null : slot?.root ?? this.#main;
   }
 
-  #mediaHosts() {
-    const hosts = this.#media ? [this.#media] : [];
-    for (const record of this.#windows.values()) if (record.media) hosts.push(record.media.host);
+  // Media hosts of one engine's windows, or of all.
+  #mediaHosts(slot = null) {
+    const hosts = this.#media && (!slot || slot === this.#primary) ? [this.#media] : [];
+    for (const record of this.#windows.values()) {
+      if (record.media && (!slot || record.slot === slot)) hosts.push(record.media.host);
+    }
     return hosts;
   }
 
-  #mediaFor(data) {
-    const record = this.#recordOf(data);
+  #mediaFor(data, slot = this.#primary) {
+    const record = this.#recordOf(data, slot);
     if (!record || record === this.#main) return this.#media;
     return record.media?.host ?? null;
   }
@@ -606,12 +854,13 @@ export class InceptionView extends HTMLElement {
 
   // A window appeared in the engine: the embedder's (openWindow,
   // windows.create) or a page's (window.open with popups: 'window').
-  #windowCreated(name, data) {
+  #windowCreated(slot, name, data) {
     const id = data.window;
     if (!Number.isInteger(id) || id < 2 || this.#windows.has(id)) return;
     let handle = null;
     const target = { dispatchEvent: (event) => handle.dispatchEvent(event) };
-    const record = new HostWindow({ id, runtime: this.#runtime, target, policy });
+    const record = new HostWindow({ id, runtime: slot.adapter, target, policy });
+    record.slot = slot;
     handle = new InceptionWindow({
       id,
       record,
@@ -624,13 +873,13 @@ export class InceptionView extends HTMLElement {
     record.target = handle;
     if (Number.isInteger(data.tab)) record.tabs.started(data.tab);
     // Its videos play muted, off screen, until a display here shows it.
-    const host = new MediaHost(document.createElement('div'), (command, args) => this.#runtime.send(command, args), { soundAllowed: this.#soundAllowed, eme: this.#eme, audio: this.#audio });
+    const host = new MediaHost(document.createElement('div'), (command, args) => slot.runtime.send(command, args), { soundAllowed: this.#soundAllowed, eme: slot.eme, audio: slot.audio });
     host.setMaster({ volume: 0, muted: true });
     record.media = { host };
     if (this.#agentEnabled()) record.agent = this.#createAgent(record);
     this.#windows.set(id, record);
     this.#windowHandles.set(id, handle);
-    if (name === 'window.created') this.#pendingWindows.shift()?.(record);
+    if (name === 'window.created' && slot.primary) this.#pendingWindows.shift()?.(record);
     this.#server.emit('windows.created', record.info(), 'windows');
     if (name === 'window.opened') this.#windowOpened(record, handle, data);
   }
@@ -650,7 +899,7 @@ export class InceptionView extends HTMLElement {
 
   #windowClosed(id) {
     const record = this.#windows.get(id);
-    if (!record || record === this.#main) return;
+    if (!record || record === this.#main || record.closed) return;
     record.closed = true;
     record.display?.close?.();
     this.#detachDisplay(record);
@@ -659,6 +908,8 @@ export class InceptionView extends HTMLElement {
     record.channel.dispatchEvent(new CustomEvent('window.closed', { detail: { window: id } }));
     record.target.dispatchEvent(new CustomEvent('close', { detail: { window: id } }));
     this.#server.emit('windows.closed', { window: id }, 'windows');
+    // The first window of an engine of its own takes the engine with it.
+    if (record.slot && !record.slot.primary && record.slot.root === record) this.#closeSlot(record.slot);
   }
 
   #createAgent(record) {
@@ -746,7 +997,7 @@ export class InceptionView extends HTMLElement {
   #createServer() {
     const server = new ProtocolServer(this.#capabilities(), { optIn: ['history', 'find', 'observe', 'agent', 'windows'], windowExists: (id) => !!this.#windows.get(id) && !this.#windows.get(id).closed });
     this.#server = server;
-    const runtime = this.#runtime;
+    const events = this.#events;
     if (this.#agentEnabled()) {
       this.#main.agent = this.#createAgent(this.#main);
       registerAgentMethods(server, (window) => this.#windows.get(window)?.agent ?? null);
@@ -765,25 +1016,24 @@ export class InceptionView extends HTMLElement {
       const record = this.#windowFor(window);
       const listener = (e) => {
         if ((e.detail.window ?? 1) !== record.id) return;
-        runtime.removeEventListener('find.result', listener);
+        events.removeEventListener('find.result', listener);
         resolve({ found: e.detail.found, matches: e.detail.matches });
       };
-      runtime.addEventListener('find.result', listener);
+      events.addEventListener('find.result', listener);
       record.channel.send('find', { text: String(text ?? ''), backwards: !!backwards, caseSensitive: !!caseSensitive });
     }), 'find');
     server.handle('view.findClear', (params, { window }) => send(window, 'find.clear'), 'find');
-    let historyRequests = 0;
     server.handle('history.query', (args = {}) => new Promise((resolve) => {
-      const id = ++historyRequests;
+      const id = ++lastHistoryRequest;
       const listener = (e) => {
         if (e.detail.id !== id) return;
-        runtime.removeEventListener('history.result', listener);
+        events.removeEventListener('history.result', listener);
         resolve(e.detail.entries);
       };
-      runtime.addEventListener('history.result', listener);
-      runtime.send('history.query', { id, text: String(args.text ?? ''), limit: args.limit | 0 || 100, ...(args.before ? { before: Number(args.before) } : {}) });
+      events.addEventListener('history.result', listener);
+      this.#profileSend('history.query', { id, text: String(args.text ?? ''), limit: args.limit | 0 || 100, ...(args.before ? { before: Number(args.before) } : {}) });
     }));
-    server.handle('history.delete', (args = {}) => runtime.send('history.delete', args.url ? { url: String(args.url) } : { from: Number(args.from ?? 0), to: Number(args.to ?? Number.MAX_VALUE) }));
+    server.handle('history.delete', (args = {}) => this.#profileSend('history.delete', args.url ? { url: String(args.url) } : { from: Number(args.from ?? 0), to: Number(args.to ?? Number.MAX_VALUE) }));
     server.handle('view.zoom', ({ factor } = {}, { window }) => {
       if (!(factor > 0)) throw new TypeError('factor must be a positive number');
       send(window, 'zoom', { factor });
@@ -804,10 +1054,14 @@ export class InceptionView extends HTMLElement {
       return Math.round(value);
     };
     server.handle('windows.list', () => this.windows);
-    server.handle('windows.create', ({ width = 800, height = 600, url = '', deviceScaleFactor = 1 } = {}) => new Promise((resolve, reject) => {
+    server.handle('windows.create', ({ width = 800, height = 600, url = '', deviceScaleFactor = 1, hosts } = {}) => new Promise((resolve, reject) => {
       if (typeof url !== 'string') throw ProtocolError.fromReason('invalid_params', 'url must be a string');
       const size = { width: dimension(width, 'width'), height: dimension(height, 'height') };
       const scale = Number(deviceScaleFactor) > 0 && Number(deviceScaleFactor) <= 8 ? Number(deviceScaleFactor) : 1;
+      if (this.#service) {
+        this.#openEngineWindow({ ...size, deviceScaleFactor: scale, url, hosts }).then((record) => resolve(record.info()), (error) => reject(ProtocolError.fromReason('not_ready', String(error?.message ?? error))));
+        return;
+      }
       const timer = setTimeout(() => reject(ProtocolError.fromReason('timeout', 'the engine did not open the window')), 10000);
       this.#pendingWindows.push((record) => {
         clearTimeout(timer);
@@ -818,7 +1072,10 @@ export class InceptionView extends HTMLElement {
     }));
     server.handle('windows.close', ({ window } = {}) => {
       if (windowId(window) === 1) throw ProtocolError.fromReason('invalid_params', 'window 1 is the view and cannot be closed');
-      this.#windowFor(window).channel.send('window.close');
+      const record = this.#windowFor(window);
+      // A window with an engine of its own closes with the engine.
+      if (record.slot && !record.slot.primary && record.slot.root === record) return this.#closeSlot(record.slot);
+      record.channel.send('window.close');
     });
     server.handle('windows.resize', ({ window, width, height, deviceScaleFactor = 1 } = {}) => {
       const record = this.#windowFor(windowId(window));
@@ -830,7 +1087,7 @@ export class InceptionView extends HTMLElement {
 
     for (const name of VIEW_EVENTS) {
       if (name === 'crash') continue;
-      runtime.addEventListener(name, (e) => {
+      events.addEventListener(name, (e) => {
         const record = this.#recordOf(e.detail);
         if (!record) return;
         // A hidden tab's page events update its tab record only.
@@ -839,7 +1096,6 @@ export class InceptionView extends HTMLElement {
         server.emit(name, e.detail, EVENT_CAPABILITY[name], record.id);
       });
     }
-    runtime.addEventListener('crash', (e) => server.emit('crash', e.detail, 'view', 1));
     return server;
   }
 
