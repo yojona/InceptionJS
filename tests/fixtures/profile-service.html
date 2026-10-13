@@ -11,6 +11,7 @@
   const relayUrl = params.get('relay') ?? `ws://${location.hostname}:5001/`;
   const contents = [];
   let service = null;
+  const serviceEvents = [];
   let requests = 0;
 
   const once = (target, name, timeout = 30000) => new Promise((resolve, reject) => {
@@ -21,11 +22,13 @@
     }, { once: true });
   });
 
-  async function startContent() {
+  // `role`: 'content', or 'standalone' for an engine with its own network and
+  // an ephemeral profile, to compare with.
+  async function startContent(role = 'content') {
     const runtime = new EngineRuntime({ engineUrl });
     await runtime.start();
     const ready = once(runtime, 'ready');
-    runtime.send('init', { role: 'content', width: 320, height: 240, deviceScaleFactor: 1, gpu: false, url: '', debug: true, wispUrl: relayUrl });
+    runtime.send('init', { ...(role === 'content' ? { role } : { profile: `standalone-${Date.now()}`, freshProfile: true }), width: 320, height: 240, deviceScaleFactor: 1, gpu: false, url: '', debug: true, wispUrl: relayUrl });
     const detail = await ready;
     const entry = { runtime, link: null, ready: detail, crashed: null };
     runtime.addEventListener('crash', (e) => (entry.crashed = e.detail));
@@ -73,6 +76,7 @@
     async startService(options = {}) {
       service = ProfileService.acquire({ engineUrl, relayUrl, profile: `service-test-${Date.now()}`, fresh: true, debug: true, ...options });
       const info = await service.start();
+      service.addEventListener('engineevent', (e) => serviceEvents.push(e.detail));
       service.addEventListener('restart', () => (window.harness.restarted = (window.harness.restarted ?? 0) + 1));
       return { role: info.role, persistent: info.persistent, features: service.runtime.features };
     },
@@ -80,7 +84,7 @@
     connect,
     ping,
     evaluate,
-    content: (index) => ({ ready: contents[index].ready, crashed: contents[index].crashed, closedReason: contents[index].closedReason ?? null }),
+    content: (index) => ({ link: contents[index].link, ready: contents[index].ready, crashed: contents[index].crashed, closedReason: contents[index].closedReason ?? null }),
     crashService() {
       service.runtime.send('debug.crash');
       return once(service, 'crash').then(() => true);
@@ -95,6 +99,25 @@
       });
     },
     waitRestart: () => once(service, 'restart', 60000),
+    // Loads `url` in content engine `index` and waits until `ready` (script)
+    // is true there.
+    async navigate(index, url, ready = 'document.readyState === "complete"', timeout = 60000) {
+      contents[index].runtime.send('load', { url });
+      const until = performance.now() + timeout;
+      while (performance.now() < until) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        if ((await evaluate(index, `location.href !== "about:blank" && (${ready})`)) === 'true') return evaluate(index, 'location.href');
+      }
+      throw new Error(`${url} did not load in ${timeout} ms`);
+    },
+    events: (index, name) => {
+      const list = [];
+      contents[index].runtime.addEventListener(name, (e) => list.push(e.detail));
+      return list;
+    },
+    serviceSend: (command, args) => service.send(command, args),
+    // Every event the service engine reports, by name, since startService.
+    serviceEvents: (name) => serviceEvents.filter((e) => e.name === name).map((e) => e.data),
     // How many times the document fetched the engine's code and image.
     fetches: () => performance.getEntriesByType('resource').filter((e) => /inception-engine\.(wasm|data)$/.test(e.name)).map((e) => e.name.split('/').pop()),
     stop() {
