@@ -60,8 +60,9 @@ export interface AgentPolicyRequest {
 
 export interface AgentOptions {
   /**
-   * Decides each action; may ask a person. Without one, read, interact, navigate and
-   * control are allowed and submit, download, login and payment are refused.
+   * Decides each action; may ask a person. Without one the agent stays on the site it is on:
+   * read, interact and control are allowed, navigation only within the same site (or out of a
+   * blank view), and cross-site navigation, submit, download, login and payment are refused.
    */
   policy?: (request: AgentPolicyRequest) => boolean | 'allow' | 'deny' | Promise<boolean | 'allow' | 'deny'>;
   /** Acting calls allowed per minute (default 120); past it they fail with 'rate_limited'. */

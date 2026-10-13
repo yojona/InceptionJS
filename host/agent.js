@@ -22,8 +22,27 @@ export const RISKS = Object.freeze(['read', 'interact', 'navigate', 'submit', 'd
 const rank = (risk) => RISKS.indexOf(risk);
 const higher = (a, b) => (rank(b) > rank(a) ? b : a);
 
-// Allowed without a policy callback. The rest need one that says yes.
-const ALLOWED_BY_DEFAULT = new Set(['read', 'interact', 'navigate', 'control']);
+// Without a policy callback the agent reads and interacts on the site it is
+// on, and goes nowhere else: navigating to another site, submitting a form,
+// logging in, paying and downloading all need a callback that says yes.
+const ALLOWED_BY_DEFAULT = new Set(['read', 'interact', 'control']);
+
+// The same site: the same host, or one a subdomain of the other (at least two
+// labels, so "com" is not a site).
+export function sameSite(a, b) {
+  let from;
+  let to;
+  try {
+    from = new URL(a);
+    to = new URL(b);
+  } catch {
+    return false;
+  }
+  if (to.href === 'about:blank') return true;
+  if (from.hostname === to.hostname) return true;
+  const [short, long] = from.hostname.length <= to.hostname.length ? [from.hostname, to.hostname] : [to.hostname, from.hostname];
+  return short.split('.').length >= 2 && long.endsWith(`.${short}`);
+}
 
 // An approval also covers the plain submission the same form makes.
 const COVERED = { login: ['login', 'submit'], payment: ['payment', 'submit'] };
@@ -184,7 +203,12 @@ export class AgentHost {
 
   async #decide(request) {
     const policy = this.#options().policy;
-    if (typeof policy !== 'function') return ALLOWED_BY_DEFAULT.has(request.risk) || ALLOWED_BY_DEFAULT.has(request.action);
+    if (typeof policy !== 'function') {
+      if (ALLOWED_BY_DEFAULT.has(request.risk) || ALLOWED_BY_DEFAULT.has(request.action)) return true;
+      // A blank view has no site yet: the first address is the embedder's page to hand over.
+      if (request.risk === 'navigate') return !request.pageUrl || request.pageUrl === 'about:blank' || sameSite(request.pageUrl, request.url);
+      return false;
+    }
     try {
       const verdict = await policy(Object.freeze({ ...request }));
       return verdict === true || verdict === 'allow';

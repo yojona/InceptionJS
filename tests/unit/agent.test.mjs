@@ -116,3 +116,17 @@ test("a label's text beside its control is dropped", () => {
   ]);
   assert.deepEqual(nodes.map((n) => n.ref), ['e2', 'e4']);
 });
+
+import { sameSite } from '../../host/agent.js';
+
+test('same site: the same host, or a subdomain of it; never a public suffix or a sibling', () => {
+  assert.equal(sameSite('https://example.com/a', 'https://example.com/b?x=1'), true);
+  assert.equal(sameSite('https://example.com/', 'https://www.example.com/'), true);
+  assert.equal(sameSite('https://app.example.com/', 'https://example.com/'), true);
+  assert.equal(sameSite('https://a.example.com/', 'https://b.example.com/'), false);
+  assert.equal(sameSite('https://example.com/', 'https://example.org/'), false);
+  assert.equal(sameSite('https://example.com/', 'https://notexample.com/'), false);
+  assert.equal(sameSite('https://example.com/', 'https://example.com.evil.net/'), false);
+  assert.equal(sameSite('https://example.com/', 'about:blank'), true);
+  assert.equal(sameSite('nonsense', 'https://example.com/'), false);
+});

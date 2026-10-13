@@ -42,7 +42,7 @@ test('only http(s) addresses can be opened by the agent', async ({ page }) => {
   await open(page, '<p>hello</p>');
   await agent(page, 'requestControl');
   for (const url of ['javascript:alert(1)', 'data:text/html,<script>1</script>', 'file:///etc/hosts', 'blob:https://x/1', ' JAVASCRIPT:1', 'ftp://example.com/']) {
-    expect(await outcome(page, 'navigate', { url }), url).toMatchObject({ reason: 'invalid_params' });
+    expect(await outcome(page, 'navigate', url), url).toMatchObject({ reason: 'invalid_params', message: 'agents navigate to http(s) addresses only' });
   }
 });
 
@@ -97,4 +97,32 @@ test('a card field with no hints in its attributes is still typed into without a
   expect(await outcome(page, 'type', field, '4111111111111111')).toBe('ok');
   const pay = await ref(page, 'button', 'Pay');
   expect(await outcome(page, 'click', { ref: pay })).toMatchObject({ reason: 'denied_by_policy' });
+});
+
+test.describe('without a policy callback the agent stays on the site it is on', () => {
+  test('it may leave a blank view, then not cross to another site, by address or by link', async ({ page }) => {
+    await open(page, '<p>blank</p>');
+    await agent(page, 'requestControl');
+    expect(await outcome(page, 'navigate', 'https://example.com/')).toBe('ok');
+    await evaluate(page, `document.body.insertAdjacentHTML('beforeend', '<a href="https://example.org/">other</a> <a href="/same-site">same</a>'), 1`);
+    expect(await outcome(page, 'navigate', 'https://example.org/')).toMatchObject({ reason: 'denied_by_policy', data: { risk: 'navigate' } });
+    const other = await ref(page, 'link', 'other');
+    expect(await outcome(page, 'click', { ref: other })).toMatchObject({ reason: 'denied_by_policy', data: { risk: 'navigate' } });
+    expect(await view(page).evaluate((el) => el.url)).toBe('https://example.com/');
+    const same = await ref(page, 'link', 'same');
+    expect(await outcome(page, 'click', { ref: same })).toBe('ok');
+  });
+
+  test('downloads, submissions, logins and payments are refused; reading and typing in ordinary fields are not', async ({ page }) => {
+    await open(page, `<a id="d" download href="https://example.com/file.bin">file</a>
+      <form method="post" action="https://example.com/post"><input aria-label="Note"><button>Send</button></form>`);
+    const file = await ref(page, 'link', 'file');
+    const note = await ref(page, 'textbox', 'Note');
+    const send = await ref(page, 'button', 'Send');
+    await agent(page, 'requestControl');
+    expect(await outcome(page, 'type', note, 'hello')).toBe('ok');
+    expect(await outcome(page, 'click', { ref: file })).toMatchObject({ reason: 'denied_by_policy', data: { risk: 'download' } });
+    expect(await outcome(page, 'click', { ref: send })).toMatchObject({ reason: 'denied_by_policy', data: { risk: 'submit' } });
+    expect((await agent(page, 'snapshot')).text).toContain('Note');
+  });
 });
