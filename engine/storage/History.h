@@ -11,5 +11,7 @@ namespace Inception::History {
 void recordVisit(const URL&);
 void updateTitle(const URL&, const String& title);
 void registerCommands();
+// A profile service records its content engines' visits.
+void installService();
 
 } // namespace Inception::History

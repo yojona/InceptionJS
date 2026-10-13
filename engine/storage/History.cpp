@@ -4,6 +4,7 @@
 #include "SQLiteDatabase.h"
 #include "SQLiteStatement.h"
 #include "bridge/Bridge.h"
+#include "link/Link.h"
 #include "storage/Profile.h"
 #include <sqlite3.h>
 #include <wtf/NeverDestroyed.h>
@@ -32,8 +33,25 @@ static bool recorded(const URL& url)
     return url.protocolIsInHTTPFamily();
 }
 
+// A content engine's history lives in its profile service.
+static bool sendToService(Message message, const URL& url, const String& title = { })
+{
+    if (role() != Role::Content)
+        return false;
+    if (!recorded(url))
+        return true;
+    if (RefPtr link = Link::service()) {
+        Encoder encoder;
+        encoder << url << title;
+        link->send(message, WTF::move(encoder));
+    }
+    return true;
+}
+
 void recordVisit(const URL& url)
 {
+    if (sendToService(Message::HistoryVisit, url))
+        return;
     auto* db = database();
     if (!db || !recorded(url))
         return;
@@ -46,6 +64,8 @@ void recordVisit(const URL& url)
 
 void updateTitle(const URL& url, const String& title)
 {
+    if (sendToService(Message::HistoryTitle, url, title))
+        return;
     auto* db = database();
     if (!db || !recorded(url))
         return;
@@ -55,6 +75,21 @@ void updateTitle(const URL& url, const String& title)
         statement->bindText(2, url.string());
         statement->step();
     }
+}
+
+void installService()
+{
+    // {url, title}
+    Link::handle(Message::HistoryVisit, [](Link&, Decoder& decoder) {
+        auto url = decoder.decode<URL>();
+        if (decoder.string())
+            recordVisit(*url);
+    });
+    Link::handle(Message::HistoryTitle, [](Link&, Decoder& decoder) {
+        auto url = decoder.decode<URL>();
+        if (auto title = decoder.string())
+            updateTitle(*url, *title);
+    });
 }
 
 void registerCommands()
