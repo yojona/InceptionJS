@@ -1,0 +1,43 @@
+Keep Response.redirected after a cross-origin redirect.
+
+Without a network process, a CORS request that is redirected to another origin
+is restarted by the threadable loader on a fresh resource, which never saw the
+redirect, so the response said redirected = false. The loader now remembers
+that it restarted after a redirect and marks the response.
+
+diff --git a/Source/WebCore/loader/DocumentThreadableLoader.cpp b/Source/WebCore/loader/DocumentThreadableLoader.cpp
+index c3e5f97..d06868f 100644
+--- a/Source/WebCore/loader/DocumentThreadableLoader.cpp
++++ b/Source/WebCore/loader/DocumentThreadableLoader.cpp
+@@ -384,6 +384,7 @@ void DocumentThreadableLoader::redirectReceived(CachedResource& resource, Resour
+ 
+     if (redirectResponse.source() != ResourceResponse::Source::ServiceWorker && redirectResponse.source() != ResourceResponse::Source::MemoryCache)
+         m_options.serviceWorkersMode = ServiceWorkersMode::None;
++    m_restartedAfterRedirect = true;
+     makeCrossOriginAccessRequest(ResourceRequest(request));
+     completionHandler(WTF::move(request));
+ }
+@@ -422,6 +423,9 @@ void DocumentThreadableLoader::didReceiveResponse(ResourceLoaderIdentifier ident
+     ASSERT(client);
+     ASSERT(response.type() != ResourceResponse::Type::Error);
+ 
++    if (m_restartedAfterRedirect)
++        response.setRedirected(true);
++
+     // https://fetch.spec.whatwg.org/commit-snapshots/6257e220d70f560a037e46f1b4206325400db8dc/#main-fetch step 17.
+     if (response.source() == ResourceResponse::Source::ServiceWorker && response.url() != m_resource->url()) {
+         if (!isResponseAllowedByContentSecurityPolicy(response)) {
+diff --git a/Source/WebCore/loader/DocumentThreadableLoader.h b/Source/WebCore/loader/DocumentThreadableLoader.h
+index 121cdc1..7ae1668 100644
+--- a/Source/WebCore/loader/DocumentThreadableLoader.h
++++ b/Source/WebCore/loader/DocumentThreadableLoader.h
+@@ -144,6 +144,9 @@ class CachedRawResource;
+         bool m_simpleRequest;
+         bool m_async;
+         bool m_delayCallbacksForIntegrityCheck;
++        // A cross-origin redirect restarted the load on a new resource, which
++        // does not know a redirect happened.
++        bool m_restartedAfterRedirect { false };
+         std::unique_ptr<ContentSecurityPolicy> m_contentSecurityPolicy;
+         std::optional<CrossOriginEmbedderPolicy> m_crossOriginEmbedderPolicy;
+         RefPtr<CrossOriginPreflightChecker> m_preflightChecker;
