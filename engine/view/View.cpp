@@ -227,10 +227,10 @@ View::View(Window& window, IntSize cssSize, float deviceScaleFactor)
     configuration.databaseProvider = createDatabaseProvider();
     configuration.storageNamespaceProvider = createStorageNamespaceProvider();
     configuration.editorClient = makeUniqueRef<EditorClientImpl>();
-    configuration.backForwardClient = BackForwardList::create([this] {
+    configuration.backForwardClient = BackForwardList::create([this](bool added) {
         if (isActive()) {
             WindowScope scope(*this);
-            emitNavigationState();
+            emitNavigationState(added);
         }
     });
     configuration.mainFrameCreationParameters = PageConfiguration::LocalMainFrameCreationParameters {
@@ -342,6 +342,14 @@ void View::load(const URL& url)
     if (!frame)
         return;
     frame->loader().load(FrameLoadRequest(*frame, ResourceRequest(URL { url })));
+}
+
+void View::load(ResourceRequest&& request)
+{
+    RefPtr frame = mainFrame();
+    if (!frame)
+        return;
+    frame->loader().load(FrameLoadRequest(*frame, WTF::move(request)));
 }
 
 void View::resize(IntSize cssSize, float deviceScaleFactor)

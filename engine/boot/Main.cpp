@@ -28,6 +28,11 @@
 #include "view/Clients.h"
 #include "view/Preferences.h"
 #include "view/Navigation.h"
+#include "FormData.h"
+#include "RegistrableDomain.h"
+#include "ResourceRequest.h"
+#include "view/SiteLock.h"
+#include <wtf/text/Base64.h>
 #include "view/View.h"
 #include "view/Window.h"
 #include "CurlContext.h"
@@ -90,7 +95,8 @@ static String platformForUserAgent(const String& userAgent)
 // "started" {version, features}: what this engine speaks beyond the bridge
 // version. "windows": commands and events carry window ids. "roles": "init"
 // takes a role, and the engine can be a profile service or a content engine
-// joined to one by a link (link/Link.h).
+// joined to one by a link (link/Link.h). "site": a content engine can be
+// locked to one site (view/SiteLock.h).
 static Ref<JSON::Object> startedEvent()
 {
     auto started = JSON::Object::create();
@@ -98,6 +104,7 @@ static Ref<JSON::Object> startedEvent()
     auto features = JSON::Array::create();
     features->pushString("windows"_s);
     features->pushString("roles"_s);
+    features->pushString("site"_s);
     started->setArray("features"_s, WTF::move(features));
     return started;
 }
@@ -183,6 +190,9 @@ static void registerCommands()
             // Its IDB connection is known to the service by this process
             // identifier: unique among the service's engines.
             setContentIdentifier(args.getInteger("engine"_s).value_or(0));
+            // `site` (isolation 'site'): the one site its pages may be of.
+            if (auto site = args.getValue("site"_s); site && site->type() == JSON::Value::Type::String)
+                SiteLock::set(site->asString());
         }
         auto cssSize = sizeFrom(args);
         float scale = args.getDouble("deviceScaleFactor"_s).value_or(1);
@@ -268,9 +278,36 @@ static void registerCommands()
             window->setVisible(args.getBoolean("visible"_s).value_or(true));
     });
 
+    // {url, method?, body? (base64), contentType?, referrer?, initiator?}:
+    // with a method, the navigation another engine handed over (a form
+    // posted across sites); `initiator` is the origin of the page that made
+    // it, so cookies keep their same-site rules.
     registerCommand("load"_s, [](JSON::Object& args) {
-        if (auto* view = View::singleton())
-            view->load(URL { args.getString("url"_s) });
+        auto* view = View::singleton();
+        if (!view)
+            return;
+        URL url { args.getString("url"_s) };
+        auto method = args.getString("method"_s);
+        auto initiator = args.getString("initiator"_s);
+        if (method.isEmpty() && initiator.isEmpty()) {
+            view->load(url);
+            return;
+        }
+        ResourceRequest request { URL { url } };
+        if (method == "POST"_s) {
+            request.setHTTPMethod(method);
+            if (auto body = base64Decode(args.getString("body"_s)))
+                request.setHTTPBody(FormData::create(WTF::move(*body)));
+            auto type = args.getString("contentType"_s);
+            if (!type.isEmpty())
+                request.setHTTPContentType(type);
+        }
+        auto referrer = args.getString("referrer"_s);
+        if (!referrer.isEmpty())
+            request.setHTTPReferrer(referrer);
+        if (!initiator.isEmpty())
+            request.setIsSameSite(RegistrableDomain { URL { initiator } }.matches(url));
+        view->load(WTF::move(request));
     });
 
     registerCommand("resize"_s, [](JSON::Object& args) {

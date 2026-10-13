@@ -8,6 +8,7 @@
 namespace WebCore {
 class LocalFrame;
 class Page;
+class ResourceRequest;
 }
 
 namespace Inception {
@@ -54,6 +55,7 @@ public:
     bool isActive() const;
 
     void load(const URL&);
+    void load(WebCore::ResourceRequest&&);
     void resize(WebCore::IntSize cssSize, float deviceScaleFactor);
 
     WebCore::IntSize cssSize() const { return m_cssSize; }
