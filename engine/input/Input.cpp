@@ -177,12 +177,25 @@ static void handleWheel(JSON::Object& args)
     frame->eventHandler().handleWheelEvent(event, { WheelEventProcessingSteps::SynchronousScrolling, WheelEventProcessingSteps::BlockingDOMEventDispatch });
 }
 
+// WebCore's own key handling (moving focus with Tab, scrolling a page with
+// Page Up/Down and Home/End) matches the legacy key identifier, not the key.
+static String keyIdentifierFor(const String& key)
+{
+    if (key == "Tab"_s)
+        return "U+0009"_s;
+    if (key == "PageUp"_s || key == "PageDown"_s || key == "Home"_s || key == "End"_s)
+        return key;
+    return { };
+}
+
 // {type: "down"|"up", key, code, keyCode, text, repeat, modifiers}, from DOM
 // KeyboardEvent. A keydown becomes WebCore's RawKeyDown followed, when it
 // produces text, by a Char (the keypress).
 static void handleKey(JSON::Object& args)
 {
-    RefPtr frame = mainFrame();
+    // Keys go to the frame that has focus, as in other browsers; a field in
+    // an iframe takes typing only this way.
+    RefPtr frame = focusedFrame();
     if (!frame)
         return;
     auto type = args.getString("type"_s);
@@ -197,12 +210,12 @@ static void handleKey(JSON::Object& args)
 
     auto& handler = frame->eventHandler();
     if (type == "up"_s) {
-        PlatformKeyboardEvent event(PlatformEvent::Type::KeyUp, text, text, key, code, { }, keyCode, repeat, keypad, false, modifiers, MonotonicTime::now());
+        PlatformKeyboardEvent event(PlatformEvent::Type::KeyUp, text, text, key, code, keyIdentifierFor(key), keyCode, repeat, keypad, false, modifiers, MonotonicTime::now());
         handler.keyEvent(event);
         return;
     }
 
-    PlatformKeyboardEvent event(PlatformEvent::Type::KeyDown, text, text, key, code, { }, keyCode, repeat, keypad, false, modifiers, MonotonicTime::now());
+    PlatformKeyboardEvent event(PlatformEvent::Type::KeyDown, text, text, key, code, keyIdentifierFor(key), keyCode, repeat, keypad, false, modifiers, MonotonicTime::now());
     auto rawKeyDown = event;
     rawKeyDown.disambiguateKeyDownEvent(PlatformEvent::Type::RawKeyDown);
     bool handled = handler.keyEvent(rawKeyDown);
