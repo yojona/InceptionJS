@@ -16,8 +16,15 @@ import { ProtocolClient, ProtocolError, ProtocolServer, createInPagePair } from 
 import { AgentClient, AgentHost, registerAgentMethods } from './agent.js';
 import { Display, serveDisplay } from './display.js';
 import { ATTACH_DISPLAY, HostWindow, InceptionWindow } from './window.js';
+import { AttachHost, AttachUnavailableError, DOM_EVENT_NAMES, ProfileConnection, VIEW_EVENTS, hostPresent } from './attach.js';
+import { profileLockName, tryLock, waitLock } from './profile-lock.js';
 
-const config = { engineUrl: null, relayUrl: null, binaryenUrl: null, storage: null, policy: null, debug: false, agent: null, webglContexts: 0, modules: {}, isolation: 'shared' };
+export { AttachUnavailableError, connectProfile } from './attach.js';
+
+// The attach host of each profile this document holds.
+const attachHosts = new Map();
+
+const config = { engineUrl: null, relayUrl: null, binaryenUrl: null, storage: null, policy: null, debug: false, agent: null, webglContexts: 0, modules: {}, isolation: 'shared', attach: true };
 const policy = () => resolvePolicy(config.policy);
 let translator = null;
 
@@ -35,7 +42,11 @@ export const Inception = {
   // (default: one engine runs every window of a view, with the profile in it)
   // or 'window' (a profile service owns the profile, the network and the
   // files; each window opened with openWindow() gets an engine of its own,
-  // with the popups its pages open; see host/profile-service.js).
+  // with the popups its pages open; see host/profile-service.js). attach (default
+  // true): a view whose profile another document of the site already holds
+  // attaches to that document and shows a window of it, instead of failing; the
+  // document that holds the profile accepts such views (host/attach.js). false
+  // restores the error.
   configure(options) {
     const { wispUrl, ...rest } = options;
     // wispUrl: the earlier name of relayUrl, still accepted.
@@ -61,14 +72,12 @@ const PAGE_WEBGL_CONTEXTS = 3;
 // How long after the person's input a page may still write the clipboard.
 const CLIPBOARD_GESTURE_MS = 2000;
 
-// Events the engine reports that the view re-dispatches as DOM events.
-const VIEW_EVENTS = ['security.state', 'security.certificateError', 'navigate', 'title', 'loading', 'popup', 'console', 'crash', 'cursor', 'navigation.state', 'find.result', 'zoom', 'contextmenu'];
-// Names the view dispatches them under where the engine's would clash with
-// the element's own DOM events.
+// Events the engine reports that the view re-dispatches as DOM events (VIEW_EVENTS,
+// under the names in DOM_EVENT_NAMES where the engine's would clash with the
+// element's own DOM events).
 // What the view's own client negotiates; remote clients get less (serve()).
 const PROTOCOL_CAPABILITIES = ['view', 'history', 'find', 'observe', 'windows'];
 const EVENT_CAPABILITY = { console: 'observe', 'find.result': 'find' };
-const DOM_EVENT_NAMES = { 'security.state': 'securitystate', 'security.certificateError': 'certificateerror', contextmenu: 'contextmenurequest', 'navigation.state': 'navigationstate', 'find.result': 'findresult', 'agent.action': 'agentaction', 'agent.blocked': 'agentblocked' };
 // Events of the agent namespace (host/agent.js), re-dispatched the same way.
 const AGENT_EVENTS = ['control', 'agent.action', 'agent.blocked'];
 // Events of the windows capability, on the view.
@@ -94,6 +103,8 @@ class EngineSlot {
     this.windows = new Map();
     this.locals = new Map();
     this.root = null;
+    // Audio rings played by a display in another document, by ring id.
+    this.remoteRings = new Map();
     this.closed = false;
     this.#allocate = allocate;
     const slot = this;
@@ -175,7 +186,14 @@ export class InceptionView extends HTMLElement {
   });
   // Window 1: the view's own page state, tabs and agent.
   #main;
-  get #state() { return this.#main.state; }
+  // An attached view (another document holds the profile): its window is a
+  // RemoteWindow on that document, and everything below that needs an engine
+  // here is unavailable.
+  #remote = null;
+  #connection = null;
+  #standby = null;
+  #attachHost = null;
+  get #state() { return this.#remote ? this.#remote.state : this.#main.state; }
   get #tabs() { return this.#main.tabs; }
   get #agentHost() { return this.#main.agent; }
 
@@ -217,14 +235,35 @@ export class InceptionView extends HTMLElement {
   // The connection of the page shown, from the engine: {url, scheme, secure,
   // httpVersion?, certificate?: {subject, validFrom, validUntil, dnsNames,
   // verificationError}}, for the embedder's own address bar.
-  get securityState() { return this.#main.security; }
+  get securityState() { return this.#remote ? this.#remote.security : this.#main.security; }
+
+  // The id of the view's window on the document that runs the engine (1 on
+  // the host itself; the host's own `windows` lists the rest).
+  get windowId() { return this.#remote ? this.#remote.id : 1; }
+
+  // 'host': this document holds the profile and runs the engine. 'client': the
+  // profile is held by another document and this view shows a window of it.
+  // null until the view has started.
+  get role() { return this.#remote ? 'client' : this.#primary ? 'host' : null; }
 
   // Tabs share this view and its engine; one is shown (host/tabs.js).
-  get tabs() { return this.#tabs.list(); }
-  get activeTab() { return this.#tabs.active; }
-  async createTab(url = '', { activate = true } = {}) { await this.ready; this.#tabs.create(String(url), { activate }); }
-  async activateTab(id) { await this.ready; this.#tabs.activate(id); }
-  async closeTab(id) { await this.ready; this.#tabs.close(id); }
+  get tabs() { return this.#remote ? this.#remote.tabs : this.#tabs.list(); }
+  get activeTab() { return this.#remote ? this.#remote.activeTab : this.#tabs.active; }
+  async createTab(url = '', { activate = true } = {}) {
+    await this.ready;
+    if (this.#remote) await this.#remote.createTab(url, { activate });
+    else this.#tabs.create(String(url), { activate });
+  }
+  async activateTab(id) {
+    await this.ready;
+    if (this.#remote) await this.#remote.activateTab(id);
+    else this.#tabs.activate(id);
+  }
+  async closeTab(id) {
+    await this.ready;
+    if (this.#remote) await this.#remote.closeTab(id);
+    else this.#tabs.close(id);
+  }
 
   // See host/preferences.js. Setting merges: {colorScheme: 'dark'} keeps the
   // other fields; a field set to 'auto' follows the host again.
@@ -253,6 +292,12 @@ export class InceptionView extends HTMLElement {
   #applyLevel() {
     this.#media?.setMaster({ volume: this.#volume, muted: this.#muted });
     for (const slot of this.#slots) slot.audio?.setLevel(this.#muted ? 0 : this.#volume);
+    this.#remote?.display?.setLevel({ volume: this.#volume, muted: this.#muted });
+  }
+
+  // What needs an engine in this document does not exist in an attached view.
+  #requireHost(what) {
+    if (this.#remote) throw new Error(`${what} is not available in a view attached to a profile held by another tab`);
   }
 
   get #runtime() { return this.#primary?.runtime ?? null; }
@@ -331,17 +376,18 @@ export class InceptionView extends HTMLElement {
   async history({ text = '', limit = 100, before } = {}) { await this.ready; return this.#client.request('history.query', { text, limit, before }); }
   // {url} or {from, to} (ms since the epoch).
   // Downloads a URL with the page's cookies, as "Save link as" does.
-  async download(url) { await this.ready; this.#profileSend('download.start', { url: String(url) }); }
-  async cancelDownload(id) { await this.ready; this.#profileSend('download.cancel', { id }); }
+  async download(url) { await this.ready; this.#requireHost('download()'); this.#profileSend('download.start', { url: String(url) }); }
+  async cancelDownload(id) { await this.ready; this.#requireHost('cancelDownload()'); this.#profileSend('download.cancel', { id }); }
   // An editing command in the focused frame: 'Copy', 'Cut', 'Paste', 'SelectAll', 'Undo', 'Redo'.
   async edit(command) {
     await this.ready;
     // The embedder asked for it, which is as good as the person asking.
     this.#lastInput = performance.now();
+    if (this.#remote) return this.#remote.display?.input('edit', { command: String(command) });
     this.#runtime.send('edit', { command: String(command) });
   }
-  async pauseDownload(id) { await this.ready; this.#profileSend('download.pause', { id }); }
-  async resumeDownload(id) { await this.ready; this.#profileSend('download.resume', { id }); }
+  async pauseDownload(id) { await this.ready; this.#requireHost('pauseDownload()'); this.#profileSend('download.pause', { id }); }
+  async resumeDownload(id) { await this.ready; this.#requireHost('resumeDownload()'); this.#profileSend('download.resume', { id }); }
   async deleteHistory(range) { await this.ready; return this.#client.request('history.delete', range); }
 
   // The debug methods run script in the page's realm and send raw engine
@@ -411,12 +457,13 @@ export class InceptionView extends HTMLElement {
   // policed agent namespace. `window`: the window it is bound to (default 1);
   // it acts on that window only.
   serve(transport, { capabilities = ['view'], window = 1 } = {}) {
+    this.#requireHost('serve()');
     return this.#server.connect(transport, { allow: capabilities, window });
   }
 
   // The windows of this view's engine, window 1 (the view) first.
   get windows() {
-    return [...this.#windows.values()].map((record) => record.info());
+    return this.#remote ? [] : [...this.#windows.values()].map((record) => record.info());
   }
 
   // Opens another window of this view's engine: same profile, cookies,
@@ -426,6 +473,7 @@ export class InceptionView extends HTMLElement {
   // instead of policy.hosts.
   async openWindow({ width = 800, height = 600, url = '', deviceScaleFactor = devicePixelRatio, hosts } = {}) {
     await this.ready;
+    this.#requireHost('openWindow()');
     const { window } = await this.#client.request('windows.create', { width, height, url, deviceScaleFactor, ...(hosts ? { hosts } : {}) });
     return this.window(window);
   }
@@ -443,12 +491,14 @@ export class InceptionView extends HTMLElement {
   // document, RGBA pixels otherwise), 'bitmap' or 'pixels'.
   exportWindow(id, { frames = 'auto' } = {}) {
     if (!['auto', 'bitmap', 'pixels'].includes(frames)) throw new TypeError("frames is 'auto', 'bitmap' or 'pixels'");
+    this.#requireHost('exportWindow()');
     const record = this.#windows.get(id);
     if (!record || record.closed || id === 1) throw new Error(`no window ${id} to export (window 1 is the view itself)`);
     const { port1, port2 } = new MessageChannel();
     const served = serveDisplay(port1, {
       frames,
       send: this.#inputSender(record),
+      sendMedia: (command, args) => record.slot.runtime.send(command, args),
       onVisibility: (visible) => this.#setVisible(record, visible),
       onClose: () => {
         if (record.display === served) this.#detachDisplay(record);
@@ -484,14 +534,26 @@ export class InceptionView extends HTMLElement {
     record.display = display;
     record.detachSink?.();
     record.detachSink = record.slot.runtime.attachDisplay(record.slot.localOf(record.id), sink);
+    // A display in another document plays this window's videos itself.
+    if (display.media && record.media) record.media.host = display.media;
     this.#setVisible(record, true);
   }
 
   #detachDisplay(record) {
+    const display = record.display;
     record.detachSink?.();
     record.detachSink = null;
     record.display = null;
-    if (record.media) record.media.host.setMaster({ volume: 0, muted: true });
+    if (record.media) {
+      record.media.host = record.media.local;
+      record.media.host.setMaster({ volume: 0, muted: true });
+    }
+    // Sound it was playing goes back to this document.
+    for (const [id, entry] of record.slot?.remoteRings ?? []) {
+      if (entry.display !== display) continue;
+      record.slot.remoteRings.delete(id);
+      record.slot.audio.open(entry.ring);
+    }
     if (!record.closed) this.#setVisible(record, false);
   }
 
@@ -542,25 +604,45 @@ export class InceptionView extends HTMLElement {
     return this.#agentClient;
   }
 
+  // The profile's lock decides the role. The document that holds it runs the
+  // engine; a view in any other document attaches to that one (or, if it
+  // cannot, says why). Views of a profile whose service already runs in this
+  // document share it and need no lock.
   async #start() {
     if (!config.engineUrl) throw new Error('Inception.configure({engineUrl, relayUrl}) first');
     const profile = this.getAttribute('profile') ?? config.storage?.profile ?? 'default';
+    const shared = this.#isolation() === 'window' && (ProfileService.running(profile) || config.storage?.ephemeral === true);
+    if (shared) return this.#startHost(profile, { lock: null });
+    const lock = await tryLock(profileLockName(profile));
+    return lock ? this.#startHost(profile, { lock }) : this.#startAttached(profile);
+  }
+
+  #attachEnabled() {
+    return config.attach !== false && this.getAttribute('attach') !== 'off';
+  }
+
+  // This document holds the profile. `url`: where window 1 starts (the one it
+  // had, for a view that took the profile over from its host).
+  async #startHost(profile, { lock, url = this.getAttribute('src') ?? '' }) {
     const fresh = this.hasAttribute('fresh-profile') || config.storage?.fresh === true;
     const isolation = this.#isolation();
+    // Before the engine starts, so another document can tell this one accepts
+    // attachments while it is still starting.
+    if (lock && this.#attachEnabled() && !attachHosts.has(profile)) {
+      this.#attachHost = await AttachHost.claim(profile);
+      attachHosts.set(profile, this.#attachHost);
+    }
     if (isolation === 'window') {
       // The service holds the profile (and its Web Lock); views of the same
       // profile in this document share it.
-      this.#service = ProfileService.acquire({ engineUrl: config.engineUrl, relayUrl: config.relayUrl, profile, fresh, ephemeral: config.storage?.ephemeral === true, preferences: this.#preferences.resolved(), debug: this.#debugEnabled(), maxMemoryMB: config.maxMemoryMB });
+      if (lock && ProfileService.running(profile)) {
+        lock.release();
+        lock = null;
+      }
+      this.#service = ProfileService.acquire({ engineUrl: config.engineUrl, relayUrl: config.relayUrl, profile, fresh, ephemeral: config.storage?.ephemeral === true, preferences: this.#preferences.resolved(), debug: this.#debugEnabled(), maxMemoryMB: config.maxMemoryMB, lock });
       await this.#service.start();
       this.#watchService(this.#service);
-    } else if (navigator.locks) {
-      // A profile's files are open by one engine at a time: the second tab would
-      // get read-only file handles. Held for the life of this page.
-      const acquired = await new Promise((resolve) => navigator.locks.request(`inception-profile:${profile}`, { ifAvailable: true }, (lock) => {
-        resolve(!!lock);
-        return lock ? new Promise(() => {}) : undefined;
-      }));
-      if (!acquired) throw new Error(`The profile "${profile}" is already open in another tab or window. Close it there, or open this page with a different profile.`);
+    } else {
       navigator.storage?.persist?.().catch(() => {});
     }
     const primary = this.#createSlot({ primary: true });
@@ -605,7 +687,7 @@ export class InceptionView extends HTMLElement {
 
     const { width, height } = this.#cssSize();
     const gpu = this.getAttribute('gpu') ?? 'auto';
-    const ready = await this.#startSlot(primary, { width, height, deviceScaleFactor: devicePixelRatio, url: this.getAttribute('src') ?? '', gpu }, async () => {
+    const ready = await this.#startSlot(primary, { width, height, deviceScaleFactor: devicePixelRatio, url, gpu }, async () => {
       await this.#client.hello(this.#capabilities());
     });
     this.#tabs.started(ready.tab ?? 1);
@@ -619,7 +701,79 @@ export class InceptionView extends HTMLElement {
       if (document.fullscreenElement !== this) this.#main.channel.send('fullscreen.changed', { active: false });
       this.dispatchEvent(new CustomEvent('fullscreen', { detail: { active: document.fullscreenElement === this } }));
     });
+    this.#attachHost?.serve(this, { policy });
+    this.dataset.role = 'host';
     return ready;
+  }
+
+  // Another document holds the profile: this view shows a window of it and
+  // takes the profile over if that document goes away first (the next in line
+  // for the lock does).
+  async #startAttached(profile) {
+    const busy = `The profile "${profile}" is already open in another tab or window. Close it there, or open this page with a different profile.`;
+    if (!this.#attachEnabled() || !(await hostPresent(profile))) throw new Error(busy);
+    const connection = await new ProfileConnection(profile).connect();
+    this.#connection = connection;
+    const { width, height } = this.#cssSize();
+    const remote = await connection.open({ width, height, deviceScaleFactor: devicePixelRatio, url: this.getAttribute('src') ?? '' });
+    this.#remote = remote;
+    this.#client = { request: (method, params) => remote.request(method, params) };
+    this.#watchRemote(remote, connection);
+    remote.show(this.#canvas, {
+      element: this, textInput: this.#textInput, menuRoot: this.#shadow, mediaLayer: this.#mediaLayer, dialogTarget: this,
+      dialogs: policy().dialogs, clipboard: policy().clipboard !== false, volume: this.#volume, muted: this.#muted, soundAllowed: this.hasAttribute('autoplay-sound') || policy().autoplaySound,
+    });
+    if (document.activeElement === this) this.focusInput();
+    // Waits in line for the profile: when its host goes away and this is the
+    // next document in line, this view becomes the host.
+    this.#standby = new AbortController();
+    waitLock(profileLockName(profile), this.#standby.signal).then((lock) => lock && this.#promote(profile, lock));
+    this.dataset.renderer = 'remote';
+    this.dataset.role = 'client';
+    return { renderer: 'remote', window: remote.id };
+  }
+
+  #watchRemote(remote, connection) {
+    for (const name of VIEW_EVENTS)
+      remote.addEventListener(DOM_EVENT_NAMES[name] ?? name, (e) => this.dispatchEvent(new CustomEvent(DOM_EVENT_NAMES[name] ?? name, { detail: e.detail })));
+    for (const name of ['tabcreated', 'tabupdated', 'tabactivated', 'tabclosed', 'popupblocked'])
+      remote.addEventListener(name, (e) => this.dispatchEvent(new CustomEvent(name, { detail: e.detail })));
+    remote.addEventListener('navigate', (e) => this.#provenance.navigated(e.detail.url));
+    // A page of the window opened another window: the embedder shows it or not.
+    remote.addEventListener('windowopen', (e) => {
+      const forwarded = new CustomEvent('windowopen', { cancelable: true, detail: e.detail });
+      this.dispatchEvent(forwarded);
+      if (forwarded.defaultPrevented) e.preventDefault();
+    });
+    connection.addEventListener('hostlost', () => {
+      this.dataset.role = 'reconnecting';
+      this.#showMessage('The tab that holds this profile went away. Waiting for another one to take over...');
+      this.dispatchEvent(new CustomEvent('hostlost'));
+    });
+    connection.addEventListener('attached', (e) => {
+      if (!e.detail.host) return;
+      this.dataset.role = 'client';
+      this.#hideMessage();
+      this.dispatchEvent(new CustomEvent('reattached'));
+    });
+  }
+
+  // The profile's lock came to this document: the view stops being a client
+  // and runs the profile itself, starting where its window was.
+  #promote(profile, lock) {
+    const url = this.#remote?.state.url || this.getAttribute('src') || '';
+    this.#connection?.close('this tab took over the profile');
+    this.#connection = null;
+    this.#remote = null;
+    this.#client = null;
+    this.#hideMessage();
+    const ready = this.#startHost(profile, { lock, url });
+    this.#ready = ready;
+    ready.then(() => this.dispatchEvent(new CustomEvent('promoted')), (error) => {
+      const reason = String(error?.message ?? error);
+      this.#showMessage(reason);
+      this.dispatchEvent(new CustomEvent('crash', { detail: { reason } }));
+    });
   }
 
   #pageCode = null;
@@ -646,9 +800,15 @@ export class InceptionView extends HTMLElement {
     };
     runtime.onAudioDecode = (request) => slot.audio.decode(request, (size) => runtime.malloc(size));
     runtime.onEngineEvent = (name, data) => this.#onSlotEvent(slot, name, data);
-    runtime.onAsk = (question) => {
+    runtime.onAsk = async (question) => {
       if (Number.isInteger(question?.window)) question.window = slot.publicOf(question.window);
-      return answerDialog(this.#recordOf(question, slot)?.target ?? this, question, policy);
+      const record = this.#recordOf(question, slot);
+      // A display in another document raises the dialog itself.
+      if (record?.display?.ask) {
+        const value = await record.display.ask(question);
+        if (value !== undefined) return value;
+      }
+      return answerDialog(record?.target ?? this, question, policy);
     };
     runtime.onMediaAppend = ({ id, sb, seq, bytes }) => this.#mediaHosts(slot).find((media) => media.hasPlayer(id))?.append(id, sb, seq, bytes);
     runtime.wasmTranslator = translator;
@@ -740,8 +900,8 @@ export class InceptionView extends HTMLElement {
       record.tabs.handleEvent(name, data);
       if (name === 'tab.activated') this.#showTab(record, data.tab);
     }
-    if (name === 'audio.open') slot.audio.open(data);
-    if (name === 'audio.close') slot.audio.close(data);
+    if (name === 'audio.open') this.#audioOpen(slot, data);
+    if (name === 'audio.close') this.#audioClose(slot, data);
     if (name.startsWith('permission.') || name.startsWith('geolocation.') || name.startsWith('notification.')) slot.modules.handleEvent(name, data);
     if (DISPLAY_EVENT_NAMES.has(name)) {
       const display = record?.display;
@@ -752,6 +912,28 @@ export class InceptionView extends HTMLElement {
     if (name === 'field.focus') this.#provenanceOf(record)?.fieldFocused(data.kind, data.origin);
     if (name === 'clipboard.write' && this.#mayWriteClipboard()) writeClipboard(data.items);
     if (record && record !== this.#main) record.channel.dispatchEvent(new CustomEvent(name, { detail: data }));
+  }
+
+  // Web Audio of an engine plays in this document, unless the window that engine
+  // was made for is shown by another document: then the samples go there.
+  // The engine does not say which window an audio context belongs to, so this
+  // is exact for an engine with one window (isolation 'window') and leaves
+  // the sound with the view's own display otherwise.
+  #audioOpen(slot, ring) {
+    const display = slot.root?.display;
+    if (display?.audio) {
+      display.audio.open(ring, slot.runtime.memory());
+      slot.remoteRings.set(ring.id, { display, ring });
+    } else {
+      slot.audio.open(ring);
+    }
+  }
+
+  #audioClose(slot, { id }) {
+    const remote = slot.remoteRings.get(id);
+    if (!remote) return slot.audio.close({ id });
+    slot.remoteRings.delete(id);
+    remote.display.audio.close(id);
   }
 
   // An engine crashed. The view's own engine takes window 1 and its windows
@@ -875,7 +1057,7 @@ export class InceptionView extends HTMLElement {
     // Its videos play muted, off screen, until a display here shows it.
     const host = new MediaHost(document.createElement('div'), (command, args) => slot.runtime.send(command, args), { soundAllowed: this.#soundAllowed, eme: slot.eme, audio: slot.audio });
     host.setMaster({ volume: 0, muted: true });
-    record.media = { host };
+    record.media = { host, local: host };
     if (this.#agentEnabled()) record.agent = this.#createAgent(record);
     this.#windows.set(id, record);
     this.#windowHandles.set(id, handle);
@@ -955,6 +1137,10 @@ export class InceptionView extends HTMLElement {
     this.#provenanceOf(record)?.navigated(tab.url);
     for (const [name, detail] of [['navigate', { url: tab.url }], ['title', { title: tab.title }], ['loading', { loading: tab.loading }]])
       this.#server?.emit(name, { tab: id, ...detail }, 'view', record.id);
+  }
+
+  #hideMessage() {
+    this.#shadow.querySelector('.message:not(.tamper)')?.remove();
   }
 
   // Why the view cannot start, shown in the view itself so it never just stays

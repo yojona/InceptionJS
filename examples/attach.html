@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InceptionJS: one profile, several tabs</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; background: #f4f4f5; }
+  header { display: flex; gap: 8px; align-items: center; padding: 8px; flex-wrap: wrap; }
+  header input { flex: 1; min-width: 200px; padding: 6px 8px; font: inherit; }
+  #role { padding: 2px 8px; border-radius: 10px; background: #e4e4e7; }
+  inception-view { width: 100vw; height: calc(100vh - 52px); background: #fff; }
+</style>
+<header>
+  <strong>Role</strong> <span id="role">starting</span>
+  <input id="address" value="https://example.com/" autocomplete="off" spellcheck="false" aria-label="Address">
+  <button type="button" id="go">Go</button>
+  <button type="button" id="popup">Open in a popup</button>
+</header>
+<inception-view id="view"></inception-view>
+<script type="module">
+  import { Inception } from '../host/inception-view.js';
+
+  // The same page is the host in the first tab and a client in the others:
+  // whichever tab holds the profile runs the engine, the rest show a window of
+  // it. ?profile= names the profile, ?isolation=window gives each window an
+  // engine of its own, ?attach=off restores the error for a second tab.
+  const params = new URLSearchParams(location.search);
+  Inception.configure({
+    engineUrl: new URL('../engine/inception-engine.js', import.meta.url).href,
+    relayUrl: params.get('relay') ?? `ws://${location.hostname}:5001/`,
+    debug: params.get('debug') !== '0',
+    isolation: params.get('isolation') ?? 'shared',
+    attach: params.get('attach') !== 'off',
+    policy: { newTabs: 'foreground', dialogs: params.get('dialogs') ?? 'dismiss', popups: params.get('popups') ?? 'tab' },
+  });
+
+  const $ = (id) => document.getElementById(id);
+  const view = $('view');
+  view.setAttribute('profile', params.get('profile') ?? 'attach-example');
+  if (params.get('persist') === 'clear') view.setAttribute('fresh-profile', '');
+  if (params.get('url')) view.setAttribute('src', $('address').value = params.get('url'));
+  const showRole = () => ($('role').textContent = view.dataset.role ?? 'starting');
+  new MutationObserver(showRole).observe(view, { attributes: true, attributeFilter: ['data-role'] });
+  view.addEventListener('navigate', (e) => ($('address').value = e.detail.url));
+  view.addEventListener('title', (e) => (document.title = e.detail.title || 'InceptionJS'));
+  view.addEventListener('crash', (e) => ($('role').textContent = `stopped: ${e.detail.reason}`));
+  $('go').onclick = () => view.navigate($('address').value);
+  $('address').addEventListener('keydown', (e) => e.key === 'Enter' && view.navigate($('address').value));
+  // A popup of this page keeps its link to it (same origin, same isolation
+  // headers), so it can attach without a shared worker.
+  $('popup').onclick = () => open(location.href, '_blank', 'popup,width=900,height=700');
+</script>
