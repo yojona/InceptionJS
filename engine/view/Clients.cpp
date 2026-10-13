@@ -1,5 +1,6 @@
 #include "config.h"
 #include "view/Clients.h"
+#include "view/SiteLock.h"
 
 #include "CertificateInfo.h"
 #include "CertificateSummary.h"
@@ -513,7 +514,20 @@ String FrameLoaderClientImpl::userAgent(const URL& url) const
 
 void FrameLoaderClientImpl::dispatchDecidePolicyForNavigationAction(const NavigationAction& action, const ResourceRequest& request, const ResourceResponse&, FormState* formState, const String&, std::optional<NavigationIdentifier>, std::optional<HitTestResult>&&, bool, NavigationUpgradeToHTTPSBehavior, SandboxFlags, PolicyDecisionMode, FramePolicyFunction&& function)
 {
-    function(Agent::allowsNavigation(m_view, action, request, formState) ? PolicyAction::Use : PolicyAction::Ignore);
+    if (!Agent::allowsNavigation(m_view, action, request, formState)) {
+        function(PolicyAction::Ignore);
+        return;
+    }
+    // isolation 'site': another site's page opens in an engine of its own (a
+    // redirect to one too: this check runs again for every hop).
+    if (isMainFrame() && !SiteLock::keeps(request.url())) {
+        function(PolicyAction::Ignore);
+        auto& requester = action.requester();
+        WindowScope scope(m_view);
+        SiteLock::reportCrossSite(m_view.id(), request, requester ? requester->securityOrigin->toString() : String { }, action.processingUserGesture());
+        return;
+    }
+    function(PolicyAction::Use);
 }
 
 void FrameLoaderClientImpl::dispatchDecidePolicyForResponse(const ResourceResponse& response, const ResourceRequest& request, const String& downloadAttribute, FramePolicyFunction&& function)
