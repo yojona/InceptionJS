@@ -83,7 +83,8 @@ static void finishRaw(uint64_t id, const String& error)
     emitEvent("debug.rawLoad.result"_s, WTF::move(data));
 }
 
-// {id, url, mode ("cors", "no-cors", "navigate"), origin?, firstParty?}
+// {id, url, mode ("cors", "no-cors", "navigate"), origin?, firstParty?}:
+// a GET with the engine's user agent and cookies allowed (the service decides).
 void RemoteLoad::registerDebugCommands()
 {
     registerCommand("debug.rawLoad"_s, [](JSON::Object& args) {
@@ -93,6 +94,10 @@ void RemoteLoad::registerDebugCommands()
         static uint64_t lastID = 1ull << 52;
         auto id = ++lastID;
         ResourceRequest request { URL { args.getString("url"_s) } };
+        request.setAllowCookies(true);
+        // What a page's request carries anyway (some servers refuse requests
+        // without a user agent).
+        request.setHTTPUserAgent(View::singleton() && !View::singleton()->userAgent().isEmpty() ? View::singleton()->userAgent() : "Mozilla/5.0"_s);
         auto origin = args.getString("origin"_s);
         if (!origin.isEmpty())
             request.setHTTPHeaderField(HTTPHeaderName::Origin, origin);
