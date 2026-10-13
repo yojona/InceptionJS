@@ -124,11 +124,15 @@ export function attachInput(element, canvas, textInput, send, { clipboard = true
 // this within the user's gesture, which the copy shortcut was.
 export async function writeClipboard(items) {
   try {
+    // The engine names types with parameters ("text/plain;charset=utf-8").
     const parts = {};
-    for (const [type, value] of Object.entries(items))
-      if (type === 'text/plain' || type === 'text/html') parts[type] = new Blob([value], { type });
+    for (const [type, value] of Object.entries(items)) {
+      const base = type.split(';')[0].trim();
+      if (base === 'text/plain' || base === 'text/html') parts[base] = new Blob([value], { type: base });
+    }
     if (Object.keys(parts).length) await navigator.clipboard.write([new ClipboardItem(parts)]);
   } catch {
-    if (items['text/plain'] !== undefined) await navigator.clipboard.writeText(items['text/plain']).catch(() => {});
+    const text = Object.entries(items).find(([type]) => type.split(';')[0].trim() === 'text/plain')?.[1];
+    if (text !== undefined) await navigator.clipboard.writeText(text).catch(() => {});
   }
 }
