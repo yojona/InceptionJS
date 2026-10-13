@@ -218,7 +218,14 @@ public:
     // A change the service numbered `sequence`; `mine`: this engine made it.
     void apply(uint64_t sequence, StorageChange change, const String& key, const String& oldValue, const String& newValue, const String& url, bool mine)
     {
-        if (!m_loaded || sequence <= m_sequence)
+        // Documents that never read the area still hear of the change; the
+        // map itself is read when first used.
+        if (!m_loaded) {
+            if (!mine)
+                dispatchLocalStorageChange(m_origin, key, oldValue, newValue, url, nullptr);
+            return;
+        }
+        if (sequence <= m_sequence)
             return;
         m_sequence = sequence;
         bool differs = false;
@@ -366,7 +373,6 @@ public:
         return false;
     }
 
-    HashSet<unsigned> holders;
     uint64_t sequence { 0 };
 
 private:
@@ -399,19 +405,18 @@ static ServiceStorageArea& serviceArea(const SecurityOriginData& origin)
 
 void installStorageService()
 {
-    // {origin} -> {sequence, items}: the caller holds a copy from now on.
-    Link::handleSync(Message::StorageLoad, [](Link& link, Decoder& decoder, Encoder& reply) {
+    // {origin} -> {sequence, items}
+    Link::handleSync(Message::StorageLoad, [](Link&, Decoder& decoder, Encoder& reply) {
         auto origin = decoder.decode<SecurityOriginData>();
         if (!origin)
             return false;
         auto& area = serviceArea(*origin);
-        area.holders.add(link.id());
         reply.u64(area.sequence);
         reply << area.items();
         return true;
     });
-    // {origin, change, key, value, url}: every holder hears it, numbered; the
-    // engine that made it only to keep its order.
+    // {origin, change, key, value, url}: every content engine hears it,
+    // numbered; the one that made it only to keep its order.
     Link::handle(Message::StorageChange, [](Link& link, Decoder& decoder) {
         auto origin = decoder.decode<SecurityOriginData>();
         auto change = decoder.decode<StorageChange>();
@@ -425,10 +430,12 @@ void installStorageService()
         if (!area.apply(*change, *key, *value, oldValue))
             return;
         auto sequence = ++area.sequence;
-        for (auto holder : area.holders) {
-            RefPtr target = Link::byID(holder);
-            if (!target)
+        // Every content engine hears it: those holding the map apply it, and
+        // documents of the origin elsewhere get their storage event.
+        for (auto& target : Link::all()) {
+            if (!target->isServiceEnd() || !target->isOpen())
                 continue;
+            auto holder = target->id();
             Encoder encoder;
             encoder << *origin;
             encoder.u64(sequence);
@@ -436,12 +443,6 @@ void installStorageService()
             encoder.boolean(holder == link.id());
             target->send(Message::StorageChanged, WTF::move(encoder));
         }
-    });
-    Link::addCloseObserver([](Link& link) {
-        if (!link.isServiceEnd())
-            return;
-        for (auto& area : serviceAreas().values())
-            area->holders.remove(link.id());
     });
 }
 
@@ -462,6 +463,8 @@ void installStorageProxy()
         auto it = ProxyStorageArea::areas().find(*origin);
         if (it != ProxyStorageArea::areas().end())
             Ref { it->value }->apply(*sequence, *change, *key, *oldValue, *newValue, *url, *mine);
+        else if (!*mine)
+            dispatchLocalStorageChange(*origin, *key, *oldValue, *newValue, *url, nullptr);
     });
     Link::addCloseObserver([](Link& link) {
         if (link.isServiceEnd())
