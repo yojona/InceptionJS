@@ -256,7 +256,7 @@ export class InceptionView extends HTMLElement {
     this.#media = new MediaHost(this.#mediaLayer, (command, args) => this.#runtime.send(command, args), { soundAllowed, eme, audio });
     this.#applyLevel();
     const modules = new Modules(this, (command, args) => this.#runtime.send(command, args), config.modules);
-    const downloads = new Downloads(this);
+    const downloads = new Downloads(this, (command, args) => this.#runtime.send(command, args), policy);
     this.#runtime.onDownloadChunk = (chunk) => (this.#media.ownsFetch(chunk.id) ? this.#media.fetchChunk(chunk) : downloads.chunk(chunk));
     this.#runtime.onAudioDecode = (request) => audio.decode(request, (size) => this.#runtime.malloc(size));
     this.#runtime.onEngineEvent = (name, data) => {
