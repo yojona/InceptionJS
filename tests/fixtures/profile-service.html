@@ -5,6 +5,7 @@
 <script type="module">
   import { EngineRuntime } from '../../host/runtime.js';
   import { ProfileService } from '../../host/profile-service.js';
+  import { probeOpfs } from '../../host/opfs.js';
 
   const engineUrl = new URL('../../engine/inception-engine.js', import.meta.url).href;
   const params = new URLSearchParams(location.search);
@@ -29,7 +30,7 @@
     const runtime = new EngineRuntime({ engineUrl, role: role === 'content' ? 'content' : 'standalone' });
     await runtime.start();
     const ready = once(runtime, 'ready');
-    runtime.send('init', { ...(role === 'content' ? { role } : { profile: `standalone-${Date.now()}`, freshProfile: true }), width: 320, height: 240, deviceScaleFactor: 1, gpu: false, url: '', debug: true, wispUrl: relayUrl });
+    runtime.send('init', { ...(role === 'content' ? { role } : { profile: `standalone-${Date.now()}`, freshProfile: true, opfs: await probeOpfs() }), width: 320, height: 240, deviceScaleFactor: 1, gpu: false, url: '', debug: true, wispUrl: relayUrl });
     const detail = await ready;
     const entry = { runtime, link: null, ready: detail, crashed: null };
     runtime.addEventListener('crash', (e) => (entry.crashed = e.detail));
