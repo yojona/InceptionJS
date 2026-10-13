@@ -12,6 +12,7 @@
 #include "media/MediaBridge.h"
 #include "modules/Modules.h"
 #include "net/Download.h"
+#include "net/LinkPolicy.h"
 #include "net/RemoteLoad.h"
 #include "net/ServiceLoad.h"
 #include "net/SharedCookies.h"
@@ -109,7 +110,10 @@ static void startProfileService(JSON::Object& args)
 {
     setRole(Role::Profile);
     bool ephemeral = args.getBoolean("ephemeral"_s).value_or(false);
-    bool persistent = Disk::mount(ephemeral ? Disk::Storage::Memory : Disk::Storage::Persistent);
+    // `opfs` false: the host found the origin-private file system unusable
+    // (a private window, say), so the profile stays in memory.
+    bool usable = args.getBoolean("opfs"_s).value_or(true);
+    bool persistent = Disk::mount(ephemeral || !usable ? Disk::Storage::Memory : Disk::Storage::Persistent);
     Profile::select(args.getString("profile"_s), args.getBoolean("freshProfile"_s).value_or(false));
     Sockets::configure(args.getString("wispUrl"_s));
     if (auto preferences = args.getObject("preferences"_s))
@@ -117,6 +121,7 @@ static void startProfileService(JSON::Object& args)
     installServiceLoads();
     installServiceWebSockets();
     installCookieService();
+    LinkPolicy::registerCommands();
     installStorageService();
     installIDBService();
     Download::installService();
@@ -180,7 +185,7 @@ static void registerCommands()
         if (!content)
             Sockets::configure(args.getString("wispUrl"_s));
         // Before the page exists: storage opens its files on first use.
-        bool persistent = Disk::mount(content ? Disk::Storage::Memory : Disk::Storage::Persistent);
+        bool persistent = Disk::mount(content || !args.getBoolean("opfs"_s).value_or(true) ? Disk::Storage::Memory : Disk::Storage::Persistent);
         Profile::select(args.getString("profile"_s), args.getBoolean("freshProfile"_s).value_or(false));
         auto mode = Renderer::singleton().initialize(expandedIntSize(FloatSize(cssSize) * scale), preferGPU, args.getInteger("webglContexts"_s).value_or(0));
         View::create(cssSize, scale);
