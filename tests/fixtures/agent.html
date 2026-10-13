@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Agent</title>
+<style>
+  body { font: 16px sans-serif; margin: 16px; }
+  .wrap { position: relative; display: inline-block; }
+  .cover { position: absolute; inset: 0; background: #fff; }
+</style>
+<h1>Agent fixture</h1>
+<p>Plain text for the snapshot.</p>
+<nav><a id="docs" href="https://example.com/docs">Read the docs</a></nav>
+<p><label>Name <input id="name" name="name" placeholder="Your name"></label></p>
+<p><label><input type="checkbox" id="agree"> I agree</label></p>
+<p><label>Fruit <select id="fruit"><option>Apple</option><option value="b">Banana</option><option>Cherry</option></select></label></p>
+<p><button id="count">Click me</button> <input id="next" aria-label="Next field"></p>
+<p class="wrap"><button id="covered">Covered button</button><span class="cover">A banner</span></p>
+<table id="prices"><tr><th>Item</th><th>Price</th></tr><tr><td>Tea</td><td>3</td></tr></table>
+<div style="height: 1600px"></div>
+<button id="far">Far below</button>
+<script>
+  var events = [];
+  var clicks = 0;
+  for (const type of ['click', 'input', 'change', 'keydown'])
+    document.addEventListener(type, (e) => events.push(`${type}:${e.target.id}:${e.isTrusted}`), true);
+  document.getElementById('count').addEventListener('click', (e) => { clicks++; e.target.textContent = `Clicked ${clicks}`; });
+  setTimeout(() => document.body.insertAdjacentHTML('beforeend', '<p id="late">Loaded later</p>'), 800);
+</script>
