@@ -1,6 +1,8 @@
 // Development server: the repository with the headers InceptionJS needs
 // (cross-origin isolation for SharedArrayBuffer). /engine/ maps to the build
-// output. No caching, so a rebuilt engine is picked up on reload.
+// output. No caching, so a rebuilt engine is picked up on reload. /plain/x
+// serves x without isolation headers, for documents that must not be isolated
+// (a display of a window drawn by another document).
 //   node tests/serve.mjs            PORT (8085), HOST (127.0.0.1), ENGINE_DIR
 import { createServer } from 'node:http';
 import { createReadStream, statSync } from 'node:fs';
@@ -33,7 +35,9 @@ function resolvePath(pathname) {
 }
 
 createServer((req, res) => {
-  const { pathname } = new URL(req.url, 'http://localhost');
+  let { pathname } = new URL(req.url, 'http://localhost');
+  const plain = pathname.startsWith('/plain/');
+  if (plain) pathname = pathname.slice('/plain'.length);
   let file = resolvePath(pathname === '/' ? '/examples/basic.html' : pathname);
   try {
     if (file && statSync(file).isDirectory()) file = join(file, 'index.html');
@@ -45,9 +49,11 @@ createServer((req, res) => {
   res.writeHead(200, {
     'Content-Type': types[extname(file)] ?? 'application/octet-stream',
     'Cache-Control': 'no-store',
-    'Cross-Origin-Opener-Policy': 'same-origin',
-    'Cross-Origin-Embedder-Policy': 'require-corp',
-    'Cross-Origin-Resource-Policy': 'same-origin',
+    ...(plain ? {} : {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+      'Cross-Origin-Resource-Policy': 'same-origin',
+    }),
   });
   createReadStream(file).pipe(res);
 }).listen(port, host, () => console.log(`InceptionJS dev server on http://${host}:${port}/`));

@@ -2,7 +2,7 @@
 // compared against, writes a JSON report, and fails when a budget is exceeded.
 //
 //   node tests/perf/run.mjs [--out report.json] [--budgets tests/perf/budgets.json]
-//                           [--only startup,load,scroll,media,memory]
+//                           [--only startup,load,scroll,media,memory,windows]
 //   ENGINE_DIR=<dir with inception-engine.*>   (default .work/out/engine)
 //   PORT=<dev server port>                     (default 8090)
 //
@@ -23,7 +23,7 @@ const { values: args } = parseArgs({
   options: {
     out: { type: 'string', default: '' },
     budgets: { type: 'string', default: resolve(root, 'tests/perf/budgets.json') },
-    only: { type: 'string', default: 'startup,load,scroll,media,memory' },
+    only: { type: 'string', default: 'startup,load,scroll,media,memory,windows' },
   },
 });
 const sections = new Set(args.only.split(','));
@@ -226,6 +226,60 @@ try {
       PAGES.youtubeWatch,
     );
     metric('media.timeToFirstFrame.youtubeWatch', ttff, 'ms');
+    await page.close();
+  }
+  // Two visible windows of one engine at different sizes, both animating:
+  // every presented frame resizes the shared canvas. Frame times per window
+  // against one window alone, and what the second window costs in memory.
+  if (sections.has('windows')) {
+    const page = await browser.newPage({ viewport: { width: 1024, height: 900 } });
+    await page.addInitScript(() => {
+      window.__byCanvas = new Map();
+      const original = ImageBitmapRenderingContext.prototype.transferFromImageBitmap;
+      ImageBitmapRenderingContext.prototype.transferFromImageBitmap = function (bitmap) {
+        const list = window.__byCanvas.get(this.canvas) ?? [];
+        list.push(performance.now());
+        window.__byCanvas.set(this.canvas, list);
+        return original.call(this, bitmap);
+      };
+    });
+    await openView(page, 'about:blank');
+    await page.evaluate(() => document.getElementById('view').ready);
+    const animate = (window) => page.evaluate((w) => document.getElementById('view').debugEvaluate(`document.body.style.margin = '0'; document.body.style.height = '100vh';
+      let hue = 0; (function step() { document.body.style.background = 'hsl(' + (hue = (hue + 7) % 360) + ' 70% 50%)'; requestAnimationFrame(step); })(); 'ok'`, { window: w }), window);
+    const measure = async (ms) => {
+      await page.evaluate(() => window.__byCanvas.clear());
+      await wait(ms);
+      return page.evaluate(() => [...window.__byCanvas.values()].map((times) => times.slice(1).map((t, i) => t - times[i])));
+    };
+    await animate(1);
+    await wait(1000);
+    const [alone] = await measure(5000);
+    metric('windows.one.frameTime.p50', percentile(alone ?? [], 50), 'ms');
+    metric('windows.one.frameTime.p95', percentile(alone ?? [], 95), 'ms');
+    const before = await page.evaluate(() => document.getElementById('view').debugHeap());
+    const id = await page.evaluate(async () => {
+      const view = document.getElementById('view');
+      const handle = await view.openWindow({ width: 480, height: 320, url: 'about:blank' });
+      const element = document.createElement('inception-window');
+      element.style.cssText = 'width: 480px; height: 320px; display: block';
+      element.view = view;
+      element.setAttribute('window', String(handle.id));
+      document.body.append(element);
+      return handle.id;
+    });
+    await wait(1500);
+    await animate(id);
+    await wait(1000);
+    const both = await measure(5000);
+    const intervals = both.flat();
+    metric('windows.two.frameTime.p50', percentile(intervals, 50), 'ms');
+    metric('windows.two.frameTime.p95', percentile(intervals, 95), 'ms');
+    metric('windows.two.framesPerWindow', Math.min(...both.map((list) => list.length)) / 5, 'fps');
+    const after = await page.evaluate(() => document.getElementById('view').debugHeap());
+    metric('windows.secondWindow.wasmMemory', (after.memory - before.memory) / 1e6, 'MB');
+    metric('windows.secondWindow.jsHeap', (after.heapSize - before.heapSize) / 1e6, 'MB');
+    report.samples['windows.two.frameTimes'] = both.map((list) => list.map((v) => Math.round(v * 10) / 10));
     await page.close();
   }
 } finally {
