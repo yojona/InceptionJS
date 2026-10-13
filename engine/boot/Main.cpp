@@ -80,6 +80,10 @@ static void registerCommands()
     registerCommand("init"_s, [](JSON::Object& args) {
         if (View::singleton())
             return;
+        // The debug commands run script in the page and inject it into every
+        // window: they exist only when the embedder turned debugging on.
+        if (args.getBoolean("debug"_s).value_or(false))
+            registerDebugCommands();
         auto cssSize = sizeFrom(args);
         float scale = args.getDouble("deviceScaleFactor"_s).value_or(1);
         bool preferGPU = args.getBoolean("gpu"_s).value_or(true);
@@ -177,7 +181,6 @@ int main()
     Inception::registerInputCommands();
     Inception::registerPreferenceCommands();
     Inception::Media::install();
-    Inception::registerDebugCommands();
     Inception::registerModuleCommands();
     Inception::registerNavigationCommands();
     Inception::History::registerCommands();
