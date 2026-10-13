@@ -47,6 +47,12 @@ const userStylesShim = (css) =>
     ? `\n;(() => {\n  try {\n    const sheet = new CSSStyleSheet();\n    sheet.replaceSync(${JSON.stringify(`@layer inception-user {\n${css}\n}`)});\n    document.adoptedStyleSheets = [sheet, ...document.adoptedStyleSheets];\n  } catch {}\n})();\n`
     : '';
 
+// WebGL contexts pages may hold unless the embedder says otherwise: browsers
+// keep four per worker and lose the oldest past that, which is the engine's
+// own (it is created first). Sent explicitly so engines built before this
+// default (which allowed more off Chromium) keep it too.
+const PAGE_WEBGL_CONTEXTS = 3;
+
 // How long after the person's input a page may still write the clipboard.
 const CLIPBOARD_GESTURE_MS = 2000;
 
@@ -543,7 +549,7 @@ export class InceptionView extends HTMLElement {
 
     const { width, height } = this.#cssSize();
     const gpu = this.getAttribute('gpu') ?? 'auto';
-    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: await probeMediaCapabilities(), wasmPolyfill, pageShims: pageShims.replaceAll('__INCEPTION_VERSION__', ENGINE_VERSION) + userStylesShim(this.userStyles ?? config.userStyles), wispUrl: config.relayUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? defaultUserAgent(), preferences: this.#preferences.resolved(), webglContexts: config.webglContexts | 0, popups: policy().popups, url: this.getAttribute('src') ?? '', debug: this.#debugEnabled() });
+    this.#runtime.send('init', { width, height, deviceScaleFactor: devicePixelRatio, gpu: gpu !== 'off', media: await probeMediaCapabilities(), wasmPolyfill, pageShims: pageShims.replaceAll('__INCEPTION_VERSION__', ENGINE_VERSION) + userStylesShim(this.userStyles ?? config.userStyles), wispUrl: config.relayUrl, profile, freshProfile: this.hasAttribute('fresh-profile') || config.storage?.fresh === true, userAgent: this.getAttribute('user-agent') ?? config.userAgent ?? defaultUserAgent(), preferences: this.#preferences.resolved(), webglContexts: config.webglContexts | 0 || PAGE_WEBGL_CONTEXTS, popups: policy().popups, url: this.getAttribute('src') ?? '', debug: this.#debugEnabled() });
     const ready = await engineReady;
     this.#tabs.started(ready.tab ?? 1);
     this.#main.size = { width, height };
