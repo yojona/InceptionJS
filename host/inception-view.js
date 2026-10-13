@@ -926,13 +926,13 @@ export class InceptionView extends HTMLElement {
     if (record && record !== this.#main) record.channel.dispatchEvent(new CustomEvent(name, { detail: data }));
   }
 
-  // Web Audio of an engine plays in this document, unless the window that engine
-  // was made for is shown by another document: then the samples go there.
-  // The engine does not say which window an audio context belongs to, so this
-  // is exact for an engine with one window (isolation 'window') and leaves
-  // the sound with the view's own display otherwise.
+  // Web Audio of an engine plays in this document, unless the window whose page
+  // made the context is shown by another document: then the samples go there.
+  // An engine built before audio.open named its window says nothing, and the
+  // window the engine was made for is taken.
   #audioOpen(slot, ring) {
-    const display = slot.root?.display;
+    const record = Number.isInteger(ring.window) ? this.#windows.get(ring.window) : slot.root;
+    const display = record?.display;
     if (display?.audio) {
       display.audio.open(ring, slot.runtime.memory());
       slot.remoteRings.set(ring.id, { display, ring });

@@ -5,6 +5,9 @@
 #include "BlobRegistry.h"
 #include "BlobRegistryImpl.h"
 #include "CachedResource.h"
+#include "Document.h"
+#include "JSDOMGlobalObject.h"
+#include "JSExecState.h"
 #include "LoaderStrategy.h"
 #include "LocalFrame.h"
 #include "MediaStrategy.h"
@@ -24,6 +27,8 @@
 #include "net/NetworkLoad.h"
 #include "net/PingLoad.h"
 #include "net/RemoteLoad.h"
+#include "view/View.h"
+#include "view/Window.h"
 #include <wtf/FileSystem.h>
 #include <wtf/HashMap.h>
 #include <wtf/RunLoop.h>
@@ -226,6 +231,19 @@ private:
     HashMap<String, String> m_items;
     int64_t m_changeCount { 0 };
 };
+
+#if ENABLE(WEB_AUDIO)
+// Asked by an audio destination when a page's script makes its context: the
+// window of that page, so the host plays the sound where the window is shown.
+extern "C" int inception_audio_owner()
+{
+    auto* global = JSExecState::currentState();
+    auto* domGlobal = global ? JSC::jsDynamicCast<JSDOMGlobalObject*>(global) : nullptr;
+    RefPtr document = domGlobal ? dynamicDowncast<Document>(domGlobal->scriptExecutionContext()) : nullptr;
+    auto* view = View::fromPage(document ? document->page() : nullptr);
+    return view ? view->window().id() : 0;
+}
+#endif
 
 class MediaStrategyImpl final : public MediaStrategy {
 #if ENABLE(WEB_AUDIO)

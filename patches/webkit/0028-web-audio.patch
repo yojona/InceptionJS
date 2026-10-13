@@ -55,7 +55,7 @@ new file mode 100644
 index 0000000..fcbd6fe
 --- /dev/null
 +++ b/Source/WebCore/platform/audio/emscripten/AudioDestinationEmscripten.cpp
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,190 @@
 +/*
 + * Copyright (C) 2026 InceptionJS contributors
 + *
@@ -95,8 +95,10 @@ index 0000000..fcbd6fe
 +
 +// The host (host/audio.js) plays a ring from this point on; the event goes out
 +// through the engine thread's bridge, which is where start and stop run.
-+EM_JS(void, inception_audio_open, (int id, int header, int samples, int capacity, int channels, float sampleRate), {
-+    postMessage({ inception: JSON.stringify({ event: 'audio.open', data: { id, header, samples, capacity, channels, sampleRate } }) });
++// `window` is the engine window whose page made the context (0: unknown), so
++// the host plays it where that window is shown.
++EM_JS(void, inception_audio_open, (int id, int header, int samples, int capacity, int channels, float sampleRate, int window), {
++    postMessage({ inception: JSON.stringify({ event: 'audio.open', data: { id, header, samples, capacity, channels, sampleRate, ...(window > 0 ? { window } : {}) } }) });
 +});
 +
 +EM_JS(void, inception_audio_close, (int id), {
@@ -132,6 +134,7 @@ index 0000000..fcbd6fe
 +{
 +    static std::atomic<int> nextID;
 +    m_id = ++nextID;
++    m_window = inception_audio_owner();
 +}
 +
 +AudioDestinationEmscripten::~AudioDestinationEmscripten()
@@ -159,7 +162,7 @@ index 0000000..fcbd6fe
 +        m_header[0] = 0;
 +        m_header[1] = 0;
 +        m_running = true;
-+        inception_audio_open(m_id, reinterpret_cast<int>(&m_header[0]), reinterpret_cast<int>(m_samples.get()), capacity, numberOfOutputChannels(), sampleRate());
++        inception_audio_open(m_id, reinterpret_cast<int>(&m_header[0]), reinterpret_cast<int>(m_samples.get()), capacity, numberOfOutputChannels(), sampleRate(), m_window);
 +        // The thread keeps the destination alive until it sees the stop.
 +        Thread::create("WebAudio output"_s, [protectedThis = Ref { *this }] {
 +            protectedThis->renderLoop();
@@ -248,7 +251,7 @@ new file mode 100644
 index 0000000..545bfa8
 --- /dev/null
 +++ b/Source/WebCore/platform/audio/emscripten/AudioDestinationEmscripten.h
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,84 @@
 +/*
 + * Copyright (C) 2026 InceptionJS contributors
 + *
@@ -282,6 +285,10 @@ index 0000000..545bfa8
 +#include <atomic>
 +#include <wtf/Lock.h>
 +#include <wtf/Threading.h>
++
++// Provided by the embedder: the window of the page whose script is running
++// (an audio context is made by script), or 0.
++extern "C" int inception_audio_owner();
 +
 +namespace WebCore {
 +
@@ -320,6 +327,7 @@ index 0000000..545bfa8
 +    bool m_isPlaying { false };
 +    uint64_t m_framesRendered { 0 };
 +    int m_id;
++    int m_window { 0 };
 +
 +    Lock m_dispatchLock;
 +    Function<void(Function<void()>&&)> m_dispatchToRenderThread WTF_GUARDED_BY_LOCK(m_dispatchLock);
