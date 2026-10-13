@@ -80,6 +80,19 @@ export class MediaHost {
     this.#eme = eme;
   }
 
+  // The engine these videos belonged to went away (its window moved to
+  // another one): its players go, and commands go to the new engine.
+  rebind(send, { eme = this.#eme, audio = this.#audio } = {}) {
+    this.reset();
+    this.#send = send;
+    this.#eme = eme;
+    this.#audio = audio;
+  }
+
+  reset() {
+    for (const id of [...this.#players.keys()]) this.#destroy(id);
+  }
+
   // The embedder's master output level (the view's volume/muted): it scales
   // every video and applies to the ones already playing.
   setMaster({ volume, muted }) {

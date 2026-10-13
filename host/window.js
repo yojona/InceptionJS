@@ -23,10 +23,19 @@ export class WindowChannel extends EventTarget {
     super();
     this.#runtime = runtime;
     this.id = id;
+    // The size its display last asked for, so an engine it moves to starts
+    // there.
+    this.lastSize = null;
   }
 
   send(command, args = {}) {
+    if (command === 'resize' && Number.isFinite(args.width) && Number.isFinite(args.height)) this.lastSize = { width: args.width, height: args.height, deviceScaleFactor: args.deviceScaleFactor ?? 1 };
     this.#runtime.send(command, { ...args, window: this.id });
+  }
+
+  // The window moved to another engine (isolation 'site').
+  rebind(runtime) {
+    this.#runtime = runtime;
   }
 
   sendFile(name, bytes) {

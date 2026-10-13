@@ -41,6 +41,21 @@ export class Tabs {
     this.#active = id;
   }
 
+  // The window moved to another engine (isolation 'site'): its tab there takes
+  // the place of this one, which is reported closed.
+  replace(oldId, newId) {
+    if (oldId === newId) return;
+    const previous = this.#tabs.get(oldId);
+    const tab = this.#tabs.get(newId) ?? this.#add(newId, {});
+    if (previous) this.#update(tab, { url: previous.url, title: previous.title });
+    this.#active = newId;
+    this.#view.dispatchEvent(new CustomEvent('tabactivated', { detail: { tab: newId } }));
+    if (previous) {
+      this.#tabs.delete(oldId);
+      this.#view.dispatchEvent(new CustomEvent('tabclosed', { detail: { tab: oldId } }));
+    }
+  }
+
   create(url = '', { activate = true } = {}) {
     this.#send('tab.create', { url, activate });
   }

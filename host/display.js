@@ -252,6 +252,11 @@ export function serveDisplay(port, { send, sendMedia = send, sendFile, onVisibil
   const media = {
     hasPlayer: (id) => players.has(id),
     ownsFetch: (id) => fetches.has(id),
+    // The window moved to another engine: its videos there are gone.
+    reset() {
+      for (const id of [...players]) media.handleEvent('media.destroy', { id });
+      fetches.clear();
+    },
     handleEvent(name, data) {
       if (!open) return;
       if (name === 'media.create') players.add(data.id);
