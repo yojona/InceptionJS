@@ -147,12 +147,15 @@ test('with popups set to windows, window.open opens a window the policy keeps', 
   await expect.poll(() => evaluateIn(page, detail.window, 'location.hash')).toBe('#popup');
   expect(await view(page).evaluate((el) => el.tabs.length)).toBe(1);
   // The embedder can refuse one: it is closed again.
-  const refused = view(page).evaluate((el) => new Promise((resolve) => el.addEventListener('windowopen', (e) => {
-    e.preventDefault();
-    e.detail.window.addEventListener('close', () => resolve(e.detail.window.id), { once: true });
-  }, { once: true })));
+  await view(page).evaluate((el) => {
+    window.refusedWindow = 0;
+    el.addEventListener('windowopen', (e) => {
+      e.preventDefault();
+      e.detail.window.addEventListener('close', () => (window.refusedWindow = e.detail.window.id), { once: true });
+    }, { once: true });
+  });
   await page.mouse.click(box.x + 40, box.y + 30);
-  expect(await refused).toBeGreaterThan(2);
+  await expect.poll(() => page.evaluate(() => window.refusedWindow)).toBeGreaterThan(2);
   await expect.poll(() => view(page).evaluate((el) => el.windows.map((w) => w.window))).toEqual([1, 2]);
 });
 
