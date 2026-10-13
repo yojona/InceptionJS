@@ -84,7 +84,7 @@ for (const isolation of ['shared', 'window']) {
       expect(await evaluateIn(first, id, 'location.href')).toBe('https://example.com/');
     });
 
-    test('when the host goes away the next tab takes the profile and the others follow with their windows', async ({ context }) => {
+    test('when the host goes away the next tab takes the profile and the others follow with their windows', async ({ context, browserName }) => {
       const profile = profileName();
       const query = `&isolation=${isolation}`;
       const host = await open(context, profile, `${query}&persist=clear&url=about:blank`);
@@ -114,9 +114,13 @@ for (const isolation of ['shared', 'window']) {
       const newId = await view(other).evaluate((el) => el.windowId);
       expect(await view(next).evaluate((el) => el.windows.map((w) => w.window))).toContain(newId);
       await loaded(next, newId, 'https://example.com/?moved');
-      // The profile's files came with it.
-      await expect.poll(() => evaluateIn(next, newId, 'document.cookie')).toContain('kept=yes');
-      await expect.poll(() => evaluateIn(next, newId, 'localStorage.getItem("kept")')).toBe('yes');
+      // The profile's files came with it (Playwright's WebKit has no usable
+      // origin-private file system: its engine keeps the profile in memory and
+      // nothing outlives the host).
+      if (browserName !== 'webkit') {
+        await expect.poll(() => evaluateIn(next, newId, 'document.cookie')).toContain('kept=yes');
+        await expect.poll(() => evaluateIn(next, newId, 'localStorage.getItem("kept")')).toBe('yes');
+      }
       await expect.poll(() => view(other).evaluate((el) => el.title), { timeout: 30_000 }).toBe('Example Domain');
       // And the new host runs its own window.
       await view(next).evaluate((el) => el.navigate('https://example.com/?host'));
