@@ -1,0 +1,107 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Profile service harness</title>
+<p>Engines of one profile: a profile service and content engines joined to it by links. Driven by tests/profile-service.spec.mjs.</p>
+<script type="module">
+  import { EngineRuntime } from '../../host/runtime.js';
+  import { ProfileService } from '../../host/profile-service.js';
+
+  const engineUrl = new URL('../../engine/inception-engine.js', import.meta.url).href;
+  const params = new URLSearchParams(location.search);
+  const relayUrl = params.get('relay') ?? `ws://${location.hostname}:5001/`;
+  const contents = [];
+  let service = null;
+  let requests = 0;
+
+  const once = (target, name, timeout = 30000) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no ${name} in ${timeout} ms`)), timeout);
+    target.addEventListener(name, (e) => {
+      clearTimeout(timer);
+      resolve(e.detail);
+    }, { once: true });
+  });
+
+  async function startContent() {
+    const runtime = new EngineRuntime({ engineUrl });
+    await runtime.start();
+    const ready = once(runtime, 'ready');
+    runtime.send('init', { role: 'content', width: 320, height: 240, deviceScaleFactor: 1, gpu: false, url: '', debug: true, wispUrl: relayUrl });
+    const detail = await ready;
+    const entry = { runtime, link: null, ready: detail, crashed: null };
+    runtime.addEventListener('crash', (e) => (entry.crashed = e.detail));
+    contents.push(entry);
+    return contents.length - 1;
+  }
+
+  function connect(index) {
+    const entry = contents[index];
+    entry.link = service.connect(entry.runtime, { onClosed: (reason) => (entry.closedReason = reason) });
+    return entry.link;
+  }
+
+  async function ping(index, { bytes = 16, sync = false } = {}) {
+    const runtime = contents[index].runtime;
+    const id = ++requests;
+    const result = new Promise((resolve) => {
+      const listener = (e) => {
+        if (e.detail.id !== id) return;
+        runtime.removeEventListener('debug.link.result', listener);
+        resolve(e.detail);
+      };
+      runtime.addEventListener('debug.link.result', listener);
+    });
+    runtime.send('debug.link', { id, bytes, sync });
+    return result;
+  }
+
+  async function evaluate(index, source) {
+    const runtime = contents[index].runtime;
+    const id = ++requests;
+    const result = new Promise((resolve) => {
+      const listener = (e) => {
+        if (e.detail.id !== id) return;
+        runtime.removeEventListener('debug.result', listener);
+        resolve(e.detail.value);
+      };
+      runtime.addEventListener('debug.result', listener);
+    });
+    runtime.send('debug.evaluate', { id, source });
+    return result;
+  }
+
+  window.harness = {
+    async startService(options = {}) {
+      service = ProfileService.acquire({ engineUrl, relayUrl, profile: `service-test-${Date.now()}`, fresh: true, debug: true, ...options });
+      const info = await service.start();
+      service.addEventListener('restart', () => (window.harness.restarted = (window.harness.restarted ?? 0) + 1));
+      return { role: info.role, persistent: info.persistent, features: service.runtime.features };
+    },
+    startContent,
+    connect,
+    ping,
+    evaluate,
+    content: (index) => ({ ready: contents[index].ready, crashed: contents[index].crashed, closedReason: contents[index].closedReason ?? null }),
+    crashService() {
+      service.runtime.send('debug.crash');
+      return once(service, 'crash').then(() => true);
+    },
+    crashContent(index) {
+      const entry = contents[index];
+      entry.runtime.send('debug.crash');
+      return once(entry.runtime, 'crash').then(() => {
+        service.disconnect(entry.link);
+        entry.runtime.terminate();
+        return true;
+      });
+    },
+    waitRestart: () => once(service, 'restart', 60000),
+    // How many times the document fetched the engine's code and image.
+    fetches: () => performance.getEntriesByType('resource').filter((e) => /inception-engine\.(wasm|data)$/.test(e.name)).map((e) => e.name.split('/').pop()),
+    stop() {
+      service?.stop();
+      for (const entry of contents) entry.runtime.terminate();
+    },
+  };
+  window.dispatchEvent(new Event('harnessready'));
+  document.title = 'ready';
+</script>
