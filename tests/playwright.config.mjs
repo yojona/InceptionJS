@@ -19,9 +19,9 @@ export default defineConfig({
   projects: [
     {
       name: 'chrome',
-      use: { channel: 'chrome', launchOptions: { args: ['--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] } },
+      use: { channel: 'chrome', launchOptions: { args: ['--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--mute-audio'] } },
     },
-    { name: 'firefox', use: { browserName: 'firefox' } },
+    { name: 'firefox', use: { browserName: 'firefox', launchOptions: { firefoxUserPrefs: { 'media.volume_scale': '0.0' } } } },
     { name: 'webkit', use: { browserName: 'webkit' } },
   ],
   webServer: process.env.BASE_URL
