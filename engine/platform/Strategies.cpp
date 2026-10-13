@@ -24,6 +24,7 @@
 #include "net/NetworkLoad.h"
 #include "net/PingLoad.h"
 #include "net/RemoteLoad.h"
+#include <wtf/FileSystem.h>
 #include <wtf/HashMap.h>
 #include <wtf/RunLoop.h>
 
@@ -247,7 +248,37 @@ public:
     void unregisterBlobURLHandle(const URL& url, const std::optional<SecurityOriginData>& topOrigin) final { m_impl.unregisterBlobURLHandle(url, topOrigin); }
     String blobType(const URL& url) final { return m_impl.blobType(url); }
     unsigned long long blobSize(const URL& url) final { return m_impl.blobSize(url); }
-    void writeBlobsToTemporaryFilesForIndexedDB(const Vector<String>& urls, CompletionHandler<void(Vector<String>&&)>&& completion) final { m_impl.writeBlobsToTemporaryFilesForIndexedDB(urls, WTF::move(completion)); }
+    void writeBlobsToTemporaryFilesForIndexedDB(const Vector<String>& urls, CompletionHandler<void(Vector<String>&&)>&& completion) final
+    {
+        if (role() != Role::Content) {
+            m_impl.writeBlobsToTemporaryFilesForIndexedDB(urls, WTF::move(completion));
+            return;
+        }
+        // The IDB server is the service's: the files must be there.
+        m_impl.writeBlobsToTemporaryFilesForIndexedDB(urls, [completion = WTF::move(completion)](Vector<String>&& localPaths) mutable {
+            RefPtr link = Link::service();
+            Vector<Vector<uint8_t>> blobs;
+            for (auto& path : localPaths) {
+                auto bytes = FileSystem::readEntireFile(path);
+                FileSystem::deleteFile(path);
+                if (!bytes) {
+                    link = nullptr;
+                    break;
+                }
+                blobs.append(WTF::move(*bytes));
+            }
+            if (!link || localPaths.isEmpty()) {
+                completion({ });
+                return;
+            }
+            Encoder encoder;
+            encoder << blobs;
+            link->call(Message::IDBBlobWrite, WTF::move(encoder), [completion = WTF::move(completion)](Decoder* decoder) mutable {
+                auto paths = decoder ? decoder->decode<Vector<String>>() : std::nullopt;
+                completion(paths ? WTF::move(*paths) : Vector<String> { });
+            });
+        });
+    }
     BlobRegistryImpl* blobRegistryImpl() final { return &m_impl; }
 
 private:

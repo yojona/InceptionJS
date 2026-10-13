@@ -14,4 +14,9 @@ namespace Inception {
 // directory, which the server lays out by origin.
 Ref<WebCore::DatabaseProvider> createDatabaseProvider();
 
+// With a profile service, the IDB server is the service's: a content
+// engine's IDB client speaks to it over the link.
+void installIDBProxy();
+void installIDBService();
+
 } // namespace Inception
