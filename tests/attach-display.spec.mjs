@@ -188,3 +188,28 @@ test('a copy the page makes reaches the clipboard of the tab that shows the wind
   await page.locator('#screen').click({ position: { x: 40, y: 20 } });
   await expect.poll(() => page.evaluate(() => window.copied), { timeout: 20_000 }).toEqual(['copied text']);
 });
+
+test('a window keeps painting for the tab that shows it while the engine\'s tab is in the background', async ({ context }) => {
+  const profile = profileName();
+  // A background tab: not visible, and no animation frames.
+  const host = await context.newPage();
+  await host.addInitScript(() => {
+    Object.defineProperty(document, 'visibilityState', { get: () => 'hidden' });
+    Object.defineProperty(document, 'hidden', { get: () => true });
+    window.requestAnimationFrame = () => 0;
+  });
+  await host.goto(`${HOST}?profile=${profile}&persist=clear&url=about:blank`);
+  await view(host).evaluate((el) => el.ready);
+  const { page, id } = await startClient(context, profile);
+  await expect.poll(() => evaluateIn(host, id, 'document.readyState'), { timeout: 30_000 }).toBe('complete');
+  await write(host, id, '<title>background</title><style>html,body{margin:0;height:100%;background:rgb(10,120,200)}</style>');
+  await expect.poll(() => canvasColor(page), { timeout: 20_000 }).toEqual([10, 120, 200]);
+  // It goes on painting: a page animating its background shows new colours.
+  await evaluateIn(host, id, 'window.n = 0; setInterval(() => { document.body.style.background = "rgb(" + (++n % 200) + ",30,30)"; }, 30); "ok"');
+  const seen = new Set();
+  for (let i = 0; i < 12; i++) {
+    seen.add(JSON.stringify(await canvasColor(page)));
+    await page.waitForTimeout(100);
+  }
+  expect(seen.size).toBeGreaterThan(3);
+});

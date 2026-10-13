@@ -87,6 +87,31 @@ export class FrameRouter {
   }
 }
 
+// A document nobody looks at (a background tab) gets no animation frames, and
+// its timers are slowed down. A window that another document shows must keep
+// painting for that document, so its frame ticks come from a worker's timer,
+// which the browser leaves alone. The native Worker, before the runtime
+// replaces it while an engine starts.
+const NativeWorker = globalThis.Worker;
+let ticker = null;
+const ticks = new Map();
+let lastTick = 0;
+
+function afterFrameInBackground(callback) {
+  if (!ticker) {
+    const url = URL.createObjectURL(new Blob(['onmessage = (e) => setTimeout(() => postMessage(e.data), 16);'], { type: 'text/javascript' }));
+    ticker = new NativeWorker(url);
+    URL.revokeObjectURL(url);
+    ticker.onmessage = (e) => {
+      const next = ticks.get(e.data);
+      ticks.delete(e.data);
+      next?.();
+    };
+  }
+  ticks.set(++lastTick, callback);
+  ticker.postMessage(lastTick);
+}
+
 // The engine's code and file system image, fetched and compiled once per
 // document and shared by every engine started from the same URL: a second
 // engine costs its own memory, not another compile (about 165 MB of code in
@@ -256,7 +281,11 @@ export class EngineRuntime extends EventTarget {
     if (!data || typeof data !== 'object' || this.#terminated) return;
     if (data.inceptionWantsFrame) {
       const window = frameWindow(data.inceptionWantsFrame);
-      return requestAnimationFrame(() => worker.postMessage({ inceptionFrameTick: window }));
+      const tick = () => worker.postMessage({ inceptionFrameTick: window });
+      // The document's own canvas paints when its page can be seen; a display
+      // elsewhere paints when it asks.
+      if (document.visibilityState === 'hidden' && !this.#frames.sinkOf(window)?.canvas) return afterFrameInBackground(tick);
+      return requestAnimationFrame(tick);
     }
     if (data.inceptionFrame) return this.#presentBitmap(frameWindow(data.window), data.inceptionFrame);
     if (data.inceptionMediaAppend) return this.onMediaAppend?.(data.inceptionMediaAppend);
