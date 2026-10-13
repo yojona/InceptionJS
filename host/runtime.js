@@ -218,11 +218,12 @@ export class EngineRuntime extends EventTarget {
       this.#module = await createEngine({
         wasmMemory: new WebAssembly.Memory({ initial: (INITIAL_MEMORY_MB * 1024 * 1024) / PAGE_BYTES, maximum: memoryLimitPages(this.#maxMemoryMB), shared: true }),
         locateFile: (path) => new URL(path, this.engineUrl).href,
-        print: (text) => console.log('[engine]', text),
-        printErr: (text) => console.warn('[engine]', text),
+        print: (text) => this.#quiet || console.log('[engine]', text),
+        printErr: (text) => this.#quiet || console.warn('[engine]', text),
         ...(code ? {
           instantiateWasm: (imports, receive) => {
             if (this.#role === 'content') lockImports(imports);
+            this.#watchMainThread(imports);
             WebAssembly.instantiate(code.module, imports).then((instance) => receive(instance, code.module));
             return {};
           },
@@ -262,6 +263,43 @@ export class EngineRuntime extends EventTarget {
     else this.#pending.push([message, transfer]);
   }
 
+  // The engine's main-thread runtime keeps an Atomics.waitAsync pending on its
+  // memory for messages from its threads; left pending after the engine is
+  // terminated, the browser keeps that promise, and with it the whole memory,
+  // for as long as the document lives. The imports that start the main thread
+  // and abort the runtime are found by name (the glue's own function names).
+  #mainThread = 0;
+  #abortRuntime = null;
+
+  #watchMainThread(imports) {
+    for (const table of Object.values(imports)) {
+      for (const [key, fn] of Object.entries(table)) {
+        if (typeof fn !== 'function') continue;
+        if (fn.name === '__emscripten_init_main_thread_js') {
+          table[key] = (thread, ...rest) => {
+            this.#mainThread = thread >>> 0;
+            return fn(thread, ...rest);
+          };
+        }
+        if (fn.name === '__abort_js') this.#abortRuntime = fn;
+      }
+    }
+  }
+
+  // Ends the main thread's wait without starting another: the runtime is
+  // marked aborted (its callbacks then do nothing) and the wait is woken.
+  #releaseMainThread() {
+    const memory = this.#module?.wasmMemory;
+    if (!this.#mainThread || !this.#abortRuntime || !memory) return;
+    this.#quiet = true;
+    try {
+      this.#abortRuntime();
+    } catch {}
+    Atomics.notify(new Int32Array(memory.buffer), this.#mainThread >>> 2);
+  }
+
+  #quiet = false;
+
   // Stops every thread of the engine: what a crashed engine still holds (its
   // files' access handles, its sockets) is released.
   terminate() {
@@ -269,6 +307,7 @@ export class EngineRuntime extends EventTarget {
     try {
       this.#module?.PThread?.terminateAllThreads?.();
     } catch {}
+    this.#releaseMainThread();
     for (const worker of this.#workers) worker.terminate();
     this.#workers.clear();
     this.#worker = null;
