@@ -24,6 +24,7 @@
 #include "UniqueIDBDatabaseConnection.h"
 #include "link/IDBCoders.h"
 #include "link/Link.h"
+#include "net/LinkPolicy.h"
 #include "storage/Profile.h"
 #include "view/View.h"
 #include <pal/SessionID.h>
@@ -521,6 +522,38 @@ private:
     HashMap<unsigned, Ref<ServiceIDBClient>> m_clients;
 };
 
+// Files each content engine may read back (IDBBlobRead): the temporary blob
+// files it wrote itself, and what lies under the database directories of the
+// origins it opened databases for. Nothing of another origin's records.
+struct LinkFiles {
+    HashSet<String> written;
+    HashSet<String> directories;
+};
+
+static HashMap<unsigned, LinkFiles>& linkFiles()
+{
+    static NeverDestroyed<HashMap<unsigned, LinkFiles>> map;
+    return map;
+}
+
+// Whether a link may use an origin's databases: under isolation 'site', only
+// its own site's (net/LinkPolicy.h). The directory of those it may use
+// becomes readable to it.
+static bool allowsOrigin(Link& link, const ClientOrigin& origin)
+{
+    if (!LinkPolicy::allowsSiteData(link.id(), origin.clientOrigin.toURL()))
+        return false;
+    auto directory = IDBDatabaseIdentifier::optionalDatabaseDirectoryRelativeToRoot(origin, Profile::file("indexeddb"_s), "v1"_s);
+    if (!directory.isEmpty())
+        linkFiles().ensure(link.id(), [] { return LinkFiles { }; }).iterator->value.directories.add(directory);
+    return true;
+}
+
+static IDBError refusedOrigin()
+{
+    return IDBError { ExceptionCode::UnknownError, "IndexedDB of another site is not available in this window"_s };
+}
+
 void ServiceIDB::receive(Link& link, Decoder& decoder)
 {
     auto it = m_clients.find(link.id());
@@ -535,9 +568,21 @@ void ServiceIDB::receive(Link& link, Decoder& decoder)
     auto& server = this->server();
     switch (static_cast<IDBOp>(*op)) {
     case IDBOp::DeleteDatabase:
-        return withArguments<IDBOpenRequestData>(decoder, [&](auto&& data) { if (mine(data.serverConnectionIdentifier())) server.deleteDatabase(data); });
+        return withArguments<IDBOpenRequestData>(decoder, [&](auto&& data) {
+            if (!mine(data.serverConnectionIdentifier()))
+                return;
+            if (!allowsOrigin(link, data.databaseIdentifier().origin()))
+                return it->value->connection().didDeleteDatabase(IDBResultData::error(data.requestIdentifier(), refusedOrigin()));
+            server.deleteDatabase(data);
+        });
     case IDBOp::OpenDatabase:
-        return withArguments<IDBOpenRequestData>(decoder, [&](auto&& data) { if (mine(data.serverConnectionIdentifier())) server.openDatabase(data); });
+        return withArguments<IDBOpenRequestData>(decoder, [&](auto&& data) {
+            if (!mine(data.serverConnectionIdentifier()))
+                return;
+            if (!allowsOrigin(link, data.databaseIdentifier().origin()))
+                return it->value->connection().didOpenDatabase(IDBResultData::error(data.requestIdentifier(), refusedOrigin()));
+            server.openDatabase(data);
+        });
     case IDBOp::OpenDBRequestCancelled:
         return withArguments<IDBOpenRequestData>(decoder, [&](auto&& data) { if (mine(data.serverConnectionIdentifier())) server.openDBRequestCancelled(data); });
     case IDBOp::AbortTransaction:
@@ -593,26 +638,41 @@ void ServiceIDB::receive(Link& link, Decoder& decoder)
                 server.didGenerateIndexKeyForRecord(transaction, request, info, key, indexKey, recordID);
         });
     case IDBOp::GetAllDatabaseNamesAndVersions:
-        return withArguments<IDBResourceIdentifier, ClientOrigin>(decoder, [&](auto&& request, auto&& origin) { if (ownsResource(request)) server.getAllDatabaseNamesAndVersions(identifier, request, origin); });
+        return withArguments<IDBResourceIdentifier, ClientOrigin>(decoder, [&](auto&& request, auto&& origin) {
+            if (!ownsResource(request))
+                return;
+            if (!allowsOrigin(link, origin))
+                return it->value->connection().didGetAllDatabaseNamesAndVersions(request, { });
+            server.getAllDatabaseNamesAndVersions(identifier, request, origin);
+        });
     default:
         return;
     }
 }
 
-// Where a content engine may read blob files from: the service's temporary
-// blob files and its IndexedDB directory, nothing else of the profile.
-static bool isBlobFilePath(const String& path)
+// Where a content engine may read blob files from (see LinkFiles): nothing
+// else of the profile.
+static bool isBlobFilePath(Link& link, const String& path)
 {
     if (path.contains(".."_s))
         return false;
-    return path.startsWith("/tmp/Blob"_s) || path.startsWith(makeString(Profile::file("indexeddb"_s), '/'));
+    auto it = linkFiles().find(link.id());
+    if (it == linkFiles().end())
+        return false;
+    if (it->value.written.contains(path))
+        return true;
+    for (auto& directory : it->value.directories) {
+        if (path.startsWith(makeString(directory, '/')))
+            return true;
+    }
+    return false;
 }
 
 void installIDBService()
 {
     // {[bytes]} -> {[path]}: blobs a content engine stores in a record
     // become files here, as the IDB server expects.
-    Link::handleCall(Message::IDBBlobWrite, [](Link&, Decoder& decoder, Reply&& reply) {
+    Link::handleCall(Message::IDBBlobWrite, [](Link& link, Decoder& decoder, Reply&& reply) {
         auto blobs = decoder.decode<Vector<Vector<uint8_t>>>();
         if (!blobs)
             return;
@@ -621,6 +681,7 @@ void installIDBService()
             auto [path, file] = FileSystem::openTemporaryFile("Blob"_s);
             if (!file || file.write(bytes.span()) != bytes.size())
                 return;
+            linkFiles().ensure(link.id(), [] { return LinkFiles { }; }).iterator->value.written.add(path);
             paths.append(WTF::move(path));
         }
         Encoder encoder;
@@ -628,9 +689,9 @@ void installIDBService()
         reply.send(WTF::move(encoder));
     });
     // {path} -> {bytes}
-    Link::handleSync(Message::IDBBlobRead, [](Link&, Decoder& decoder, Encoder& reply) {
+    Link::handleSync(Message::IDBBlobRead, [](Link& link, Decoder& decoder, Encoder& reply) {
         auto path = decoder.string();
-        if (!path || !isBlobFilePath(*path))
+        if (!path || !isBlobFilePath(link, *path))
             return false;
         auto bytes = FileSystem::readEntireFile(*path);
         if (!bytes)
@@ -647,8 +708,10 @@ void installIDBService()
         ServiceIDB::singleton().receive(link, decoder);
     });
     Link::addCloseObserver([](Link& link) {
-        if (link.isServiceEnd())
-            ServiceIDB::singleton().closed(link);
+        if (!link.isServiceEnd())
+            return;
+        ServiceIDB::singleton().closed(link);
+        linkFiles().remove(link.id());
     });
 }
 
