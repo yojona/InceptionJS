@@ -30,12 +30,12 @@ void set(const String& site)
 
 bool active()
 {
-    return !!lock().get();
+    return !!lock();
 }
 
 const String& site()
 {
-    return active() ? *lock().get() : emptyString();
+    return active() ? *lock() : emptyString();
 }
 
 bool keeps(const URL& url)
