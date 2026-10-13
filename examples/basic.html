@@ -45,8 +45,11 @@
     // This page is a browser, so it opts in to what a browser does. ?policy={}
     // (or any JSON object) replaces these with the library's own defaults.
     policy: params.has('policy') ? JSON.parse(params.get('policy')) : { downloads: 'save', newTabs: 'foreground', dialogs: 'native', clipboard: true },
-    // ?isolation=window: a profile service and an engine per window.
+    // ?isolation=window: a profile service and an engine per window;
+    // ?isolation=site: an engine per site, windows move between them.
     isolation: params.get('isolation') ?? 'shared',
+    // ?engines=n: how many engines before new windows share one.
+    ...(params.has('engines') ? { engines: { max: Number(params.get('engines')) } } : {}),
     // A second tab on the same profile attaches to the first; ?attach=off
     // shows the error instead.
     attach: params.get('attach') !== 'off',
@@ -56,6 +59,8 @@
   // ?persist=clear starts from an empty profile; ?profile=name picks one.
   if (params.get('persist') === 'clear') view.setAttribute('fresh-profile', '');
   if (params.get('profile')) view.setAttribute('profile', params.get('profile'));
+  // ?headless: window 1 is not shown here (it can be exported).
+  if (params.has('headless')) view.setAttribute('headless', '');
   // ?agent=1 offers the agent namespace (view.agent) to scripts and clients.
   if (params.get('agent')) view.setAttribute('agent', '');
   const address = document.getElementById('address');
