@@ -12,7 +12,10 @@
 #include "media/MediaBridge.h"
 #include "modules/Modules.h"
 #include "net/Download.h"
+#include "net/RemoteLoad.h"
+#include "net/ServiceLoad.h"
 #include "net/Sockets.h"
+#include "net/WebSocketChannel.h"
 #include "storage/Disk.h"
 #include "storage/History.h"
 #include "storage/Profile.h"
@@ -96,6 +99,10 @@ static void startProfileService(JSON::Object& args)
     Sockets::configure(args.getString("wispUrl"_s));
     if (auto preferences = args.getObject("preferences"_s))
         applyPreferences(*preferences);
+    installServiceLoads();
+    installServiceWebSockets();
+    Download::installService();
+    History::installService();
 
     auto ready = JSON::Object::create();
     ready->setInteger("version"_s, bridgeVersion);
@@ -132,8 +139,11 @@ static void registerCommands()
             return;
         }
         bool content = roleName == "content"_s;
-        if (content)
+        if (content) {
             setRole(Role::Content);
+            RemoteLoad::install();
+            installRemoteWebSockets();
+        }
         auto cssSize = sizeFrom(args);
         float scale = args.getDouble("deviceScaleFactor"_s).value_or(1);
         bool preferGPU = args.getBoolean("gpu"_s).value_or(true);
