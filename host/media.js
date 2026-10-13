@@ -184,15 +184,26 @@ export class MediaHost {
 
   // A plain src. The engine fetches http(s) sources itself (the host page,
   // cross-origin isolated, could not) and streams them here; the video plays
-  // them once complete. Other URLs load directly.
+  // them once complete. Only inline sources (data: and blob:) load directly:
+  // anything else the host fetched itself would leave through the person's own
+  // connection, past the relay's rules about where a page may go. Such a source
+  // fails as an unsupported one does.
   #load(player, { url, fetch }) {
     this.#dropFetch(player);
     if (!fetch) {
-      player.video.src = url;
+      if (/^(data|blob):/i.test(url)) player.video.src = url;
+      else this.#fail(player);
       return;
     }
     player.fetch = { id: fetch, url, chunks: [], mime: '' };
     this.#fetches.set(fetch, player);
+  }
+
+  // An empty source: the element fires a media error, as for an unusable file.
+  #fail(player) {
+    if (player.objectUrl) URL.revokeObjectURL(player.objectUrl);
+    player.objectUrl = URL.createObjectURL(new Blob([], { type: 'application/octet-stream' }));
+    player.video.src = player.objectUrl;
   }
 
   #dropFetch(player) {
@@ -211,12 +222,13 @@ export class MediaHost {
       return;
     }
     if (name !== 'media.fetch.finished') return;
-    const { chunks, mime, url } = player.fetch;
+    const { chunks, mime } = player.fetch;
     this.#dropFetch(player);
     mediaLog(`video ${player.id} fetch finished`, { bytes: chunks.reduce((n, c) => n + c.byteLength, 0), error: data.error ?? null });
     if (data.error) {
-      // The video reports the failure as a browser would for this source.
-      player.video.src = url;
+      // The video reports the failure as a browser would for this source; the
+      // host does not retry the address itself (see #load).
+      this.#fail(player);
       return;
     }
     if (player.objectUrl) URL.revokeObjectURL(player.objectUrl);

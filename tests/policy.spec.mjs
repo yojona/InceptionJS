@@ -213,3 +213,13 @@ test('a connection served to another client gets navigation only; the view itsel
   });
   expect(remote).toEqual({ capabilities: ['view'], find: -32002, history: -32002, state: 'allowed' });
 });
+
+test('a page cannot make the person\'s browser request an address the relay refuses', async ({ page }) => {
+  await open(page);
+  const requested = [];
+  page.on('request', (request) => requested.push(request.url()));
+  await write(page, '<video id="v" src="http://10.255.255.1:8999/probe.mp4"></video><audio id="a" src="http://192.168.254.254:8998/probe.mp3"></audio>');
+  // Both elements fail the way an unusable file does.
+  await expect.poll(() => evaluate(page, "[document.getElementById('v').error?.code ?? 0, document.getElementById('a').error?.code ?? 0].join()"), { timeout: 30_000 }).toBe('4,4');
+  expect(requested.filter((url) => /10\.255\.255\.1|192\.168\.254\.254/.test(url))).toEqual([]);
+});
