@@ -88,6 +88,7 @@ export class AgentHost {
   #indicator;
 
   #window;
+  #closed = false;
 
   // One per window: control, the log, the rate limit and the engine's guard
   // belong to the window, never shared. `runtime` sends commands to and hears
@@ -117,6 +118,11 @@ export class AgentHost {
     runtime.addEventListener('navigate', () => this.#navigations++);
     runtime.addEventListener('crash', () => {
       for (const pending of this.#pending.values()) pending.reject(fail('engine_crashed', 'the engine crashed'));
+      this.#pending.clear();
+    });
+    runtime.addEventListener('window.closed', () => {
+      this.#closed = true;
+      for (const pending of this.#pending.values()) pending.reject(fail('not_ready', 'the window was closed'));
       this.#pending.clear();
     });
     if (shadow) this.#indicator = addAgentIndicator(shadow, () => this.takeBack('indicator'));
@@ -177,6 +183,7 @@ export class AgentHost {
 
   #engine(command, args = {}) {
     if (this.#runtime.crash) return Promise.reject(fail('engine_crashed', 'the engine crashed'));
+    if (this.#closed) return Promise.reject(fail('not_ready', 'the window was closed'));
     const id = ++this.#requests;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {

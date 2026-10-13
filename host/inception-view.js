@@ -646,7 +646,7 @@ export class InceptionView extends HTMLElement {
     this.#detachDisplay(record);
     this.#windows.delete(id);
     this.#windowHandles.delete(id);
-    record.channel.dispatchEvent(new CustomEvent('crash', { detail: { message: 'the window was closed' } }));
+    record.channel.dispatchEvent(new CustomEvent('window.closed', { detail: { window: id } }));
     record.target.dispatchEvent(new CustomEvent('close', { detail: { window: id } }));
     this.#server.emit('windows.closed', { window: id }, 'windows');
   }
