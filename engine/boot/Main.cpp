@@ -4,6 +4,7 @@
 #include "NavigatorBase.h"
 #include "UserAgent.h"
 #include "IntSize.h"
+#include "agent/Agent.h"
 #include "bridge/Bridge.h"
 #include "gfx/Renderer.h"
 #include "input/Input.h"
@@ -181,6 +182,7 @@ int main()
     Inception::registerNavigationCommands();
     Inception::History::registerCommands();
     Inception::Download::registerCommands();
+    Inception::Agent::registerCommands();
 
     // The host listens on every worker it creates and recognizes the engine's
     // by this event; "hello" repeats it on request.
