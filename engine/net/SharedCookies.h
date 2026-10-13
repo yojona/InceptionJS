@@ -18,5 +18,7 @@ void installCookieProxy();
 void installCookieService();
 // The service's store changed for `url` (a response, a page's script).
 void cookiesChanged(const URL&);
+// "debug.cookies", for the debug commands.
+void registerCookieDebugCommands();
 
 } // namespace Inception

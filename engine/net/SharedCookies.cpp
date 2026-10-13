@@ -7,7 +7,9 @@
 #include "CookieStoreGetOptions.h"
 #include "Document.h"
 #include "NetworkStorageSession.h"
+#include "PublicSuffixStore.h"
 #include "RegistrableDomain.h"
+#include "bridge/Bridge.h"
 #include "SameSiteInfo.h"
 #include "StorageSessionProvider.h"
 #include "link/Link.h"
@@ -144,6 +146,34 @@ void cookiesChanged(const URL& url)
             link->send(Message::CookiesForHostChanged, WTF::move(encoder));
         }
     }
+}
+
+void registerCookieDebugCommands()
+{
+    // {id, url, value?} -> "debug.cookies.result" {id, publicSuffix, site,
+    // set?, cookies}: what the store holds for the URL's host, and whether a
+    // response's Set-Cookie `value` would be kept. Development aid.
+    registerCommand("debug.cookies"_s, [](JSON::Object& args) {
+        URL url { args.getString("url"_s) };
+        auto host = hostOf(url);
+        auto result = JSON::Object::create();
+        result->setDouble("id"_s, args.getDouble("id"_s).value_or(0));
+        result->setBoolean("publicSuffix"_s, PublicSuffixStore::singleton().isPublicSuffix(host));
+        result->setString("site"_s, RegistrableDomain { url }.string());
+        auto value = args.getString("value"_s);
+        if (!value.isEmpty()) {
+            auto before = networkSession().getAllCookies().size();
+            networkSession().setCookiesFromHTTPResponse(url, url, value);
+            result->setBoolean("set"_s, networkSession().getAllCookies().size() > before);
+        }
+        auto list = JSON::Array::create();
+        for (auto& cookie : networkSession().getAllCookies()) {
+            if (domainMatches(cookie.domain, host))
+                list->pushString(makeString(cookie.name, '=', cookie.value, "; domain="_s, cookie.domain, "; path="_s, cookie.path));
+        }
+        result->setArray("cookies"_s, WTF::move(list));
+        emitEvent("debug.cookies.result"_s, WTF::move(result));
+    });
 }
 
 void installCookieService()

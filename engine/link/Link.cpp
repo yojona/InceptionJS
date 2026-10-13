@@ -2,13 +2,17 @@
 #include "link/Link.h"
 
 #include "bridge/Bridge.h"
+#include "net/SharedCookies.h"
+#include "net/Sockets.h"
 #include <cstdlib>
 #include <emscripten/em_macros.h>
+#include <emscripten/wasmfs.h>
 #include <wtf/MonotonicTime.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/text/MakeString.h>
 
 extern "C" {
+void inception_tcp_open(int id, const char* host, int port);
 void inception_link_install();
 void inception_link_post(unsigned link, const uint8_t* data, size_t length);
 uint8_t* inception_link_call_sync(unsigned link, const uint8_t* data, size_t length, size_t* replyLength);
@@ -330,6 +334,25 @@ static void emitPingResult(double id, bool ok, size_t bytes, MonotonicTime start
 
 void registerLinkDebugCommands()
 {
+    registerCookieDebugCommands();
+    // {files?, network?}: this engine's own code tries to open the profile's
+    // storage, or a socket through the relay at `network`, as a subverted
+    // engine would. A standalone engine or a service may; a content engine
+    // is stopped by its guard (js/guard.js) before either is reached.
+    registerCommand("debug.reach"_s, [](JSON::Object& args) {
+        if (args.getBoolean("files"_s).value_or(false)) {
+            auto backend = wasmfs_create_opfs_backend();
+            wasmfs_create_directory("/reached", 0777, backend);
+            report("warn"_s, "debug.reach: opened the origin-private file system"_s);
+        }
+        auto network = args.getString("network"_s);
+        if (!network.isEmpty()) {
+            Sockets::configure(network);
+            inception_tcp_open(0x7fff0000, "example.com", 443);
+            report("warn"_s, "debug.reach: opened a socket"_s);
+        }
+    });
+
     // {id, bytes, sync}: a content engine sends `bytes` bytes to its service
     // and checks the echo; "debug.link.result" {id, ok, bytes, ms}.
     registerCommand("debug.link"_s, [](JSON::Object& args) {
