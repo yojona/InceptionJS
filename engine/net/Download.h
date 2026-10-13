@@ -26,12 +26,16 @@ public:
     static uint64_t startForMedia(const WebCore::ResourceRequest&, unsigned mediaID);
     static void cancelMedia(uint64_t id);
     static void registerCommands();
+    // A profile service fetches downloads and media for its content engines:
+    // their events and bytes carry the content engine's link.
+    static void installService();
 
     void ref() const final { RefCounted::ref(); }
     void deref() const final { RefCounted::deref(); }
 
 private:
     Download(const WebCore::ResourceRequest&, const String& suggestedFilename);
+    static void startForLink(const WebCore::ResourceRequest&, const String& suggestedFilename, bool userGesture, unsigned link);
     void begin();
     void cancel();
     void pause();
@@ -60,6 +64,10 @@ private:
     bool m_paused { false };
     bool m_resuming { false };
     bool m_userGesture { false };
+    // The content engine it is for (0: this engine's own), and the id that
+    // engine knows a media fetch by.
+    unsigned m_link { 0 };
+    uint64_t m_outwardID { 0 };
 };
 
 } // namespace Inception

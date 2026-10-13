@@ -10,6 +10,8 @@
 #include "ResourceResponse.h"
 #include "SharedBuffer.h"
 #include "bridge/Bridge.h"
+#include "link/Link.h"
+#include "link/NetCoders.h"
 #include "net/Session.h"
 #include "view/Preferences.h"
 #include <emscripten/em_js.h>
@@ -18,9 +20,11 @@
 #include <wtf/text/MakeString.h>
 
 // The bytes go to the host next to the JSON events, as a transferable copy.
-EM_JS(void, inception_download_chunk, (double id, const uint8_t* data, size_t length), {
+// In a profile service, `link` names the content engine the download is for
+// and `media` says the bytes are a media element's.
+EM_JS(void, inception_download_chunk, (double id, const uint8_t* data, size_t length, unsigned link, int media), {
     const bytes = HEAPU8.slice(data, data + length);
-    postMessage({ inceptionDownload: { id, bytes } }, [bytes.buffer]);
+    postMessage({ inceptionDownload: link ? { id, bytes, link, media: !!media } : { id, bytes } }, [bytes.buffer]);
 });
 
 namespace Inception {
@@ -44,14 +48,38 @@ String Download::eventName(ASCIILiteral what) const
 Ref<JSON::Object> Download::eventData() const
 {
     auto data = JSON::Object::create();
-    data->setDouble("id"_s, m_id);
+    data->setDouble("id"_s, m_outwardID ? m_outwardID : m_id);
     if (m_mediaID)
         data->setInteger("media"_s, m_mediaID);
+    if (m_link)
+        data->setInteger("link"_s, m_link);
     return data;
+}
+
+// A content engine's media fetches, by (link, the id the content engine gave
+// it): the service's own id.
+static HashMap<std::pair<unsigned, uint64_t>, uint64_t>& mediaFetches()
+{
+    static NeverDestroyed<HashMap<std::pair<unsigned, uint64_t>, uint64_t>> map;
+    return map;
 }
 
 uint64_t Download::startForMedia(const ResourceRequest& request, unsigned mediaID)
 {
+    if (role() == Role::Content) {
+        // The id is this engine's; the service's events carry it back.
+        static uint64_t lastID;
+        auto id = ++lastID;
+        if (RefPtr link = Link::service()) {
+            ResourceRequest copy = request;
+            flattenBody(copy);
+            Encoder encoder;
+            encoder.u64(id);
+            encoder << copy << mediaID;
+            link->send(Message::MediaFetchStart, WTF::move(encoder));
+        }
+        return id;
+    }
     Ref download = adoptRef(*new Download(request, { }));
     download->m_mediaID = mediaID;
     active().add(download->m_id, download);
@@ -61,16 +89,93 @@ uint64_t Download::startForMedia(const ResourceRequest& request, unsigned mediaI
 
 void Download::cancelMedia(uint64_t id)
 {
+    if (role() == Role::Content) {
+        if (RefPtr link = Link::service()) {
+            Encoder encoder;
+            encoder.u64(id);
+            link->send(Message::MediaFetchCancel, WTF::move(encoder));
+        }
+        return;
+    }
     if (auto it = active().find(id); it != active().end())
         Ref { it->value }->cancel();
 }
 
 void Download::start(const ResourceRequest& request, const String& suggestedFilename, bool userGesture)
 {
+    if (role() == Role::Content) {
+        if (RefPtr link = Link::service()) {
+            ResourceRequest copy = request;
+            flattenBody(copy);
+            Encoder encoder;
+            encoder << copy << suggestedFilename << userGesture;
+            link->send(Message::DownloadStart, WTF::move(encoder));
+        }
+        return;
+    }
+    startForLink(request, suggestedFilename, userGesture, 0);
+}
+
+void Download::startForLink(const ResourceRequest& request, const String& suggestedFilename, bool userGesture, unsigned link)
+{
     Ref download = adoptRef(*new Download(request, suggestedFilename));
     download->m_userGesture = userGesture;
+    download->m_link = link;
     active().add(download->m_id, download);
     download->begin();
+}
+
+void Download::installService()
+{
+    // {request, filename, userGesture}
+    Link::handle(Message::DownloadStart, [](Link& link, Decoder& decoder) {
+        auto request = decoder.decode<ResourceRequest>();
+        auto filename = decoder.string();
+        auto userGesture = decoder.boolean();
+        if (userGesture && request->url().protocolIsInHTTPFamily())
+            startForLink(*request, *filename, *userGesture, link.id());
+    });
+    // {id, request, media}
+    Link::handle(Message::MediaFetchStart, [](Link& link, Decoder& decoder) {
+        auto id = decoder.u64();
+        auto request = decoder.decode<ResourceRequest>();
+        auto mediaID = decoder.decode<unsigned>();
+        if (!mediaID || !*id || !request->url().protocolIsInHTTPFamily() || mediaFetches().contains({ link.id(), *id }))
+            return;
+        Ref download = adoptRef(*new Download(*request, { }));
+        download->m_mediaID = *mediaID;
+        download->m_link = link.id();
+        download->m_outwardID = *id;
+        mediaFetches().add({ link.id(), *id }, download->m_id);
+        active().add(download->m_id, download);
+        download->begin();
+    });
+    // {id}
+    Link::handle(Message::MediaFetchCancel, [](Link& link, Decoder& decoder) {
+        auto id = decoder.u64();
+        if (!id)
+            return;
+        auto serviceID = mediaFetches().take({ link.id(), *id });
+        if (auto it = active().find(serviceID); serviceID && it != active().end())
+            Ref { it->value }->cancel();
+    });
+    // A content engine is gone: its media fetches stop. Its downloads go on;
+    // they are the person's.
+    Link::addCloseObserver([](Link& link) {
+        if (!link.isServiceEnd())
+            return;
+        Vector<uint64_t> fetches;
+        mediaFetches().removeIf([&](auto& entry) {
+            if (entry.key.first != link.id())
+                return false;
+            fetches.append(entry.value);
+            return true;
+        });
+        for (auto id : fetches) {
+            if (auto it = active().find(id); it != active().end())
+                Ref { it->value }->cancel();
+        }
+    });
 }
 
 Download::Download(const ResourceRequest& request, const String& suggestedFilename)
@@ -154,7 +259,7 @@ void Download::curlDidReceiveData(CurlRequest&, Ref<SharedBuffer>&& buffer)
     if (!m_started)
         return;
     auto span = buffer->span();
-    inception_download_chunk(m_id, span.data(), span.size());
+    inception_download_chunk(m_outwardID ? m_outwardID : m_id, span.data(), span.size(), m_link, m_mediaID ? 1 : 0);
     m_received += span.size();
     if (m_received - m_reported >= progressStep) {
         m_reported = m_received;
@@ -219,6 +324,8 @@ void Download::finish(const String& error)
     if (!error.isEmpty())
         data->setString("error"_s, error);
     emitEvent(eventName("finished"_s), WTF::move(data));
+    if (m_outwardID)
+        mediaFetches().remove({ m_link, m_outwardID });
     // Last: this may be the final reference.
     active().remove(m_id);
 }
@@ -244,11 +351,14 @@ void Download::registerCommands()
         if (auto it = active().find(id); it != active().end())
             Ref { it->value }->resume();
     });
-    // {url}: a download the host asked for (a context menu's "Save").
+    // {url, link?}: a download the host asked for (a context menu's "Save").
+    // A profile service tags its events with `link`, the content engine whose
+    // view asked.
     registerCommand("download.start"_s, [](JSON::Object& args) {
         URL url { args.getString("url"_s) };
+        auto link = std::max(args.getInteger("link"_s).value_or(0), 0);
         if (url.protocolIsInHTTPFamily())
-            Download::start(ResourceRequest { WTF::move(url) }, args.getString("filename"_s), true);
+            Download::startForLink(ResourceRequest { WTF::move(url) }, args.getString("filename"_s), true, link);
     });
 }
 
