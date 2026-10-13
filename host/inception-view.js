@@ -24,7 +24,7 @@ export { AttachUnavailableError, connectProfile } from './attach.js';
 // The attach host of each profile this document holds.
 const attachHosts = new Map();
 
-const config = { engineUrl: null, relayUrl: null, binaryenUrl: null, storage: null, policy: null, debug: false, agent: null, webglContexts: 0, modules: {}, isolation: 'shared', attach: true };
+const config = { engineUrl: null, relayUrl: null, binaryenUrl: null, storage: null, policy: null, debug: false, agent: null, webglContexts: 0, modules: {}, isolation: 'shared', attach: true, brokerUrl: undefined };
 const policy = () => resolvePolicy(config.policy);
 let translator = null;
 
@@ -46,7 +46,8 @@ export const Inception = {
   // true): a view whose profile another document of the site already holds
   // attaches to that document and shows a window of it, instead of failing; the
   // document that holds the profile accepts such views (host/attach.js). false
-  // restores the error.
+  // restores the error. brokerUrl: where the site serves host/broker.js, if not
+  // next to the host modules (documents of one site must agree on it).
   configure(options) {
     const { wispUrl, ...rest } = options;
     // wispUrl: the earlier name of relayUrl, still accepted.
@@ -701,7 +702,7 @@ export class InceptionView extends HTMLElement {
       if (document.fullscreenElement !== this) this.#main.channel.send('fullscreen.changed', { active: false });
       this.dispatchEvent(new CustomEvent('fullscreen', { detail: { active: document.fullscreenElement === this } }));
     });
-    this.#attachHost?.serve(this, { policy });
+    this.#attachHost?.serve(this, { policy, brokerUrl: config.brokerUrl });
     this.dataset.role = 'host';
     return ready;
   }
@@ -712,7 +713,7 @@ export class InceptionView extends HTMLElement {
   async #startAttached(profile) {
     const busy = `The profile "${profile}" is already open in another tab or window. Close it there, or open this page with a different profile.`;
     if (!this.#attachEnabled() || !(await hostPresent(profile))) throw new Error(busy);
-    const connection = await new ProfileConnection(profile).connect();
+    const connection = await new ProfileConnection(profile).connect({ brokerUrl: config.brokerUrl });
     this.#connection = connection;
     const { width, height } = this.#cssSize();
     const remote = await connection.open({ width, height, deviceScaleFactor: devicePixelRatio, url: this.getAttribute('src') ?? '' });

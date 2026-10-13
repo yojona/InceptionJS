@@ -123,6 +123,11 @@ export function validateHostMessage(message, ports = []) {
   }
 }
 
+// The broker's address: next to this module unless the embedder says where
+// else the site serves it (a worker script is identified by its URL, so
+// documents that reach this module through different paths must agree).
+const brokerAddress = (url) => url ?? new URL('./broker.js', import.meta.url);
+
 const randomId = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`);
 
 // An event detail that survives structured cloning, or {}.
@@ -158,6 +163,7 @@ export class AttachHost {
   #broker = null;
   #onMessage = null;
   #onWindowOpen = null;
+  #brokerUrl;
   #nextPopup = 1;
   stopped = false;
 
@@ -169,9 +175,10 @@ export class AttachHost {
 
   // Starts accepting clients: through the broker when this browser has shared
   // workers, and from the popups and frames of this document.
-  serve(view, { policy } = {}) {
+  serve(view, { policy, brokerUrl } = {}) {
     this.#view = view;
     if (policy) this.#policy = policy;
+    this.#brokerUrl = brokerUrl;
     this.#onMessage = (event) => this.#fromWindow(event);
     addEventListener('message', this.#onMessage);
     this.#onWindowOpen = (event) => this.#popup(event);
@@ -182,7 +189,7 @@ export class AttachHost {
   #joinBroker() {
     if (typeof SharedWorker === 'undefined') return;
     try {
-      const worker = new SharedWorker(new URL('./broker.js', import.meta.url), { name: 'inception-broker' });
+      const worker = new SharedWorker(brokerAddress(this.#brokerUrl), { name: 'inception-broker' });
       this.#broker = worker;
       worker.port.onmessage = (event) => {
         const message = event.data;
@@ -534,6 +541,7 @@ export class ProfileConnection extends EventTarget {
   #abort = new AbortController();
   #nextKey = 1;
   #hostWatch = null;
+  #brokerUrl;
   state = 'new';
 
   constructor(profile) {
@@ -546,8 +554,10 @@ export class ProfileConnection extends EventTarget {
   get hostId() { return this.#hostId; }
   get windows() { return [...this.#windows.values()]; }
 
-  // Finds the host. `via`: the routes to try, in order.
-  async connect({ via = ['opener', 'broker'] } = {}) {
+  // Finds the host. `via`: the routes to try, in order. `brokerUrl`: where
+  // the site serves host/broker.js, if not next to this module.
+  async connect({ via = ['opener', 'broker'], brokerUrl } = {}) {
+    this.#brokerUrl = brokerUrl;
     this.#clientLock = await tryLock(clientLockName(this.#profile, this.#id));
     const problems = [];
     for (const route of via) {
@@ -615,7 +625,7 @@ export class ProfileConnection extends EventTarget {
     if (this.#worker) return this.#worker;
     let worker;
     try {
-      worker = new SharedWorker(new URL('./broker.js', import.meta.url), { name: 'inception-broker' });
+      worker = new SharedWorker(brokerAddress(this.#brokerUrl), { name: 'inception-broker' });
     } catch (error) {
       throw new AttachUnavailableError(`This profile is open in another tab, and the shared worker that connects tabs could not start (${error?.message ?? error}).`);
     }

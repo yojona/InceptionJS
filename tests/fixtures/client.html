@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>InceptionJS: attach client fixture</title>
+<style>html, body { margin: 0 } canvas { display: block; width: 400px; height: 300px; outline: none }</style>
+<canvas id="screen" aria-label="Web content"></canvas>
+<script type="module">
+  // A page with no engine that attaches to a profile another document holds
+  // and shows a window of it. Tests drive it through window.client.
+  import { connectProfile } from '../../host/attach.js';
+
+  window.client = {
+    connect: (profile, options) => connectProfile(profile, { brokerUrl: '/host/broker.js', ...options }).then((connection) => (window.connection = connection, connection.id)),
+    open: async (options) => {
+      window.remote = await window.connection.open(options);
+      window.remote.show(document.getElementById('screen'), { dialogs: new URLSearchParams(location.search).get('dialogs') ?? 'dismiss' });
+      return window.remote.id;
+    },
+  };
+</script>
