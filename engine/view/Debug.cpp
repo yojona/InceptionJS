@@ -10,6 +10,7 @@
 #include "view/View.h"
 #include <JavaScriptCore/JSCJSValueInlines.h>
 #include <JavaScriptCore/JSLock.h>
+#include <cstdlib>
 #include <emscripten/heap.h>
 #include <wtf/NeverDestroyed.h>
 
@@ -62,7 +63,13 @@ void registerDebugCommands()
         emitEvent("debug.result"_s, WTF::move(result));
     });
 
-    // {restoreAfterMs}: loses the engine's WebGL context, then restores it.
+    // {}: aborts the engine, to exercise crash reporting.
+    registerCommand("debug.crash"_s, [](JSON::Object&) {
+        report("error"_s, "debug.crash: aborting on request"_s);
+        abort();
+    });
+
+        // {restoreAfterMs}: loses the engine's WebGL context, then restores it.
     registerCommand("debug.loseGPU"_s, [](JSON::Object& args) {
         inception_gfx_debug_lose_context(args.getInteger("restoreAfterMs"_s).value_or(500));
     });
