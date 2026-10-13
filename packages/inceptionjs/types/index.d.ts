@@ -233,6 +233,15 @@ export interface Preferences {
   timeZone: string | 'auto';
 }
 
+export interface SecurityState {
+  tab: number;
+  url: string;
+  scheme: string;
+  secure: boolean;
+  httpVersion?: string;
+  certificate?: { subject?: string; validFrom?: number; validUntil?: number; dnsNames?: string[]; verificationError: number; chainLength: number };
+}
+
 export interface HistoryEntry {
   url: string;
   title: string;
@@ -257,11 +266,14 @@ export interface ContextMenuDetail {
 export interface InceptionViewEventMap {
   navigate: CustomEvent<{ url: string }>;
   title: CustomEvent<{ title: string }>;
-  loading: CustomEvent<{ loading: boolean; error?: string; failedURL?: string }>;
+  loading: CustomEvent<{ loading: boolean; error?: string; failedURL?: string; errorKind?: 'certificate' }>;
   navigationstate: CustomEvent<{ canGoBack: boolean; canGoForward: boolean }>;
   popup: CustomEvent<{ url: string }>;
   console: CustomEvent<{ level: string; message: string }>;
-  crash: CustomEvent<{ reason: string; stack?: string }>;
+  crash: CustomEvent<{ reason: string; stack?: string; kind?: 'out_of_memory' }>;
+  securitystate: CustomEvent<SecurityState>;
+  /** A load failed because the server's certificate did not verify; there is no way past it. */
+  certificateerror: CustomEvent<{ url: string; verificationError: number; description: string; subject?: string; validFrom?: number; validUntil?: number }>;
   cursor: CustomEvent<{ cursor: string }>;
   fullscreen: CustomEvent<{ active: boolean }>;
   zoom: CustomEvent<{ factor: number }>;
@@ -302,6 +314,8 @@ export declare class InceptionView extends HTMLElement {
   readonly loading: boolean;
   readonly canGoBack: boolean;
   readonly canGoForward: boolean;
+  /** The connection of the page shown, for the embedder's own address bar. */
+  readonly securityState: SecurityState | null;
   /** Resolves when the engine is running: {renderer: 'gpu' | 'cpu', ...}. */
   readonly ready: Promise<{ renderer: 'gpu' | 'cpu'; persistent?: boolean }>;
   /** Setting merges; a field set to 'auto' follows the host again. */

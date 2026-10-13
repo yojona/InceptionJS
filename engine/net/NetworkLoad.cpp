@@ -2,6 +2,7 @@
 #include "net/NetworkLoad.h"
 
 #include "CertificateInfo.h"
+#include "CertificateSummary.h"
 #include "CurlRequest.h"
 #include "CurlResponse.h"
 #include "HTTPHeaderNames.h"
@@ -138,9 +139,22 @@ void NetworkLoad::curlDidComplete(CurlRequest&, NetworkLoadMetrics&& metrics)
         loader->didFinishLoading(metrics);
 }
 
-void NetworkLoad::curlDidFailWithError(CurlRequest&, ResourceError&& error, CertificateInfo&&)
+void NetworkLoad::curlDidFailWithError(CurlRequest&, ResourceError&& error, CertificateInfo&& certificate)
 {
     report("debug"_s, makeString("load failed "_s, m_request.url().string(), ": "_s, error.localizedDescription()));
+    // What the host needs to explain a certificate error in its own UI.
+    if (error.isCertificationVerificationError()) {
+        auto data = JSON::Object::create();
+        data->setString("url"_s, m_request.url().string());
+        data->setInteger("verificationError"_s, certificate.verificationError());
+        data->setString("description"_s, certificate.verificationErrorDescription());
+        if (auto summary = certificate.summary()) {
+            data->setString("subject"_s, summary->subject);
+            data->setDouble("validFrom"_s, summary->validFrom.milliseconds());
+            data->setDouble("validUntil"_s, summary->validUntil.milliseconds());
+        }
+        emitEvent("security.certificateError"_s, WTF::move(data));
+    }
     m_curl = nullptr;
     if (RefPtr loader = std::exchange(m_loader, nullptr))
         loader->didFail(error);

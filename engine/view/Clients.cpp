@@ -1,6 +1,8 @@
 #include "config.h"
 #include "view/Clients.h"
 
+#include "CertificateInfo.h"
+#include "CertificateSummary.h"
 #include "Color.h"
 #include "Cursor.h"
 #include "Document.h"
@@ -549,15 +551,50 @@ void FrameLoaderClientImpl::dispatchDidReceiveTitle(const StringWithDirection& t
         History::updateTitle(loader->url(), title.string);
 }
 
+// "security.state": what the host's own UI shows about the connection of the
+// page now shown (security plan S3): the scheme, and the server certificate
+// the engine verified, when there was one.
+static void emitSecurityState(View& view, DocumentLoader& loader)
+{
+    auto& url = loader.url();
+    auto data = JSON::Object::create();
+    data->setInteger("tab"_s, view.id());
+    data->setString("url"_s, url.string());
+    data->setString("scheme"_s, url.protocol().toString());
+    data->setBoolean("secure"_s, url.protocolIs("https"_s) || url.protocolIs("wss"_s));
+    auto& response = loader.response();
+    if (!response.httpVersion().isEmpty())
+        data->setString("httpVersion"_s, response.httpVersion());
+    if (auto& info = response.certificateInfo(); info && !info->isEmpty()) {
+        auto certificate = JSON::Object::create();
+        if (auto summary = info->summary()) {
+            certificate->setString("subject"_s, summary->subject);
+            // Milliseconds since the epoch, as Date takes them.
+            certificate->setDouble("validFrom"_s, summary->validFrom.milliseconds());
+            certificate->setDouble("validUntil"_s, summary->validUntil.milliseconds());
+            auto names = JSON::Array::create();
+            for (auto& name : summary->dnsNames)
+                names->pushString(name);
+            certificate->setArray("dnsNames"_s, WTF::move(names));
+        }
+        certificate->setInteger("verificationError"_s, info->verificationError());
+        certificate->setInteger("chainLength"_s, info->certificateChain().size());
+        data->setObject("certificate"_s, WTF::move(certificate));
+    }
+    emitEvent("security.state"_s, WTF::move(data));
+}
+
 void FrameLoaderClientImpl::dispatchDidCommitLoad(std::optional<HasInsecureContent>, std::optional<UsedLegacyTLS>, std::optional<WasPrivateRelayed>)
 {
     if (!isMainFrame())
         return;
     auto data = JSON::Object::create();
     data->setInteger("tab"_s, m_view.id());
-    auto& url = m_frame->loader().documentLoader()->url();
+    RefPtr loader = m_frame->loader().documentLoader();
+    auto& url = loader->url();
     data->setString("url"_s, url.string());
     emitEvent("navigate"_s, WTF::move(data));
+    emitSecurityState(m_view, *loader);
     History::recordVisit(url);
 }
 
@@ -569,6 +606,10 @@ static void emitLoadFinished(View& view, const ResourceError* error)
     if (error && !error->isCancellation()) {
         data->setString("error"_s, error->localizedDescription());
         data->setString("failedURL"_s, error->failingURL().string());
+        // The server's certificate did not verify: the host shows its own
+        // error, and there is no way past it.
+        if (error->isCertificationVerificationError())
+            data->setString("errorKind"_s, "certificate"_s);
     }
     emitEvent("loading"_s, WTF::move(data));
 }

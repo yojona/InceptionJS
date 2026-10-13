@@ -49,13 +49,13 @@ const userStylesShim = (css) =>
 const CLIPBOARD_GESTURE_MS = 2000;
 
 // Events the engine reports that the view re-dispatches as DOM events.
-const VIEW_EVENTS = ['navigate', 'title', 'loading', 'popup', 'console', 'crash', 'cursor', 'navigation.state', 'find.result', 'zoom', 'contextmenu'];
+const VIEW_EVENTS = ['security.state', 'security.certificateError', 'navigate', 'title', 'loading', 'popup', 'console', 'crash', 'cursor', 'navigation.state', 'find.result', 'zoom', 'contextmenu'];
 // Names the view dispatches them under where the engine's would clash with
 // the element's own DOM events.
 // What the view's own client negotiates; remote clients get less (serve()).
 const PROTOCOL_CAPABILITIES = ['view', 'history', 'find', 'observe'];
 const EVENT_CAPABILITY = { console: 'observe', 'find.result': 'find' };
-const DOM_EVENT_NAMES = { contextmenu: 'contextmenurequest', 'navigation.state': 'navigationstate', 'find.result': 'findresult', 'agent.action': 'agentaction', 'agent.blocked': 'agentblocked' };
+const DOM_EVENT_NAMES = { 'security.state': 'securitystate', 'security.certificateError': 'certificateerror', contextmenu: 'contextmenurequest', 'navigation.state': 'navigationstate', 'find.result': 'findresult', 'agent.action': 'agentaction', 'agent.blocked': 'agentblocked' };
 // Events of the agent namespace (host/agent.js), re-dispatched the same way.
 const AGENT_EVENTS = ['control', 'agent.action', 'agent.blocked'];
 
@@ -89,6 +89,7 @@ export class InceptionView extends HTMLElement {
   #lastInput = -Infinity;
   #ready = null;
   #state = { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, zoom: 1 };
+  #security = null;
   #agentHost = null;
   #agentClient = new AgentClient(async (method, params) => {
     await this.ready;
@@ -123,6 +124,10 @@ export class InceptionView extends HTMLElement {
   get canGoBack() { return this.#state.canGoBack; }
   get canGoForward() { return this.#state.canGoForward; }
   get ready() { return this.#ready ??= this.#start(); }
+  // The connection of the page shown, from the engine: {url, scheme, secure,
+  // httpVersion?, certificate?: {subject, validFrom, validUntil, dnsNames,
+  // verificationError}}, for the embedder's own address bar.
+  get securityState() { return this.#security; }
 
   // Tabs share this view and its engine; one is shown (host/tabs.js).
   get tabs() { return this.#tabs.list(); }
@@ -522,6 +527,7 @@ export class InceptionView extends HTMLElement {
         if (name === 'loading') this.#state.loading = e.detail.loading;
         if (name === 'navigation.state') Object.assign(this.#state, e.detail);
         if (name === 'zoom') this.#state.zoom = e.detail.factor;
+        if (name === 'security.state') this.#security = Object.freeze({ ...e.detail });
         server.emit(name, e.detail, EVENT_CAPABILITY[name]);
       });
     }
