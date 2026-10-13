@@ -410,6 +410,9 @@ export class AgentHost {
 
   async navigate({ url } = {}) {
     if (typeof url !== 'string' || !url) throw fail('invalid_params', 'url must be a non-empty string');
+    // A page (or text it put in front of the agent) must not get script, data
+    // or file addresses opened for it.
+    if (!/^(https?:\/\/|about:blank$)/i.test(url.trim())) throw fail('invalid_params', 'agents navigate to http(s) addresses only');
     return this.#perform('navigate', { url }, 'navigate', null, async () => {
       const navigationsBefore = this.#navigations;
       this.#runtime.send('load', { url });
