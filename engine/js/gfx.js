@@ -107,7 +107,7 @@ addToLibrary({
   $inceptionGfxBitmap: () => {
     const source = inceptionGfx.canvas;
     if (inceptionGfx.copyFrames === undefined)
-      inceptionGfx.copyFrames = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg\//.test(navigator.userAgent);
+      inceptionGfx.copyFrames = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg.test(navigator.userAgent);
     if (!inceptionGfx.copyFrames) return source.transferToImageBitmap();
     const copy = inceptionGfx.copy ??= new OffscreenCanvas(source.width, source.height);
     if (copy.width !== source.width) copy.width = source.width;
