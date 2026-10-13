@@ -3,6 +3,7 @@
 #if ENABLE(GEOLOCATION)
 
 #include "Document.h"
+#include "DocumentPage.h"
 #include "Geolocation.h"
 #include "GeolocationClient.h"
 #include "GeolocationController.h"
@@ -13,6 +14,7 @@
 #include "bridge/Bridge.h"
 #include "modules/Permissions.h"
 #include "view/View.h"
+#include "view/Window.h"
 #include <wtf/NeverDestroyed.h>
 #include <wtf/RefCounted.h>
 #include <wtf/TZoneMallocInlines.h>
@@ -57,6 +59,9 @@ public:
     {
         RefPtr document = geolocation.document();
         auto origin = document ? document->securityOrigin().toString() : String { };
+        // The prompt names the window that asked.
+        auto* view = View::fromPage(document ? document->page() : nullptr);
+        WindowScope scope(view ? view->window().id() : 0);
         Permissions::request(Permissions::Kind::Geolocation, origin, [geolocation = Ref { geolocation }](bool granted) {
             geolocation->setIsAllowed(granted, { });
         });
@@ -67,7 +72,9 @@ public:
     void positionChanged(GeolocationPositionData&& position)
     {
         m_lastPosition = position;
-        if (auto* view = View::singleton()) {
+        // One provider serves every tab of every window; each page's
+        // controller passes the position on to its own watchers.
+        for (auto* view : View::all()) {
             if (auto* controller = GeolocationController::from(&view->page()))
                 controller->positionChanged(m_lastPosition);
         }
@@ -75,7 +82,7 @@ public:
 
     void errorOccurred(GeolocationError::ErrorCode code, const String& message)
     {
-        if (auto* view = View::singleton()) {
+        for (auto* view : View::all()) {
             if (auto* controller = GeolocationController::from(&view->page())) {
                 auto error = GeolocationError::create(code, message);
                 controller->errorOccurred(error.get());

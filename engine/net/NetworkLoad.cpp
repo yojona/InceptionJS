@@ -1,6 +1,12 @@
 #include "config.h"
 #include "net/NetworkLoad.h"
 
+#include "DocumentPage.h"
+#include "LocalFrame.h"
+#include "ResourceLoader.h"
+#include "view/View.h"
+#include "view/Window.h"
+
 #include "CertificateInfo.h"
 #include "CertificateSummary.h"
 #include "CurlRequest.h"
@@ -163,6 +169,10 @@ void NetworkLoad::curlDidFailWithError(CurlRequest&, ResourceError&& error, Cert
             data->setDouble("validFrom"_s, summary->validFrom.milliseconds());
             data->setDouble("validUntil"_s, summary->validUntil.milliseconds());
         }
+        // The window of the page that made the load.
+        RefPtr frame = m_loader ? m_loader->frame() : nullptr;
+        auto* view = View::fromPage(frame ? frame->page() : nullptr);
+        WindowScope scope(view ? view->window().id() : 0);
         emitEvent("security.certificateError"_s, WTF::move(data));
     }
     m_curl = nullptr;

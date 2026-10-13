@@ -2,6 +2,8 @@
 
 #if ENABLE(NOTIFICATIONS)
 
+#include "Document.h"
+#include "DocumentPage.h"
 #include "Notification.h"
 #include "NotificationClient.h"
 #include "NotificationData.h"
@@ -11,6 +13,8 @@
 #include "SecurityOrigin.h"
 #include "bridge/Bridge.h"
 #include "modules/Permissions.h"
+#include "view/View.h"
+#include "view/Window.h"
 #include <wtf/HashMap.h>
 #include <wtf/NeverDestroyed.h>
 
@@ -57,6 +61,10 @@ public:
         auto known = m_permissions.get(origin);
         if (known != Permission::Default)
             return handler(known);
+        // The prompt names the window that asked.
+        RefPtr document = dynamicDowncast<Document>(context);
+        auto* view = View::fromPage(document ? document->page() : nullptr);
+        WindowScope scope(view ? view->window().id() : 0);
         Permissions::request(Permissions::Kind::Notifications, origin, [this, origin, handler = WTF::move(handler)](bool granted) mutable {
             auto permission = granted ? Permission::Granted : Permission::Denied;
             m_permissions.set(origin, permission);
