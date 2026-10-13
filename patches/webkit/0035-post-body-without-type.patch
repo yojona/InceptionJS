@@ -1,0 +1,25 @@
+Send a POST body without a type as it is, not as a form.
+
+curl labels every POST body application/x-www-form-urlencoded unless the
+request names a type; the port removed that label only for empty bodies. A
+fetch() or XMLHttpRequest body made of a Blob or an ArrayBuffer has no type,
+and servers then parsed the bytes as a form (httpbin.org showed an empty body).
+Now no Content-Type is sent unless the request has one, as other browsers do.
+
+diff --git a/Source/WebCore/platform/network/curl/CurlRequest.cpp b/Source/WebCore/platform/network/curl/CurlRequest.cpp
+index f5cdbf6..31abb87 100644
+--- a/Source/WebCore/platform/network/curl/CurlRequest.cpp
++++ b/Source/WebCore/platform/network/curl/CurlRequest.cpp
+@@ -563,8 +563,10 @@ void CurlRequest::setupPOST()
+     m_curlHandle->enableHttpPostRequest(totalSize);
+     m_curlHandle->setReadCallbackFunction(willSendDataCallback, this);
+ 
+-    // Override the default POST Content-Type: header
+-    if (!m_request.hasHTTPHeader(HTTPHeaderName::ContentType) && !totalSize)
++    // curl labels every POST body application/x-www-form-urlencoded unless told
++    // otherwise; a body sent without a type (a Blob or buffer) goes without one,
++    // as in other browsers.
++    if (!m_request.hasHTTPHeader(HTTPHeaderName::ContentType))
+         m_curlHandle->removeRequestHeader("Content-Type"_s);
+ 
+     // Disable a "Expect: 100-continue" header
