@@ -56,7 +56,7 @@ test('a download is reported with its file but not saved to the disk by default'
   expect(result.saved).toEqual([]);
 });
 
-test('policy.downloads "save" saves the file, and the embedder can still take it over', async ({ page }) => {
+test('policy.downloads "save" saves the file to the disk', async ({ page }) => {
   await open(page, {"downloads":"save"});
   const result = await download(page);
   expect(result.saved).toEqual(['robots.txt']);
@@ -74,4 +74,41 @@ test('a download larger than maxDownloadBytes is cancelled', async ({ page }) =>
   const result = await download(page);
   expect(result.error).toMatch(/larger/);
   expect(result.size).toBeUndefined();
+});
+
+const LINK = '<title>links</title><a target="_blank" href="about:blank#opened" style="display:block;font-size:40px">open</a>';
+const tabIds = (page) => view(page).evaluate((el) => el.tabs.map((tab) => tab.id));
+const click = async (page) => {
+  const box = await view(page).boundingBox();
+  await page.mouse.click(box.x + 40, box.y + 30);
+};
+
+test('a window a page opens is closed and reported by default', async ({ page }) => {
+  await open(page);
+  const first = await view(page).evaluate((el) => el.activeTab);
+  const blocked = view(page).evaluate((el) => new Promise((resolve) => el.addEventListener('popupblocked', (e) => resolve(e.detail), { once: true })));
+  await write(page, LINK);
+  await click(page);
+  const detail = await blocked;
+  expect(detail.userGesture).toBe(true);
+  expect(detail.url).toContain('about:blank');
+  await expect.poll(() => tabIds(page)).toEqual([first]);
+  expect(await view(page).evaluate((el) => el.activeTab)).toBe(first);
+});
+
+test('the embedder can accept one popup from the newtab event', async ({ page }) => {
+  await open(page);
+  const first = await view(page).evaluate((el) => el.activeTab);
+  await view(page).evaluate((el) => el.addEventListener('newtab', (e) => e.detail.allow('foreground')));
+  await write(page, LINK);
+  await click(page);
+  await expect.poll(() => view(page).evaluate((el) => el.activeTab)).not.toBe(first);
+});
+
+test('policy.newTabs "foreground" shows a popup that follows a gesture', async ({ page }) => {
+  await open(page, { newTabs: 'foreground' });
+  const first = await view(page).evaluate((el) => el.activeTab);
+  await write(page, LINK);
+  await click(page);
+  await expect.poll(() => view(page).evaluate((el) => el.activeTab)).not.toBe(first);
 });

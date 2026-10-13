@@ -6,10 +6,14 @@
 //                 audible?, icons?}
 //   tabactivated {tab}
 //   tabclosed    {tab}
-//   newtab       {tab, opener, url, userGesture}: a page opened a tab
-//                (window.open, target=_blank). Cancelable: preventDefault()
-//                closes it. Otherwise policy.newTabs decides: 'foreground'
-//                (default) shows it, 'background' keeps it hidden.
+//   newtab       {tab, opener, url, userGesture, allow(mode?)}: a page opened
+//                a tab (window.open, target=_blank). preventDefault() closes
+//                it; allow('foreground' | 'background') accepts it. Otherwise
+//                policy.newTabs decides: by default it is closed, and
+//                'foreground' or 'background' accept the ones that follow a
+//                user gesture.
+//   popupblocked {tab, opener, url, userGesture}: a tab was closed instead of
+//                shown, so the embedder can tell the person.
 export class Tabs {
   #view;
   #send;
@@ -69,10 +73,21 @@ export class Tabs {
       const tab = this.#tabs.get(id) ?? this.#add(id, {});
       tab.opener = data.opener;
       if (data.url) this.#update(tab, { url: data.url });
-      const event = new CustomEvent('newtab', { detail: { tab: id, opener: data.opener, url: data.url ?? '', userGesture: !!data.userGesture }, cancelable: true });
+      const detail = { tab: id, opener: data.opener, url: data.url ?? '', userGesture: !!data.userGesture };
+      let accepted = null;
+      const allow = (mode = 'foreground') => {
+        accepted = mode === 'background' ? 'background' : 'foreground';
+      };
+      const event = new CustomEvent('newtab', { detail: { ...detail, allow }, cancelable: true });
       this.#view.dispatchEvent(event);
-      if (event.defaultPrevented || this.#policy()?.newTabs === 'block') this.close(id);
-      else if (this.#policy()?.newTabs !== 'background') this.activate(id);
+      const configured = this.#policy().newTabs;
+      const mode = event.defaultPrevented ? 'block' : accepted ?? (detail.userGesture ? configured : 'block');
+      if (mode === 'block') {
+        this.close(id);
+        if (!event.defaultPrevented) this.#view.dispatchEvent(new CustomEvent('popupblocked', { detail }));
+      } else if (mode === 'foreground') {
+        this.activate(id);
+      }
     } else if (name === 'tab.focus') {
       // window.focus() from a hidden tab: only a gesture the person made may
       // switch tabs, so the embedder decides.
