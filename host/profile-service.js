@@ -84,7 +84,7 @@ export class ProfileService extends EventTarget {
 
   async #launch(fresh) {
     const options = this.#options;
-    const runtime = new EngineRuntime({ engineUrl: options.engineUrl, relayUrl: options.relayUrl, maxMemoryMB: options.maxMemoryMB });
+    const runtime = new EngineRuntime({ engineUrl: options.engineUrl, relayUrl: options.relayUrl, maxMemoryMB: options.maxMemoryMB, role: 'profile' });
     this.#runtime = runtime;
     const ready = new Promise((resolve, reject) => {
       runtime.addEventListener('ready', (e) => resolve(e.detail), { once: true });
@@ -103,6 +103,8 @@ export class ProfileService extends EventTarget {
     this.info = await ready;
     runtime.addEventListener('crash', (e) => this.#crashed(runtime, e.detail));
     runtime.onEngineEvent = (name, data) => this.dispatchEvent(new CustomEvent('engineevent', { detail: { name, data } }));
+    // Bytes of downloads and media fetches, tagged with the link they are for.
+    runtime.onDownloadChunk = (chunk) => this.dispatchEvent(new CustomEvent('chunk', { detail: chunk }));
   }
 
   // Joins a content engine (an EngineRuntime) to the service; returns the
