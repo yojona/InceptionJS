@@ -65,9 +65,10 @@ void Download::cancelMedia(uint64_t id)
         Ref { it->value }->cancel();
 }
 
-void Download::start(const ResourceRequest& request, const String& suggestedFilename)
+void Download::start(const ResourceRequest& request, const String& suggestedFilename, bool userGesture)
 {
     Ref download = adoptRef(*new Download(request, suggestedFilename));
+    download->m_userGesture = userGesture;
     active().add(download->m_id, download);
     download->begin();
 }
@@ -143,6 +144,7 @@ void Download::curlDidReceiveResponse(CurlRequest& curl, CurlResponse&& curlResp
     data->setString("filename"_s, filename);
     data->setString("mime"_s, response.mimeType());
     data->setDouble("size"_s, m_size);
+    data->setBoolean("userGesture"_s, m_userGesture);
     emitEvent(eventName("started"_s), WTF::move(data));
     curl.completeDidReceiveResponse();
 }
@@ -246,7 +248,7 @@ void Download::registerCommands()
     registerCommand("download.start"_s, [](JSON::Object& args) {
         URL url { args.getString("url"_s) };
         if (url.protocolIsInHTTPFamily())
-            Download::start(ResourceRequest { WTF::move(url) }, args.getString("filename"_s));
+            Download::start(ResourceRequest { WTF::move(url) }, args.getString("filename"_s), true);
     });
 }
 

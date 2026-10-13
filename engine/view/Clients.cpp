@@ -135,6 +135,7 @@ void ChromeClientImpl::runOpenPanel(LocalFrame&, FileChooser& chooser)
     for (auto& extension : settings.acceptFileExtensions)
         accept->pushString(extension);
     data->setArray("accept"_s, WTF::move(accept));
+    data->setBoolean("userGesture"_s, UserGestureIndicator::processingUserGesture());
     emitEvent("file.choose"_s, WTF::move(data));
 }
 
@@ -450,8 +451,15 @@ void FrameLoaderClientImpl::dispatchDecidePolicyForResponse(const ResourceRespon
         return;
     }
     function(PolicyAction::Ignore);
-    if (request.url().protocolIsInHTTPFamily() && Agent::allowsDownload(request.url()))
-        Download::start(request, downloadAttribute);
+    if (request.url().protocolIsInHTTPFamily() && Agent::allowsDownload(request.url())) {
+        bool userGesture = UserGestureIndicator::processingUserGesture();
+        RefPtr loader = m_frame->loader().policyDocumentLoader();
+        if (!loader)
+            loader = m_frame->loader().provisionalDocumentLoader();
+        if (loader)
+            userGesture |= loader->triggeringAction().processingUserGesture();
+        Download::start(request, downloadAttribute, userGesture);
+    }
 }
 
 // Session history entries: the tree of the whole page, rooted at the main
@@ -466,7 +474,7 @@ RefPtr<HistoryItem> FrameLoaderClientImpl::createHistoryItemTree(bool clipAtTarg
 void FrameLoaderClientImpl::startDownload(const ResourceRequest& request, const String& suggestedName, FromDownloadAttribute)
 {
     if (request.url().protocolIsInHTTPFamily() && Agent::allowsDownload(request.url()))
-        Download::start(request, suggestedName);
+        Download::start(request, suggestedName, UserGestureIndicator::processingUserGesture());
 }
 
 // target=_blank and the like: WebCore opens a new tab through createWindow,

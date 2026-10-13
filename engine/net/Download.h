@@ -10,13 +10,16 @@ namespace Inception {
 
 // A file the page downloads: fetched by the engine (cookies, TLS, the relay,
 // like any load) and streamed to the host, which saves it where the embedder
-// decides. Events: download.started {id, url, filename, mime, size},
+// decides. Events: download.started {id, url, filename, mime, size,
+// userGesture},
 // download.progress {id, received, size}, download.paused/resumed {id, received},
 // download.restarted {id}, download.finished {id, error?}; the
 // bytes travel next to them as transferable chunks.
 class Download final : public RefCounted<Download>, public WebCore::CurlRequestClient {
 public:
-    static void start(const WebCore::ResourceRequest&, const String& suggestedFilename);
+    // `userGesture`: the person's input started it (a click on the link), so the
+    // host may require one before saving.
+    static void start(const WebCore::ResourceRequest&, const String& suggestedFilename, bool userGesture);
     // The same fetch for a media element's own src: events are media.fetch.*
     // with the element's player id, and the host plays the bytes instead of
     // saving them. Returns the fetch's id.
@@ -56,6 +59,7 @@ private:
     unsigned m_mediaID { 0 };
     bool m_paused { false };
     bool m_resuming { false };
+    bool m_userGesture { false };
 };
 
 } // namespace Inception
