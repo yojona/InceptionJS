@@ -2,6 +2,8 @@
 // the protocol client for driving a view from elsewhere (an iframe, a worker, a
 // remote agent over WebSocket).
 export { Inception, InceptionView } from './host/inception-view.js';
+export { InceptionWindow, InceptionWindowElement } from './host/window.js';
+export { createDisplay } from './host/display.js';
 export {
   PROTOCOL_VERSION,
   ErrorCode,

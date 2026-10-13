@@ -1,4 +1,4 @@
-import type { CSSProperties, ForwardRefExoticComponent, RefAttributes } from 'react';
+import type { CSSProperties, ForwardRefExoticComponent, RefAttributes, RefObject } from 'react';
 import type { InceptionConfig, InceptionView as InceptionViewElement, InceptionViewEventMap, Preferences } from 'inceptionjs';
 
 type Handler<K extends keyof InceptionViewEventMap> = (event: InceptionViewEventMap[K]) => void;
@@ -45,12 +45,16 @@ export interface InceptionViewProps {
   onDownloadStart?: Handler<'downloadstart'>;
   onDownloadProgress?: Handler<'downloadprogress'>;
   onDownloadFinish?: Handler<'downloadfinish'>;
+  onWindowOpen?: Handler<'windowopen'>;
+  onWindowCreated?: Handler<'windowcreated'>;
+  onWindowClosed?: Handler<'windowclosed'>;
 }
 
 export type InceptionViewHandle = Pick<
   InceptionViewElement,
   | 'navigate' | 'back' | 'forward' | 'reload' | 'stop' | 'find' | 'findClear' | 'zoom'
   | 'history' | 'deleteHistory' | 'download' | 'cancelDownload' | 'serve' | 'focusInput'
+  | 'openWindow' | 'window' | 'exportWindow' | 'windows'
   | 'debugEvaluate' | 'debugHeap' | 'debugCommand'
   | 'url' | 'title' | 'loading' | 'canGoBack' | 'canGoForward'
 > & {
@@ -59,3 +63,14 @@ export type InceptionViewHandle = Pick<
 };
 
 export declare const InceptionView: ForwardRefExoticComponent<InceptionViewProps & RefAttributes<InceptionViewHandle>>;
+
+export interface InceptionWindowProps {
+  /** The <InceptionView> (its ref or handle) whose engine owns the window. */
+  view: RefObject<InceptionViewHandle | null> | InceptionViewHandle | InceptionViewElement | null;
+  /** The window id (2 or more; window 1 is the view). */
+  window: number;
+  style?: CSSProperties;
+  className?: string;
+}
+
+export declare const InceptionWindow: ForwardRefExoticComponent<InceptionWindowProps & RefAttributes<{ readonly element: HTMLElement | null }>>;

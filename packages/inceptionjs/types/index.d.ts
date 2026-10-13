@@ -36,6 +36,8 @@ export interface InceptionPolicy {
   maxDownloadBytes?: number;
   /** 'block' (default): windows pages open are closed and reported as "popupblocked". Otherwise those after a user gesture are shown. */
   newTabs?: 'block' | 'foreground' | 'background';
+  /** 'tab' (default): what a page opens is a tab of its window. 'window': a new window ("windowopen"), kept or closed by the newTabs rule. */
+  popups?: 'tab' | 'window';
   /** 'dismiss' (default): alert, confirm, prompt and beforeunload are answered without UI. 'native': the browser's own dialogs. */
   dialogs?: 'dismiss' | 'native';
   /** 'user' (default): paste brings the clipboard in, and it is written only soon after the person's own input. true: always. false: never. */
@@ -275,7 +277,8 @@ export interface InceptionViewEventMap {
   navigationstate: CustomEvent<{ canGoBack: boolean; canGoForward: boolean }>;
   popup: CustomEvent<{ url: string }>;
   console: CustomEvent<{ level: string; message: string }>;
-  crash: CustomEvent<{ reason: string; stack?: string; kind?: 'out_of_memory' }>;
+  /** The engine stopped; `windows` lists every window it took down. */
+  crash: CustomEvent<{ reason: string; stack?: string; kind?: 'out_of_memory'; windows?: number[] }>;
   securitystate: CustomEvent<SecurityState>;
   /** A load failed because the server's certificate did not verify; there is no way past it. */
   certificateerror: CustomEvent<{ url: string; verificationError: number; description: string; subject?: string; validFrom?: number; validUntil?: number }>;
@@ -298,7 +301,14 @@ export interface InceptionViewEventMap {
   /** A page dialog answered without UI (the default policy). */
   dialogblocked: CustomEvent<{ type: 'alert' | 'confirm' | 'prompt' | 'beforeunload'; message: string }>;
   /** A window or tab a page opened was closed instead of shown. */
-  popupblocked: CustomEvent<{ tab: number; opener: number; url: string; userGesture: boolean }>;
+  popupblocked: CustomEvent<{ tab: number; opener: number; url: string; userGesture: boolean; window?: number }>;
+  /** A page opened a window (policy.popups 'window'): preventDefault() closes it, allow() keeps it. Show it with <inception-window> or exportWindow(). */
+  windowopen: CustomEvent<{ window: InceptionWindow; opener: number; openerWindow: number; url: string; userGesture: boolean; allow(): void }>;
+  windowcreated: CustomEvent<WindowInfo>;
+  windowclosed: CustomEvent<{ window: number }>;
+  windowupdated: CustomEvent<WindowInfo>;
+  /** A page in this window called window.focus(); the embedder decides whether to bring it forward. */
+  windowfocusrequest: CustomEvent<{ window: number }>;
   /** A page opened a tab: preventDefault() closes it, allow() shows it. */
   newtab: CustomEvent<{ tab: number; opener: number; url: string; userGesture: boolean; allow(mode?: 'foreground' | 'background'): void }>;
   /**
@@ -349,7 +359,15 @@ export declare class InceptionView extends HTMLElement {
    * `capabilities`, by default just 'view'; 'find' (a text oracle), 'history', 'observe' (console) and
    * 'agent' (when enabled) must be named. ['agent'] alone keeps an agent runtime to the policed namespace.
    */
-  serve(transport: Transport, options?: { capabilities?: Array<'view' | 'find' | 'history' | 'observe' | 'agent'> }): unknown;
+  serve(transport: Transport, options?: { capabilities?: ProtocolCapability[]; window?: number }): unknown;
+  /** The windows of this view's engine (one profile, cookies, storage and network), window 1 (the view) first. */
+  readonly windows: WindowInfo[];
+  /** Opens another window of this engine; hidden until a display shows it. */
+  openWindow(options?: { width?: number; height?: number; url?: string; deviceScaleFactor?: number }): Promise<InceptionWindow>;
+  /** The handle of a window other than 1, or null. */
+  window(id: number): InceptionWindow | null;
+  /** A display channel for window `id`, to show it in another document with createDisplay(canvas, port). */
+  exportWindow(id: number): MessagePort;
   /** The agent namespace, or null unless the `agent` attribute or Inception.configure({ agent }) enables it. */
   readonly agent: Agent | null;
   /** Who drives the view. */
@@ -360,7 +378,7 @@ export declare class InceptionView extends HTMLElement {
   focusInput(): void;
 
   /** Development aids; they throw unless the `debug` attribute or `Inception.configure({ debug: true })` is set. */
-  debugEvaluate(source: string): Promise<unknown>;
+  debugEvaluate(source: string, options?: { window?: number }): Promise<unknown>;
   /** JS heap size and capacity, and wasm memory, in bytes. */
   debugHeap(): Promise<{ heapSize: number; heapCapacity: number; memory: number }>;
   debugCommand(command: string, args?: Record<string, unknown>): Promise<void>;
@@ -371,9 +389,85 @@ export declare class InceptionView extends HTMLElement {
   removeEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions): void;
 }
 
+/** 'windows': list, open, resize and close windows, and bind to another window in hello. */
+export type ProtocolCapability = 'view' | 'find' | 'history' | 'observe' | 'agent' | 'windows';
+
+export interface WindowInfo {
+  window: number;
+  visible: boolean;
+  url: string;
+  title: string;
+  activeTab: number;
+  width?: number;
+  height?: number;
+}
+
+export interface InceptionWindowEventMap {
+  navigate: CustomEvent<{ url: string; tab?: number }>;
+  title: CustomEvent<{ title: string; tab?: number }>;
+  loading: CustomEvent<{ loading: boolean; error?: string; failedURL?: string; errorKind?: 'certificate' }>;
+  navigationstate: CustomEvent<{ canGoBack: boolean; canGoForward: boolean }>;
+  tabcreated: CustomEvent<{ tab: number; opener?: number }>;
+  tabactivated: CustomEvent<{ tab: number }>;
+  tabclosed: CustomEvent<{ tab: number }>;
+  control: CustomEvent<{ control: 'human' | 'agent'; reason: string }>;
+  crash: CustomEvent<{ reason: string; windows?: number[] }>;
+  /** The window was closed (by the embedder, a page or its last tab). */
+  close: CustomEvent<{ window: number }>;
+}
+
+/** A window other than 1 of a view's engine: the view's navigation, tab and agent surface, scoped to it. */
+export declare class InceptionWindow extends EventTarget {
+  readonly id: number;
+  readonly closed: boolean;
+  readonly visible: boolean;
+  readonly url: string;
+  readonly title: string;
+  readonly loading: boolean;
+  readonly canGoBack: boolean;
+  readonly canGoForward: boolean;
+  readonly securityState: SecurityState | null;
+  readonly tabs: Array<{ id: number; url: string; title: string; active: boolean; [key: string]: unknown }>;
+  readonly activeTab: number;
+  /** The agent namespace bound to this window, or null when the agent is off. */
+  readonly agent: Agent | null;
+  readonly control: 'human' | 'agent';
+  navigate(url: string): Promise<void>;
+  back(): Promise<void>;
+  forward(): Promise<void>;
+  reload(options?: { bypassCache?: boolean }): Promise<void>;
+  stop(): Promise<void>;
+  find(text: string, options?: { backwards?: boolean; caseSensitive?: boolean }): Promise<FindResult>;
+  findClear(): Promise<void>;
+  zoom(factor: number): Promise<void>;
+  createTab(url?: string, options?: { activate?: boolean }): Promise<void>;
+  activateTab(id: number): Promise<void>;
+  closeTab(id: number): Promise<void>;
+  requestControl(): Promise<{ control: 'agent' }>;
+  releaseControl(): Promise<{ control: 'human' }>;
+  /** The layout size of a window no display shows. */
+  resize(width: number, height: number, options?: { deviceScaleFactor?: number }): Promise<void>;
+  close(): Promise<void>;
+  /** Connects a protocol client bound to this window. */
+  serve(transport: Transport, options?: { capabilities?: ProtocolCapability[] }): unknown;
+  addEventListener<K extends keyof InceptionWindowEventMap>(type: K, listener: (this: InceptionWindow, ev: InceptionWindowEventMap[K]) => unknown, options?: boolean | AddEventListenerOptions): void;
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
+}
+
+/** <inception-window view="#id" window="2">: shows a window of a view in the same document. */
+export declare class InceptionWindowElement extends HTMLElement {}
+
+/**
+ * Shows a window of an engine in another document, through the port its view's exportWindow() returned.
+ * Needs no cross-origin isolation. Video, audio and dialogs stay in the engine's document.
+ * A "closed" event fires on the canvas when the window closes.
+ */
+export declare function createDisplay(canvas: HTMLCanvasElement, port: MessagePort, options?: { clipboard?: boolean }): { close(): void };
+
 declare global {
   interface HTMLElementTagNameMap {
     'inception-view': InceptionView;
+    'inception-window': InceptionWindowElement;
   }
 }
 
@@ -430,7 +524,10 @@ export declare function createWebSocketTransport(socket: WebSocket, options?: { 
 export declare class ProtocolClient extends EventTarget {
   constructor(transport: Transport);
   capabilities: string[];
-  hello(capabilities?: string[]): Promise<{ version: number; capabilities: string[] }>;
+  /** The window this client is bound to, after hello. */
+  window: number;
+  /** `window`: bind to that window (allowed for the connection's own, or with the 'windows' capability). */
+  hello(capabilities?: string[], options?: { window?: number }): Promise<{ version: number; capabilities: string[]; window: number }>;
   request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
 }
 

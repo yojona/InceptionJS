@@ -24,6 +24,9 @@ const EVENTS = {
   onDownloadStart: 'downloadstart',
   onDownloadProgress: 'downloadprogress',
   onDownloadFinish: 'downloadfinish',
+  onWindowOpen: 'windowopen',
+  onWindowCreated: 'windowcreated',
+  onWindowClosed: 'windowclosed',
 };
 
 // Prop name -> element attribute. Booleans set or remove the attribute.
@@ -38,7 +41,7 @@ const ATTRIBUTES = {
   provenanceCorner: 'provenance-corner',
 };
 
-const METHODS = ['navigate', 'back', 'forward', 'reload', 'stop', 'find', 'findClear', 'zoom', 'history', 'deleteHistory', 'download', 'cancelDownload', 'serve', 'focusInput', 'debugEvaluate', 'debugHeap', 'debugCommand'];
+const METHODS = ['navigate', 'back', 'forward', 'reload', 'stop', 'find', 'findClear', 'zoom', 'history', 'deleteHistory', 'download', 'cancelDownload', 'serve', 'focusInput', 'openWindow', 'window', 'exportWindow', 'debugEvaluate', 'debugHeap', 'debugCommand'];
 
 let configured = false;
 let loading = null;
@@ -95,7 +98,7 @@ export const InceptionView = forwardRef(function InceptionView(props, ref) {
   useImperativeHandle(ref, () => {
     const handle = { get element() { return element.current; }, get ready() { return element.current?.ready; } };
     for (const name of METHODS) handle[name] = (...args) => element.current[name](...args);
-    for (const name of ['url', 'title', 'loading', 'canGoBack', 'canGoForward'])
+    for (const name of ['url', 'title', 'loading', 'canGoBack', 'canGoForward', 'windows'])
       Object.defineProperty(handle, name, { get: () => element.current?.[name] });
     return handle;
   }, []);
@@ -111,4 +114,27 @@ export const InceptionView = forwardRef(function InceptionView(props, ref) {
     else if (value !== undefined && value !== false && value !== null) attributes[attribute] = String(value);
   }
   return createElement('inception-view', attributes);
+});
+
+// <InceptionWindow view={viewRef} window={2}>: shows another window of an
+// <InceptionView>'s engine (view.openWindow(), or a page's window.open with
+// policy.popups 'window') in this document.
+export const InceptionWindow = forwardRef(function InceptionWindow({ view, window, style, className }, ref) {
+  const element = useRef(null);
+  const [defined, setDefined] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    load({}).then(() => alive && setDefined(true));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  useEffect(() => {
+    const node = element.current;
+    const viewElement = view?.current?.element ?? view?.element ?? view ?? null;
+    if (defined && node && viewElement) node.view = viewElement;
+  });
+  useImperativeHandle(ref, () => ({ get element() { return element.current; } }), []);
+  if (!defined) return createElement('div', { style, className, 'data-inception-placeholder': '' });
+  return createElement('inception-window', { ref: element, style, className, window: String(window) });
 });
