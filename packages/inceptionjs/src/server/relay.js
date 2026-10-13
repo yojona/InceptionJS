@@ -35,6 +35,10 @@ export const CloseReason = Object.freeze({
 });
 
 const WINDOW = 128;
+
+function isLoopbackHost(host) {
+  return host === 'localhost' || host === '::1' || (net.isIPv4(host) && host.startsWith('127.'));
+}
 // Stop reading from a remote socket while this much is queued towards the page.
 const HIGH_WATER = 4 * 1024 * 1024;
 
@@ -58,8 +62,17 @@ const u32 = (value) => {
  *   origins              allowed page origins (array); empty allows any
  *   dev, devPorts        allow loopback to these local development ports
  *   maxStreams           per connection (default 256)
+ *   maxConnections       open WebSockets in total (default 500)
+ *   maxBytes             bytes a session may move in both directions (default 4 GiB)
+ *   connectsPerMinute    new streams a session may open per minute (default 600)
  *   connectTimeoutMs     default 10000
- *   log                  (level, message) => void
+ *   log                  (level, message) => void; it gets destinations, ports
+ *                        and sizes, never content
+ *   hooks                { resolve(hostname), connect(options) } replace DNS and
+ *                        TCP, for tests
+ *
+ * Listening on anything but a loopback address requires `secret`: an open relay
+ * would let anyone on the internet use the host as a proxy.
  * Resolves to {url, port, close()}.
  */
 export async function startRelay(options = {}) {
@@ -71,15 +84,28 @@ export async function startRelay(options = {}) {
     dev = false,
     devPorts = [],
     maxStreams = 256,
+    maxConnections = 500,
+    maxBytes = 4 * 1024 ** 3,
+    connectsPerMinute = 600,
     connectTimeoutMs = 10_000,
     log = (level, message) => console[level === 'warn' ? 'warn' : 'log'](`[relay] ${message}`),
+    hooks = {},
   } = options;
+  const resolveName = hooks.resolve ?? ((hostname) => lookup(hostname, { all: true, order: 'ipv4first' }));
+  const connectTcp = hooks.connect ?? net.connect;
+  if (!secret && !isLoopbackHost(host))
+    throw new Error(`the relay would listen on ${host} without a secret: set INCEPTION_RELAY_SECRET (or secret), or listen on 127.0.0.1`);
   const policy = { dev, devPorts: new Set(devPorts.map(Number)) };
 
   const server = http.createServer((req, res) => res.writeHead(404).end());
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
 
   server.on('upgrade', (req, socket, head) => {
+    if (wss.clients.size >= maxConnections) {
+      log('warn', `refused connection: ${maxConnections} sessions are open`);
+      socket.end('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+      return;
+    }
     const origin = req.headers.origin ?? '';
     if (origins.length && !origins.includes(origin)) {
       log('warn', `refused origin ${origin || '(none)'}`);
@@ -101,6 +127,13 @@ export async function startRelay(options = {}) {
 
   function serveConnection(ws) {
     const streams = new Map();
+    const session = { bytesIn: 0, bytesOut: 0, opened: 0, recent: [] };
+    const overBudget = () => {
+      if (session.bytesIn + session.bytesOut <= maxBytes) return false;
+      log('warn', `session over its ${maxBytes} byte budget, closed`);
+      ws.close(1008, 'byte budget exhausted');
+      return true;
+    };
     const send = (type, id, payload) => {
       if (ws.readyState === ws.OPEN) ws.send(packet(type, id, payload));
     };
@@ -121,6 +154,8 @@ export async function startRelay(options = {}) {
 
     ws.on('message', (data, isBinary) => {
       if (!isBinary || data.length < 5) return;
+      session.bytesIn += data.length;
+      if (overBudget()) return;
       const type = data.readUInt8(0);
       const id = data.readUInt32LE(1);
       const payload = data.subarray(5);
@@ -130,6 +165,7 @@ export async function startRelay(options = {}) {
     });
     ws.on('close', () => {
       clearInterval(drainTimer);
+      log('info', `session closed: ${session.opened} streams, ${session.bytesIn} bytes from the page, ${session.bytesOut} bytes to it`);
       for (const stream of streams.values()) stream.socket?.destroy();
       streams.clear();
     });
@@ -144,9 +180,18 @@ export async function startRelay(options = {}) {
         send(CLOSE, id, Buffer.from([CloseReason.Invalid]));
         return;
       }
+      const now = Date.now();
+      session.recent = session.recent.filter((time) => now - time < 60_000);
+      if (session.recent.length >= connectsPerMinute) {
+        log('warn', `session opened more than ${connectsPerMinute} streams in a minute`);
+        send(CLOSE, id, Buffer.from([CloseReason.Throttled]));
+        return;
+      }
+      session.recent.push(now);
+      session.opened++;
       const port = payload.readUInt16LE(1);
       const hostname = payload.subarray(3).toString('utf8');
-      const stream = { socket: null, pending: [], sinceContinue: 0 };
+      const stream = { socket: null, pending: [], sinceContinue: 0, bytesIn: 0, bytesOut: 0 };
       streams.set(id, stream);
 
       const refused = nameRefusal(hostname, policy);
@@ -157,7 +202,7 @@ export async function startRelay(options = {}) {
       }
       let address;
       try {
-        const candidates = net.isIP(hostname) ? [{ address: hostname }] : await lookup(hostname, { all: true, order: 'ipv4first' });
+        const candidates = net.isIP(hostname) ? [{ address: hostname }] : await resolveName(hostname);
         const reasons = [];
         address = candidates.map((c) => c.address).find((a) => {
           const reason = connectRefusal(a, port, policy);
@@ -177,7 +222,7 @@ export async function startRelay(options = {}) {
 
       // Connecting to the checked address, never to the name again, so a
       // second resolution cannot point somewhere else.
-      const socket = net.connect({ host: address, port });
+      const socket = connectTcp({ host: address, port });
       stream.socket = socket;
       socket.setNoDelay(true);
       socket.setTimeout(connectTimeoutMs, () => close(id, socket.connecting ? CloseReason.ConnectTimeout : CloseReason.Timeout));
@@ -186,16 +231,23 @@ export async function startRelay(options = {}) {
         for (const chunk of stream.pending.splice(0)) socket.write(chunk);
       });
       socket.on('data', (chunk) => {
+        stream.bytesOut += chunk.length;
+        session.bytesOut += chunk.length;
+        if (overBudget()) return;
         send(DATA, id, chunk);
         if (ws.bufferedAmount >= HIGH_WATER) socket.pause();
       });
       socket.on('error', (error) => close(id, error.code === 'ECONNREFUSED' ? CloseReason.Refused : CloseReason.NetworkError));
-      socket.on('close', () => close(id, CloseReason.Voluntary));
+      socket.on('close', () => {
+        log('info', `closed ${hostname}:${port}: ${stream.bytesIn} bytes sent, ${stream.bytesOut} received`);
+        close(id, CloseReason.Voluntary);
+      });
     }
 
     function write(id, payload) {
       const stream = streams.get(id);
       if (!stream) return;
+      stream.bytesIn += payload.length;
       if (!stream.socket || stream.socket.connecting) stream.pending.push(Buffer.from(payload));
       else stream.socket.write(payload);
       // Grant a new window once half of it is used and the remote side keeps up.
