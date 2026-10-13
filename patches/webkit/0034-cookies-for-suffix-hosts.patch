@@ -1,0 +1,25 @@
+Keep host-only cookies of hosts that are themselves public suffixes.
+
+The public suffix list's private section names hosting providers' customer
+domains (httpbin.org, postman-echo.com and many more). The curl cookie store
+refused every cookie whose domain is a public suffix, so such a host could keep
+no cookie at all, from a response or from script. Other browsers keep its
+host-only cookies; so does this store now. A cookie for a suffix other than the
+host itself is still refused.
+
+diff --git a/Source/WebCore/platform/network/curl/CookieJarDB.cpp b/Source/WebCore/platform/network/curl/CookieJarDB.cpp
+index dfd5de50..2fd40264 100644
+--- a/Source/WebCore/platform/network/curl/CookieJarDB.cpp
++++ b/Source/WebCore/platform/network/curl/CookieJarDB.cpp
+@@ -500,7 +500,10 @@ static bool checkSecureCookie(const Cookie& cookie)
+ 
+ bool CookieJarDB::canAcceptCookie(const Cookie& cookie, const URL& firstParty, const URL& url, CookieJarDB::Source source)
+ {
+-    if (PublicSuffixStore::singleton().isPublicSuffix(cookie.domain))
++    // A host that is itself on the public suffix list (as hosting providers
++    // list their customers' domains) still keeps its own host-only cookies, as
++    // other browsers do; only cookies for a suffix it does not equal are refused.
++    if (PublicSuffixStore::singleton().isPublicSuffix(cookie.domain) && cookie.domain != url.host().convertToASCIILowercase())
+         return false;
+ 
+     bool fromJavaScript = source == CookieJarDB::Source::Script;
