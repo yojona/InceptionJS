@@ -150,6 +150,19 @@ test('Web Audio of the window arrives as samples and plays once the person has u
   await expect.poll(async () => (await stats()).frames, { timeout: 10_000 }).toBeGreaterThan(heard.frames);
 });
 
+test('Web Audio of a window of the host\'s one engine plays in the tab that shows the window', async ({ context }) => {
+  const profile = profileName();
+  // One engine for every window: audio.open says which window made the context.
+  const host = await startHost(context, profile);
+  const { page, id } = await startClient(context, profile);
+  await expect.poll(() => evaluateIn(host, id, 'document.readyState'), { timeout: 30_000 }).toBe('complete');
+  await evaluateIn(host, id, 'window.ctx = new AudioContext(); const o = ctx.createOscillator(); o.frequency.value = 440; const g = ctx.createGain(); g.gain.value = 0.5; o.connect(g).connect(ctx.destination); o.start(); ctx.resume(); ctx.state');
+  const stats = () => page.evaluate(() => ({ ...window.remote.display.audio.stats }));
+  await expect.poll(async () => (await stats()).chunks, { timeout: 20_000 }).toBeGreaterThan(10);
+  await page.locator('#screen').click({ position: { x: 5, y: 5 } });
+  await expect.poll(async () => (await stats()).peak, { timeout: 10_000 }).toBeGreaterThan(0.45);
+});
+
 test('a file chosen in the tab that shows the window reaches the page', async ({ context }) => {
   const profile = profileName();
   const host = await startHost(context, profile);
