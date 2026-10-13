@@ -169,3 +169,42 @@ test('a popup of the host attaches through its opener, with no shared worker', a
   await popup.close();
   await expect.poll(() => view(host).evaluate((el) => el.windows.map((w) => w.window))).toEqual([1]);
 });
+
+test('a window a page of an attached window opens is shown by the attached tab', async ({ context }) => {
+  const profile = profileName();
+  const host = await open(context, profile, '&persist=clear&url=about:blank&popups=window');
+  await started(host);
+  const second = await open(context, profile, '&url=about:blank&popups=window');
+  const { window: id } = await started(second);
+  // The attached tab shows each window a page opens on a canvas of its own.
+  await second.evaluate(() => {
+    window.opened = [];
+    document.querySelector('inception-view').addEventListener('windowopen', (e) => {
+      const canvas = Object.assign(document.createElement('canvas'), { id: `popup-${e.detail.window.id}` });
+      canvas.style.cssText = 'position: fixed; right: 0; bottom: 0; width: 200px; height: 150px; z-index: 5';
+      document.body.append(canvas);
+      e.detail.window.show(canvas);
+      window.opened.push({ id: e.detail.window.id, opener: e.detail.opener });
+    });
+  });
+  // A click in the attached tab opens a window from a page that had the person's gesture.
+  await evaluateIn(host, id, 'document.open(); document.write(\'<title>opener</title><body style="margin:0"><button id=b style="width:300px;height:200px" onclick="window.open(\\\'about:blank\\\')">open</button>\'); document.close(); document.title');
+  await second.mouse.click(100, 100);
+  await expect.poll(() => second.evaluate(() => window.opened.length), { timeout: 20_000 }).toBe(1);
+  const [popup] = await second.evaluate(() => window.opened);
+  expect(popup.opener).toBe('w1');
+  await expect.poll(() => evaluateIn(host, popup.id, 'document.readyState'), { timeout: 30_000 }).toBe('complete');
+  await evaluateIn(host, popup.id, 'document.open(); document.write("<style>html,body{margin:0;height:100%;background:rgb(0,160,0)}</style>"); document.close(); document.readyState');
+  const color = () => second.evaluate(async (id) => {
+    const canvas = document.getElementById(`popup-${id}`);
+    if (!canvas?.width) return null;
+    const bitmap = await createImageBitmap(canvas);
+    const copy = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d');
+    copy.drawImage(bitmap, 0, 0);
+    return Array.from(copy.getImageData(10, 10, 1, 1).data.slice(0, 3));
+  }, popup.id);
+  await expect.poll(color, { timeout: 20_000 }).toEqual([0, 160, 0]);
+  // Closing the attached tab closes the windows it was given, popups included.
+  await second.close();
+  await expect.poll(() => view(host).evaluate((el) => el.windows.map((w) => w.window))).toEqual([1]);
+});
