@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { requirePersistentStorage } from './persistence.mjs';
 import { startRelay } from '../packages/inceptionjs/src/server/index.js';
 
 // What a profile service changes in the security plan: one relay connection
@@ -104,6 +105,7 @@ test('S2: the service refuses what the window\'s policy does not allow, whatever
 });
 
 test('S5: two profiles share no cookies or storage; an ephemeral one leaves nothing on disk', async ({ page }) => {
+  await requirePersistentStorage(test, page);
   await open(page);
   const stamp = Date.now();
   const result = await page.evaluate(async (stamp) => {

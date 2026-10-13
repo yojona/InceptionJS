@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { requirePersistentStorage } from './persistence.mjs';
 
 // isolation 'window': a profile service holds the profile, the view's
 // window 1 and every window opened with openWindow() run in engines of
@@ -106,6 +107,7 @@ test('closing a window stops its engine; the service and the other windows stay'
 });
 
 test('the profile service restarts after a crash and every window gets its profile back', async ({ page }) => {
+  await requirePersistentStorage(test, page);
   await start(page);
   const second = await openWindow(page);
   await navigate(page, 1, 'https://example.org/');

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { requirePersistentStorage } from './persistence.mjs';
 
 // Cookies of a profile with a service: one store, in the service; content
 // engines keep a copy per host (without HttpOnly cookies), read it without
@@ -76,6 +77,7 @@ test('HttpOnly cookies go with requests but never reach a content engine', async
 });
 
 test('cookies outlive a service crash; content engines ask again after it restarts', async ({ page }) => {
+  await requirePersistentStorage(test, page);
   const [first, second] = await open(page);
   await harness(page, 'navigate', first, 'https://example.org/');
   await evaluate(page, first, 'document.cookie = "kept=yes; max-age=3600; path=/"; "ok"');

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { requirePersistentStorage } from './persistence.mjs';
 
 // localStorage and IndexedDB of a profile with a service: the data and the
 // files live in the service; content engines share them, hear each other's
@@ -184,6 +185,7 @@ test('a content engine that crashes mid-transaction does not hold the database',
 });
 
 test('storage outlives a service crash: open databases close, data is there after the restart', async ({ page }) => {
+  await requirePersistentStorage(test, page);
   const [first] = await open(page, 1);
   await run(page, first, `${IDB}
     localStorage.setItem('kept', 'yes');
