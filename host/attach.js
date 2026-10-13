@@ -49,6 +49,7 @@ export const ATTACH_CAPABILITIES = ['view', 'find', 'history', 'observe'];
 const FORWARDED_EVENTS = new Set(['tabcreated', 'tabupdated', 'tabactivated', 'tabclosed', 'popupblocked']);
 
 const MAX_WINDOWS_PER_CLIENT = 32;
+const MAX_CLIENTS = 64;
 const MAX_URL_LENGTH = 8192;
 const WELCOME_TIMEOUT_MS = 60_000;
 const OPENER_TIMEOUT_MS = 800;
@@ -234,7 +235,7 @@ export class AttachHost {
 
   #accept(port, rawRequest) {
     const request = validateRequest(rawRequest);
-    if (!request || this.stopped || !this.#view) {
+    if (!request || this.stopped || !this.#view || (this.#clients.size >= MAX_CLIENTS && !this.#clients.has(request.id))) {
       port.close();
       return;
     }
@@ -767,7 +768,10 @@ export class ProfileConnection extends EventTarget {
     }
     for (const [key, remote] of [...this.#windows]) if (remote.closed) this.#windows.delete(key);
     this.dispatchEvent(new CustomEvent('hostlost'));
-    if (!this.#worker) {
+    try {
+      // A client that found its host through its opener has no broker yet.
+      this.#openBroker();
+    } catch {
       this.close('the profile\'s host went away and no shared worker can find the next one');
       return;
     }
