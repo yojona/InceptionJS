@@ -24,6 +24,7 @@
 //   {type: 'status', profile}           answered with {type: 'status', host,
 //                                       clients, pending}
 // Messages to a document:
+//   {type: 'ready'}                     the document's port is connected
 //   {type: 'joined', profile, host}     host: the id of the ready host, or null
 //   {type: 'host', profile, id}         a host is ready (to clients)
 //   {type: 'host-lost', profile, id}    the host went away (to clients)
@@ -140,7 +141,13 @@ function route(port, message, ports) {
   }
 }
 
+// A browser may stop this worker when the document that started it closes and
+// start it again for the documents still holding ports to it (WebKit does),
+// with nothing remembered. "ready" tells a document each time its port is
+// connected: the second one it hears means the broker started over, and it
+// says again what it is (join, and for a host, host).
 onconnect = (event) => {
   const port = event.ports[0];
   port.onmessage = (e) => handle(port, e.data, e.ports);
+  post(port, { type: 'ready' });
 };

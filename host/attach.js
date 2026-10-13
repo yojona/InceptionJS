@@ -128,6 +128,18 @@ export function validateHostMessage(message, ports = []) {
 // documents that reach this module through different paths must agree).
 const brokerAddress = (url) => url ?? new URL('./broker.js', import.meta.url);
 
+// A shared worker port to the broker. `onRestart` runs when the broker started
+// over (see host/broker.js): the owner then says again what it is.
+function openBroker(url, onRestart) {
+  const worker = new SharedWorker(brokerAddress(url), { name: 'inception-broker' });
+  let ready = 0;
+  worker.port.addEventListener('message', (event) => {
+    if (event.data?.type === 'ready' && ++ready > 1) onRestart();
+  });
+  worker.port.start();
+  return worker;
+}
+
 const randomId = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`);
 
 // An event detail that survives structured cloning, or {}.
@@ -189,18 +201,23 @@ export class AttachHost {
   #joinBroker() {
     if (typeof SharedWorker === 'undefined') return;
     try {
-      const worker = new SharedWorker(brokerAddress(this.#brokerUrl), { name: 'inception-broker' });
+      const worker = openBroker(this.#brokerUrl, () => this.#announce());
       this.#broker = worker;
-      worker.port.onmessage = (event) => {
+      worker.port.addEventListener('message', (event) => {
         const message = event.data;
         if (message?.type === 'client' && event.ports[0]) this.#accept(event.ports[0], message.request);
         else if (message?.type === 'client-gone' && typeof message.from === 'string') this.#drop(message.from);
-      };
-      worker.port.postMessage({ type: 'join', profile: this.#profile, id: this.id, role: 'host' });
-      worker.port.postMessage({ type: 'host', profile: this.#profile, id: this.id });
+      });
+      this.#announce();
     } catch (error) {
       console.warn('[attach] the broker could not start:', error);
     }
+  }
+
+  #announce() {
+    if (this.stopped) return;
+    this.#broker.port.postMessage({ type: 'join', profile: this.#profile, id: this.id, role: 'host' });
+    this.#broker.port.postMessage({ type: 'host', profile: this.#profile, id: this.id });
   }
 
   // A popup or frame of this document asking to attach.
@@ -542,6 +559,7 @@ export class ProfileConnection extends EventTarget {
   #nextKey = 1;
   #hostWatch = null;
   #brokerUrl;
+  #resend = null;
   state = 'new';
 
   constructor(profile) {
@@ -625,11 +643,14 @@ export class ProfileConnection extends EventTarget {
     if (this.#worker) return this.#worker;
     let worker;
     try {
-      worker = new SharedWorker(brokerAddress(this.#brokerUrl), { name: 'inception-broker' });
+      worker = openBroker(this.#brokerUrl, () => {
+        worker.port.postMessage({ type: 'join', profile: this.#profile, id: this.#id, role: 'client' });
+        // Asking for a host that has not answered yet: the broker forgot.
+        this.#resend?.();
+      });
     } catch (error) {
       throw new AttachUnavailableError(`This profile is open in another tab, and the shared worker that connects tabs could not start (${error?.message ?? error}).`);
     }
-    worker.port.start();
     worker.port.postMessage({ type: 'join', profile: this.#profile, id: this.#id, role: 'client' });
     worker.port.addEventListener('message', (event) => {
       const message = event.data;
@@ -643,9 +664,27 @@ export class ProfileConnection extends EventTarget {
   // attach); a reconnect waits for the next host as long as it takes.
   async #viaBroker(limited) {
     const worker = this.#openBroker();
-    const { port1, port2 } = new MessageChannel();
-    worker.port.postMessage({ type: 'connect', profile: this.#profile, id: this.#id, request: { version: ATTACH_VERSION, id: this.#id } }, [port2]);
-    return this.#hello(port1, limited ? WELCOME_TIMEOUT_MS : 0);
+    const attempts = [];
+    let settle;
+    const answered = new Promise((resolve) => { settle = resolve; });
+    const ask = () => {
+      const { port1, port2 } = new MessageChannel();
+      attempts.push(port1);
+      worker.port.postMessage({ type: 'connect', profile: this.#profile, id: this.#id, request: { version: ATTACH_VERSION, id: this.#id } }, [port2]);
+      const attempt = this.#hello(port1, limited ? WELCOME_TIMEOUT_MS : 0);
+      attempt.then(settle, () => {});
+      return attempt;
+    };
+    // The broker started over before a host answered: ask it again. Whichever
+    // request the host answers first wins.
+    this.#resend = ask;
+    try {
+      const control = await Promise.race([ask(), answered]);
+      for (const port of attempts) if (port !== control) port.close();
+      return control;
+    } finally {
+      this.#resend = null;
+    }
   }
 
   #adopt(control) {
