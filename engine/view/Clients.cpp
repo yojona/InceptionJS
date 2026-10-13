@@ -37,6 +37,7 @@
 #include "ResourceResponse.h"
 #include "SharedBuffer.h"
 #include "UserAgent.h"
+#include "agent/Agent.h"
 #include "bridge/Bridge.h"
 #include "modules/Modules.h"
 #include "net/Download.h"
@@ -435,9 +436,9 @@ String FrameLoaderClientImpl::userAgent(const URL& url) const
     return standardUserAgentForURL(url);
 }
 
-void FrameLoaderClientImpl::dispatchDecidePolicyForNavigationAction(const NavigationAction&, const ResourceRequest&, const ResourceResponse&, FormState*, const String&, std::optional<NavigationIdentifier>, std::optional<HitTestResult>&&, bool, NavigationUpgradeToHTTPSBehavior, SandboxFlags, PolicyDecisionMode, FramePolicyFunction&& function)
+void FrameLoaderClientImpl::dispatchDecidePolicyForNavigationAction(const NavigationAction& action, const ResourceRequest& request, const ResourceResponse&, FormState* formState, const String&, std::optional<NavigationIdentifier>, std::optional<HitTestResult>&&, bool, NavigationUpgradeToHTTPSBehavior, SandboxFlags, PolicyDecisionMode, FramePolicyFunction&& function)
 {
-    function(PolicyAction::Use);
+    function(Agent::allowsNavigation(action, request, formState) ? PolicyAction::Use : PolicyAction::Ignore);
 }
 
 void FrameLoaderClientImpl::dispatchDecidePolicyForResponse(const ResourceResponse& response, const ResourceRequest& request, const String& downloadAttribute, FramePolicyFunction&& function)
@@ -449,7 +450,7 @@ void FrameLoaderClientImpl::dispatchDecidePolicyForResponse(const ResourceRespon
         return;
     }
     function(PolicyAction::Ignore);
-    if (request.url().protocolIsInHTTPFamily())
+    if (request.url().protocolIsInHTTPFamily() && Agent::allowsDownload(request.url()))
         Download::start(request, downloadAttribute);
 }
 
@@ -464,16 +465,16 @@ RefPtr<HistoryItem> FrameLoaderClientImpl::createHistoryItemTree(bool clipAtTarg
 // <a download> and similar: straight to a download.
 void FrameLoaderClientImpl::startDownload(const ResourceRequest& request, const String& suggestedName, FromDownloadAttribute)
 {
-    if (request.url().protocolIsInHTTPFamily())
+    if (request.url().protocolIsInHTTPFamily() && Agent::allowsDownload(request.url()))
         Download::start(request, suggestedName);
 }
 
 // target=_blank and the like: WebCore opens a new tab through createWindow,
 // and the host decides what to do with it. Pop-ups without a user gesture are
 // already blocked by WebCore.
-void FrameLoaderClientImpl::dispatchDecidePolicyForNewWindowAction(const NavigationAction&, const ResourceRequest&, FormState*, const String&, std::optional<HitTestResult>&&, FramePolicyFunction&& function)
+void FrameLoaderClientImpl::dispatchDecidePolicyForNewWindowAction(const NavigationAction& action, const ResourceRequest& request, FormState* formState, const String&, std::optional<HitTestResult>&&, FramePolicyFunction&& function)
 {
-    function(PolicyAction::Use);
+    function(Agent::allowsNavigation(action, request, formState) ? PolicyAction::Use : PolicyAction::Ignore);
 }
 
 bool FrameLoaderClientImpl::canShowMIMEType(const String& mimeType) const
