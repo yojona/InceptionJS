@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>InceptionJS: a window drawn elsewhere</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  canvas { display: block; width: 100%; height: 100%; outline: none; }
+</style>
+<canvas aria-label="Web content"></canvas>
+<script type="module">
+  import { createDisplay } from '../host/display.js';
+
+  // The port of a window's display channel, from the page that owns the
+  // engine: posted to this frame, or (?broker=<url>) handed over by a shared
+  // worker. This document needs no cross-origin isolation of its own.
+  const show = (port) => {
+    const canvas = document.querySelector('canvas');
+    window.display = createDisplay(canvas, port);
+    canvas.addEventListener('closed', () => document.body.replaceChildren(Object.assign(document.createElement('p'), { textContent: 'The window was closed.' })));
+  };
+  addEventListener('message', (e) => {
+    if (e.origin === location.origin && e.ports[0]) show(e.ports[0]);
+  });
+  const broker = new URLSearchParams(location.search).get('broker');
+  if (broker) {
+    const worker = new SharedWorker(new URL(broker, location.origin));
+    worker.port.onmessage = (e) => e.ports[0] && show(e.ports[0]);
+    worker.port.postMessage({ want: true });
+  }
+</script>

@@ -1,0 +1,75 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InceptionJS: windows</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; background: #f4f4f5; }
+  header { display: flex; gap: 8px; align-items: center; padding: 8px; flex-wrap: wrap; }
+  header input { width: 280px; padding: 4px 6px; font: inherit; }
+  main { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 8px; padding: 0 8px 8px; }
+  figure { margin: 0; display: flex; flex-direction: column; gap: 4px; }
+  figcaption { display: flex; gap: 6px; align-items: center; color: #444; }
+  figcaption span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  inception-view, inception-window { width: 100%; height: 420px; background: #fff; }
+  iframe { width: 100%; height: 420px; border: 1px dashed #aaa; background: #fff; }
+</style>
+<header>
+  <strong>One engine, one profile, several windows.</strong>
+  <input id="address" value="https://example.com/" autocomplete="off" spellcheck="false">
+  <button type="button" id="open">Open a window here</button>
+  <button type="button" id="elsewhere">Open a window in a frame</button>
+</header>
+<main id="windows">
+  <figure>
+    <figcaption><span id="caption-1">Window 1</span></figcaption>
+    <inception-view id="view" src="https://example.com/"></inception-view>
+  </figure>
+</main>
+<script type="module">
+  import { Inception } from '../host/inception-view.js';
+
+  const params = new URLSearchParams(location.search);
+  Inception.configure({
+    engineUrl: new URL('../engine/inception-engine.js', import.meta.url).href,
+    relayUrl: params.get('relay') ?? `ws://${location.hostname}:5001/`,
+    debug: params.get('debug') === '1',
+    // Pages' window.open() becomes a window of this engine; those that follow
+    // a click are kept.
+    policy: { popups: 'window', newTabs: 'foreground' },
+  });
+
+  const view = document.getElementById('view');
+  if (params.get('profile')) view.setAttribute('profile', params.get('profile'));
+  const $ = (id) => document.getElementById(id);
+  view.addEventListener('title', (e) => ($('caption-1').textContent = `Window 1: ${e.detail.title || view.url}`));
+
+  // Each window of the engine gets a box with its own <inception-window>.
+  const show = (handle) => {
+    const figure = document.createElement('figure');
+    const caption = document.createElement('figcaption');
+    const label = Object.assign(document.createElement('span'), { textContent: `Window ${handle.id}` });
+    const close = Object.assign(document.createElement('button'), { type: 'button', textContent: 'Close', onclick: () => handle.close() });
+    caption.append(label, close);
+    const element = document.createElement('inception-window');
+    element.view = view;
+    element.setAttribute('window', String(handle.id));
+    figure.append(caption, element);
+    $('windows').append(figure);
+    handle.addEventListener('title', (e) => (label.textContent = `Window ${handle.id}: ${e.detail.title || handle.url}`));
+    handle.addEventListener('close', () => figure.remove());
+  };
+  view.addEventListener('windowopen', (e) => show(e.detail.window));
+  $('open').onclick = async () => show(await view.openWindow({ url: $('address').value }));
+
+  // A window shown by another document: the frame receives the display
+  // channel's port and draws the window with createDisplay().
+  $('elsewhere').onclick = async () => {
+    const handle = await view.openWindow({ url: $('address').value });
+    const figure = document.createElement('figure');
+    const frame = Object.assign(document.createElement('iframe'), { src: 'window-display.html' });
+    figure.append(Object.assign(document.createElement('figcaption'), { textContent: `Window ${handle.id}, drawn by another document` }), frame);
+    $('windows').append(figure);
+    frame.addEventListener('load', () => frame.contentWindow.postMessage({ inceptionDisplay: handle.id }, location.origin, [view.exportWindow(handle.id)]));
+    handle.addEventListener('close', () => figure.remove());
+  };
+</script>
