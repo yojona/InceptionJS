@@ -151,3 +151,49 @@ test('the embedder can draw its own dialog from the event', async ({ page }) => 
   }));
   expect(await ask(page)).toBe('[null,true,"mine"]');
 });
+
+// The page asks to put text on the clipboard; the host's clipboard API calls are recorded.
+const hostClipboardWrites = async (page) => page.evaluate(() => {
+  window.clipboardWrites = [];
+  const record = (text) => window.clipboardWrites.push(text);
+  const write = navigator.clipboard.write.bind(navigator.clipboard);
+  const writeText = navigator.clipboard.writeText.bind(navigator.clipboard);
+  navigator.clipboard.write = async (items) => {
+    record(await Promise.all(items.map((item) => item.getType('text/plain').then((blob) => blob.text()).catch(() => ''))));
+    return write(items).catch(() => {});
+  };
+  navigator.clipboard.writeText = async (text) => {
+    record([text]);
+    return writeText(text).catch(() => {});
+  };
+});
+const pageCopies = async (page, text) => {
+  await view(page).evaluate((el) => el.focusInput());
+  await evaluate(page, `document.body.innerHTML = '<input id="c" value="${text}">'; var c = document.getElementById('c'); c.focus(); c.select(); 1`);
+  // The raw command, which does not count as the person's input the way edit() does.
+  await view(page).evaluate((el) => el.debugCommand('edit', { command: 'Copy' }));
+  await page.waitForTimeout(500);
+  return page.evaluate(() => window.clipboardWrites.flat());
+};
+
+test('a page cannot write the system clipboard on its own by default, only after the person acts', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await open(page);
+  await hostClipboardWrites(page);
+  expect(await pageCopies(page, 'poison')).toEqual([]);
+  const box = await view(page).boundingBox();
+  await page.mouse.click(box.x + 20, box.y + 20);
+  expect(await pageCopies(page, 'wanted')).toContain('wanted');
+});
+
+test('policy.clipboard true lets a page write it at any time, false never', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await open(page, { clipboard: true });
+  await hostClipboardWrites(page);
+  expect(await pageCopies(page, 'always')).toContain('always');
+  await open(page, { clipboard: false });
+  await hostClipboardWrites(page);
+  const box = await view(page).boundingBox();
+  await page.mouse.click(box.x + 20, box.y + 20);
+  expect(await pageCopies(page, 'never')).toEqual([]);
+});

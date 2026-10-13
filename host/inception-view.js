@@ -42,6 +42,9 @@ const userStylesShim = (css) =>
     ? `\n;(() => {\n  try {\n    const sheet = new CSSStyleSheet();\n    sheet.replaceSync(${JSON.stringify(`@layer inception-user {\n${css}\n}`)});\n    document.adoptedStyleSheets = [sheet, ...document.adoptedStyleSheets];\n  } catch {}\n})();\n`
     : '';
 
+// How long after the person's input a page may still write the clipboard.
+const CLIPBOARD_GESTURE_MS = 2000;
+
 // Events the engine reports that the view re-dispatches as DOM events.
 const VIEW_EVENTS = ['navigate', 'title', 'loading', 'popup', 'console', 'crash', 'cursor', 'navigation.state', 'find.result', 'zoom', 'contextmenu'];
 // Names the view dispatches them under where the engine's would clash with
@@ -73,12 +76,17 @@ export class InceptionView extends HTMLElement {
   #volume = 1;
   #muted = false;
   #debugRequests = 0;
+  // When the person last used this view (keys, pointer, copy); the system
+  // clipboard is written only soon after (policy.clipboard 'user').
+  #lastInput = -Infinity;
   #ready = null;
   #state = { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, zoom: 1 };
   #tabs = new Tabs(this, (command, args) => this.#runtime?.send(command, args), policy);
 
   constructor() {
     super();
+    for (const type of ['keydown', 'pointerdown', 'copy', 'cut'])
+      this.addEventListener(type, (event) => event.isTrusted && (this.#lastInput = performance.now()), { capture: true });
     const shadow = this.attachShadow({ mode: 'open' });
     shadow.innerHTML = `<style>
       :host { display: block; position: relative; overflow: hidden; contain: strict; width: 800px; height: 600px; outline: none; }
@@ -129,6 +137,11 @@ export class InceptionView extends HTMLElement {
     this.#applyLevel();
   }
 
+  #mayWriteClipboard() {
+    const { clipboard } = policy();
+    return clipboard === true || (clipboard === 'user' && performance.now() - this.#lastInput < CLIPBOARD_GESTURE_MS);
+  }
+
   #applyLevel() {
     this.#media?.setMaster({ volume: this.#volume, muted: this.#muted });
     this.#audio?.setLevel(this.#muted ? 0 : this.#volume);
@@ -177,7 +190,12 @@ export class InceptionView extends HTMLElement {
   async download(url) { await this.ready; this.#runtime.send('download.start', { url: String(url) }); }
   async cancelDownload(id) { await this.ready; this.#runtime.send('download.cancel', { id }); }
   // An editing command in the focused frame: 'Copy', 'Cut', 'Paste', 'SelectAll', 'Undo', 'Redo'.
-  async edit(command) { await this.ready; this.#runtime.send('edit', { command: String(command) }); }
+  async edit(command) {
+    await this.ready;
+    // The embedder asked for it, which is as good as the person asking.
+    this.#lastInput = performance.now();
+    this.#runtime.send('edit', { command: String(command) });
+  }
   async pauseDownload(id) { await this.ready; this.#runtime.send('download.pause', { id }); }
   async resumeDownload(id) { await this.ready; this.#runtime.send('download.resume', { id }); }
   async deleteHistory(range) { await this.ready; return this.#client.request('history.delete', range); }
@@ -278,7 +296,7 @@ export class InceptionView extends HTMLElement {
       if (name === 'select.hide') this.#selectMenu.hide(data.id);
       if (name === 'file.choose') chooseFiles(this, this.#runtime, data);
       if (name === 'field.focus') this.#provenance.fieldFocused(data.kind);
-      if (name === 'clipboard.write' && policy().clipboard !== false) writeClipboard(data.items);
+      if (name === 'clipboard.write' && this.#mayWriteClipboard()) writeClipboard(data.items);
     };
     this.#selectMenu = new SelectMenu(this.#shadow, (command, args) => this.#runtime.send(command, args));
     this.#runtime.onAsk = (question) => answerDialog(this, question, policy);
