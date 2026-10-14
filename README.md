@@ -259,8 +259,10 @@ loads use less than the same pages in a native Chrome tab.
 ## Quick start
 
 All setups need the engine files (`inception-engine.js`, `.wasm`, `.data`) and a
-relay. Build the engine from this repository (see [LGPL.md](LGPL.md)) or take the
-files of a release, put them in a folder, here `./inception-engine`.
+relay. Download the engine files from the
+[latest release](https://github.com/yojona/InceptionJS/releases/latest) (or build them from
+this repository, see [LGPL.md](LGPL.md)) and put them in a folder, here
+`./inception-engine`.
 
 ```bash
 npm install inceptionjs
