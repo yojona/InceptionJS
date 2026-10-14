@@ -6,6 +6,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/status-early%20release%200.x-orange" alt="Status: early release 0.x">
   <img src="https://img.shields.io/badge/engine-WebKit%20%2B%20WebAssembly-6d5efc" alt="Engine: WebKit and WebAssembly">
+  <img src="https://img.shields.io/badge/download-46%20MB-informational" alt="Download: 46 MB">
   <img src="https://img.shields.io/badge/runs%20in-Chrome%20%7C%20Firefox%20%7C%20Safari-informational" alt="Runs in Chrome, Firefox and Safari">
   <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="Pull requests welcome"></a>
   <a href="https://github.com/sponsors/yojona"><img src="https://img.shields.io/github/sponsors/yojona?label=sponsors&logo=githubsponsors" alt="GitHub Sponsors"></a>
@@ -112,8 +113,9 @@ and that an agent can read and drive, all on the person's own device. So we buil
   third-party iframes and scripts that send neither CORP nor CORS headers;
   `credentialless` softens it. `npx inceptionjs check <url>` explains what is missing.
   Documents that only show a window of another document need no isolation.
-- **Size.** The engine is about 150 MB uncompressed (wasm plus a data file), about
-  51 MB with Brotli. It is downloaded once and cached. The npm package does not
+- **Size.** The engine is about 150 MB uncompressed (wasm plus a data file) and a
+  46 MB download when served with Brotli; serve the precompressed files to get there.
+  It is downloaded once and cached. The npm package does not
   contain it.
 - **Performance.** There is no JIT: JavaScriptCore runs as an interpreter, so
   JavaScript-heavy sites are noticeably slower than in a native browser. See
