@@ -88,6 +88,7 @@ export class Provenance {
 
   // Watching starts when the view is attached and stops when it is removed.
   start() {
+    this.verify();
     this.#timer ??= setInterval(() => this.verify(), 1000);
   }
 
@@ -112,6 +113,9 @@ export class Provenance {
   }
 
   verify() {
+    // Only an attached view can be judged; before that (and in the element's
+    // constructor) nothing is shown, and it must not gain attributes.
+    if (!this.#host.isConnected) return;
     const hidden = !this.visible;
     if (hidden === this.#hidden) return;
     this.#hidden = hidden;
