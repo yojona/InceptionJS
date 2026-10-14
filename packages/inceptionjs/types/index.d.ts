@@ -23,8 +23,12 @@ export interface InceptionConfig {
    * every window openWindow() opens run in engines of their own (with the popups their pages open),
    * which share cookies, storage, IndexedDB and history through it. A crash in one window's engine
    * closes only its windows; the service restarts by itself after a crash of its own.
+   * 'site': as 'window', and an engine shows one site: a window that navigates to another site moves to an
+   * engine of that site, the service keeps other sites' data and responses from it, and a window has one tab.
    */
-  isolation?: 'shared' | 'window';
+  isolation?: 'shared' | 'window' | 'site';
+  /** isolation 'window' and 'site': how many engines the view runs before new windows share one (default follows the device's memory). */
+  engines?: { max?: number };
   /** What pages may do to the person's browser. Every default is the safe one. */
   policy?: InceptionPolicy;
   /** Enable the view's debugEvaluate, debugHeap and debugCommand (development only). */
@@ -58,9 +62,11 @@ export interface InceptionPolicy {
   /**
    * Hosts pages may reach (a host matches itself and its subdomains); `block` wins over `allow`, and
    * without `allow` every host not blocked is. Enforced by the profile service, so only with isolation
-   * 'window'; openWindow({ hosts }) sets it for one window.
+   * 'window' or 'site'; openWindow({ hosts }) sets it for one window.
    */
   hosts?: { allow?: string[]; block?: string[] };
+  /** isolation 'site' only. 'block' (default): requests to a site other than the window's page carry and set none of the profile's cookies, and other sites' frames get none of its cookies or storage. 'allow': ordinary third-party behavior. */
+  thirdPartyCookies?: 'block' | 'allow';
   /** 'dismiss' (default): alert, confirm, prompt and beforeunload are answered without UI. 'native': the browser's own dialogs. */
   dialogs?: 'dismiss' | 'native';
   /** 'user' (default): paste brings the clipboard in, and it is written only soon after the person's own input. true: always. false: never. */
@@ -425,7 +431,9 @@ export declare class InceptionView extends HTMLElement {
   debugHeap(): Promise<{ heapSize: number; heapCapacity: number; memory: number }>;
   /** Sends a raw engine command; `args.window` picks the window, and so the engine, it goes to. */
   debugCommand(command: string, args?: Record<string, unknown>): Promise<void>;
-  /** The profile service (isolation 'window'), or null. */
+  /** The engines of this view with the windows each runs, and their memory in bytes (`site` is set with isolation 'site'). */
+  debugEngines(): Promise<{ engine: number; site?: string; windows: number[]; memory: number }[]>;
+  /** The profile service (isolation 'window' or 'site'), or null. */
   debugProfileService(): Promise<EventTarget | null>;
 
   addEventListener<K extends keyof InceptionViewEventMap>(type: K, listener: (this: InceptionView, ev: InceptionViewEventMap[K]) => unknown, options?: boolean | AddEventListenerOptions): void;

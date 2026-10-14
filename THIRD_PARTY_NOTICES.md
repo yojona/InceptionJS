@@ -19,7 +19,7 @@ LGPL, is described in [LGPL.md](LGPL.md).
 license header. The package has no NOTICE file. License text: the `LICENSE` file of the
 binaryen package, which is the Apache License 2.0 text found in [LICENSE](LICENSE).
 
-**ws 8.18.3**, MIT. Used by the relay.
+**ws 8.22.0**, MIT. Used by the relay.
 
 ```
 Copyright (c) 2011 Einar Otto Stangvik <einaros@gmail.com>
