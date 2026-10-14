@@ -522,3 +522,22 @@ examples/             basic, debug and a React + Vite app
   contain WebKit, which is LGPL: see [LGPL.md](LGPL.md). Third-party components are
   listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); the name is covered by
   [TRADEMARKS.md](TRADEMARKS.md).
+
+## Author and contributors
+
+<a href="https://github.com/yojona"><img src="https://github.com/yojona.png" width="64" height="64" alt="Jonathan Ayala"></a>
+
+InceptionJS was created by **Jonathan Ayala** ([@yojona](https://github.com/yojona)).
+Everyone who contributes is listed in [AUTHORS](AUTHORS); add yourself in your first
+pull request. It stands on the work of the WebKit project and the libraries listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Sponsors
+
+InceptionJS is looking for sponsors. So far one person builds and maintains it, and
+sponsorship pays for what a browser engine needs to stay safe and keep improving: the
+servers that build WebKit, keeping up with WebKit security fixes every month, an
+external security review, and time for performance work.
+
+If your company builds on InceptionJS or wants to, and would like to sponsor it, get in
+touch through [inceptionjs.com](https://inceptionjs.com).
