@@ -712,7 +712,11 @@ export class InceptionView extends HTMLElement {
     // repository's node_modules; resolved from this module, so a plain
     // <script type=module> setup needs no bundler.
     translator ??= new WasmTranslator(config.binaryenUrl ?? [new URL('./vendor/binaryen.js', import.meta.url).href, new URL('../node_modules/binaryen/index.js', import.meta.url).href]);
-    const [wasmPolyfill, pageShims] = await Promise.all(['./guest-wasm.js', './page-shims.js'].map((path) => fetch(new URL(path, import.meta.url)).then((r) => r.text())));
+    const [wasmPolyfill, pageShims] = await Promise.all([
+      // Literal URLs, so bundlers see these files and ship them with the build.
+      new URL('./guest-wasm.js', import.meta.url),
+      new URL('./page-shims.js', import.meta.url),
+    ].map((url) => fetch(url).then((r) => r.text())));
     this.#pageCode = { wasmPolyfill, pageShims: pageShims.replaceAll('__INCEPTION_VERSION__', ENGINE_VERSION) + userStylesShim(this.userStyles ?? config.userStyles) };
     this.#mediaCapabilities = await probeMediaCapabilities();
     this.#opfsUsable = await probeOpfs();
