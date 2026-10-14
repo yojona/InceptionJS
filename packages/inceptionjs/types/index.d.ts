@@ -338,6 +338,8 @@ export interface InceptionViewEventMap {
   /** A window or tab a page opened was closed instead of shown. */
   popupblocked: CustomEvent<{ tab: number; opener: number; url: string; userGesture: boolean; window?: number }>;
   /** A page opened a window (policy.popups 'window'): preventDefault() closes it, allow() keeps it. Show it with <inception-window> or exportWindow(). */
+  /** isolation 'site': a window moved to the engine of the site it navigated to. */
+  siteswap: CustomEvent<{ window: number; site: string; url: string }>;
   windowopen: CustomEvent<{ window: InceptionWindow | RemoteWindow; opener: number | string; openerWindow?: number; url: string; userGesture: boolean; allow?(): void }>;
   windowcreated: CustomEvent<WindowInfo>;
   windowclosed: CustomEvent<{ window: number }>;
