@@ -564,3 +564,7 @@ external security review, and time for performance work.
 Sponsor it through [GitHub Sponsors](https://github.com/sponsors/yojona). If your
 company builds on InceptionJS and wants a larger sponsorship, get in touch through
 [inceptionjs.com](https://inceptionjs.com).
+
+---
+
+<p align="center">If you find InceptionJS interesting, a ⭐ on GitHub helps a lot.</p>
