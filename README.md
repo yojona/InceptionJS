@@ -17,6 +17,10 @@
   <a href="#agents">Agents</a>
 </p>
 
+<p align="center">
+  <img src=".github/assets/demo-youtube.jpg" alt="A YouTube video playing inside an InceptionJS view embedded in a web page" width="560">
+</p>
+
 ---
 
 InceptionJS is a web browser engine (WebKit: WebCore plus JavaScriptCore, compiled to WebAssembly)
