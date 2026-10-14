@@ -63,7 +63,7 @@
   },
   "dependencies": {
     "binaryen": "132.0.0",
-    "ws": "8.18.3"
+    "ws": "8.22.0"
   },
   "engines": {
     "node": ">=20"
