@@ -1,7 +1,25 @@
 {
   "name": "@inceptionjs/react",
   "version": "0.1.0",
-  "description": "React component for InceptionJS: a browser inside your app.",
+  "description": "React component for InceptionJS: a web browser engine that runs inside your app.",
+  "keywords": [
+    "react",
+    "browser",
+    "webkit",
+    "webassembly",
+    "inceptionjs"
+  ],
+  "license": "Apache-2.0",
+  "author": "The InceptionJS Authors",
+  "homepage": "https://github.com/yojona/InceptionJS#readme",
+  "bugs": {
+    "url": "https://github.com/yojona/InceptionJS/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yojona/InceptionJS.git",
+    "directory": "packages/react"
+  },
   "type": "module",
   "exports": {
     ".": {
@@ -11,10 +29,16 @@
   },
   "files": [
     "src",
-    "index.d.ts"
+    "index.d.ts",
+    "LICENSE",
+    "NOTICE",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "peerDependencies": {
     "inceptionjs": "^0.1.0",
     "react": ">=18"
+  },
+  "scripts": {
+    "prepack": "node ../legal.mjs"
   }
 }

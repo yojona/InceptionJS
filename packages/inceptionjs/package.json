@@ -1,7 +1,30 @@
 {
   "name": "inceptionjs",
   "version": "0.1.0",
-  "description": "A web browser engine that runs inside a web page, GPU-first, with an agent-friendly API.",
+  "description": "A web browser engine (WebKit compiled to WebAssembly) that runs inside a web page and draws into a canvas. GPU-first, with a JSON-RPC protocol and an opt-in, policy-guarded API for AI agents.",
+  "keywords": [
+    "browser",
+    "webkit",
+    "webassembly",
+    "embed",
+    "iframe",
+    "agent",
+    "ai-agent",
+    "browser-automation",
+    "canvas",
+    "webgl"
+  ],
+  "license": "Apache-2.0",
+  "author": "The InceptionJS Authors",
+  "homepage": "https://github.com/yojona/InceptionJS#readme",
+  "bugs": {
+    "url": "https://github.com/yojona/InceptionJS/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yojona/InceptionJS.git",
+    "directory": "packages/inceptionjs"
+  },
   "type": "module",
   "exports": {
     ".": {
@@ -28,12 +51,15 @@
   "files": [
     "dist",
     "types",
-    "bin"
+    "bin",
+    "LICENSE",
+    "NOTICE",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "build": "node build.mjs",
     "test": "node --test test/*.test.mjs",
-    "prepack": "node build.mjs"
+    "prepack": "node ../legal.mjs && node build.mjs"
   },
   "dependencies": {
     "binaryen": "132.0.0",

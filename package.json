@@ -1,6 +1,17 @@
 {
   "name": "inceptionjs-workspace",
   "private": true,
+  "description": "InceptionJS: a web browser engine that runs inside a web page. Workspace root, not published.",
+  "license": "Apache-2.0",
+  "author": "The InceptionJS Authors",
+  "homepage": "https://github.com/yojona/InceptionJS#readme",
+  "bugs": {
+    "url": "https://github.com/yojona/InceptionJS/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yojona/InceptionJS.git"
+  },
   "type": "module",
   "scripts": {
     "serve": "node tests/serve.mjs",
