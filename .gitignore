@@ -3,3 +3,6 @@ node_modules/
 dist/
 test-results/
 tests/.probe.mjs
+packages/*/LICENSE
+packages/*/NOTICE
+packages/*/THIRD_PARTY_NOTICES.md
