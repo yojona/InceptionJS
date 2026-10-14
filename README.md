@@ -36,6 +36,24 @@ Network traffic leaves through a small WebSocket relay that you run or host.
 suite, but APIs and the protocol can still change, and it has had little real-world
 use. Read [Limitations](#limitations) before you build on it.
 
+## Why we built it
+
+We are building an operating system for people and AI agents that runs entirely on the
+web: a full desktop with files, apps, terminals and agents working next to you, all in a
+browser tab. Web-based desktops like this are common, and until now they all shared the
+same gap: none of them could offer a real web browser. Their browser app is an iframe
+that most sites refuse to load, or a stream of a browser running on someone else's
+server.
+
+We needed an engine that plays video and audio, runs modern web apps, keeps sessions,
+and that an agent can read and drive, all on the person's own device. So we built one.
+
+<p align="center">
+  <img src=".github/assets/web-desktop-ie.jpg" alt="A classic Internet Explorer style window on a web desktop, playing a YouTube video through InceptionJS" width="720">
+  <br>
+  <sub>A classic Internet Explorer style window on our web desktop, playing YouTube through InceptionJS.</sub>
+</p>
+
 ## What you get
 
 - A custom element, `<inception-view>`, with navigation, find in page, zoom, history,
