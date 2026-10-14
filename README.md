@@ -150,13 +150,6 @@ and that an agent can read and drive, all on the person's own device. So we buil
   phone it may not start. Lowering `maxMemoryMB` helps; mobile support is planned,
   though not the top priority.
 
-  <p align="center">
-    <img src=".github/assets/demo-android-emulated.jpg" alt="The InceptionJS demo showing Wikipedia in an emulated Android phone viewport" width="280">
-    <br>
-    <sub>The demo in an emulated Android viewport (Pixel 7, in desktop Chrome). A real phone
-    may not start the engine, for the memory reason above.</sub>
-  </p>
-
 - **Planned, not built:** a Chrome DevTools Protocol adapter, snapshot enrichers and
   the `agent` and `vision` snapshot modes (only `accessibility` ships), and localized UI.
 
