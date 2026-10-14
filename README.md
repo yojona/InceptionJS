@@ -60,9 +60,9 @@ We needed an engine that plays video and audio, runs modern web apps, keeps sess
 and that an agent can read and drive, all on the person's own device. So we built one.
 
 <p align="center">
-  <img src=".github/assets/web-desktop-ie.jpg" alt="A classic Internet Explorer style window on a web desktop, playing a YouTube video through InceptionJS" width="720">
+  <img src=".github/assets/web-desktop-ie.jpg" alt="A web desktop running in a Chrome tab, with a browser window playing a YouTube video through InceptionJS" width="720">
   <br>
-  <sub>Our AI-first web OS, with its XP-style theme: a classic Internet Explorer window playing YouTube through InceptionJS.</sub>
+  <sub>Our AI-first web OS, with its XP-style theme, running in a Chrome tab: the browser window playing YouTube is InceptionJS.</sub>
 </p>
 
 ## What you get
