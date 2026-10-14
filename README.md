@@ -2,6 +2,16 @@
   <img src=".github/assets/logo.svg" alt="InceptionJS" width="310">
 </p>
 
+<h3 align="center">The world's first truly usable browser inside a browser. For real.</h3>
+
+<p align="center">
+  Not an iframe. Not a screenshot. Not a remote stream. Not a cloud browser.<br>
+  A full web engine, compiled for the web.<br>
+  Browse the modern web. Watch YouTube. Play Spotify. All running locally inside your browser.
+</p>
+
+<hr>
+
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/status-early%20release%200.x-orange" alt="Status: early release 0.x">
@@ -13,19 +23,13 @@
   <a href="https://github.com/yojona/InceptionJS/stargazers"><img src="https://img.shields.io/github/stars/yojona/InceptionJS?style=flat" alt="GitHub stars"></a>
 </p>
 
-<h3 align="center">The world's first truly usable browser inside a browser. For real.</h3>
-
 <p align="center">
-  Not an iframe. Not a screenshot. Not a remote stream. Not a cloud browser.<br>
-  A full web engine, compiled for the web.<br>
-  Browse the modern web. Watch YouTube. Play Spotify. All running locally inside your browser.
-</p>
-
-<p align="center">
-  <a href="https://inceptionjs.com">Website</a> /
-  <a href="#compatibility">Compatibility</a> /
+  <a href="https://inceptionjs.com"><b>Live demo</b></a> /
   <a href="#quick-start">Quick start</a> /
-  <a href="#agents">Agents</a>
+  <a href="#compatibility">Compatibility</a> /
+  <a href="#agents">Agents</a> /
+  <a href="#limitations">Limitations</a> /
+  <a href="https://github.com/sponsors/yojona">Sponsor</a>
 </p>
 
 <p align="center">
