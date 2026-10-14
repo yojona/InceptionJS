@@ -21,8 +21,8 @@ This is a plain description, not legal advice.
 | Libraries linked into the engine | Pinned by URL and SHA-256 in `build/pins.sh`, built by `build/deps/*.sh` | See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) |
 | Emscripten runtime | Pinned in `build/pins.sh` (`EMSDK_VERSION`) | MIT and others, see THIRD_PARTY_NOTICES.md |
 
-Everything the engine contains is rebuilt from these inputs. Nothing is added from
-elsewhere. The host, the npm packages and the relay (`host/`, `packages/`) are separate
+The engine is rebuilt from these inputs plus the fonts and the certificate bundle that
+the Debian image in `build/Dockerfile` provides. The host, the npm packages and the relay (`host/`, `packages/`) are separate
 programs that talk to the engine over a message channel; they are not part of the
 combined work.
 
@@ -41,9 +41,9 @@ and provide (or offer) the corresponding source of your version, including your 
 
 ## Rebuild the engine
 
-You need a Linux machine (or VM) with Docker, about 16 CPU cores and 32 GB of RAM or
-more, and about 60 GB of free disk. A full build takes hours; later builds reuse the
-compiler cache and finish much faster. Do not build on a laptop you need.
+You need a Linux machine (or VM) with Docker. We build on a server with 16 vCPUs and
+32 GB of RAM; expect to need tens of GB of disk. A full build takes hours; later builds
+reuse the compiler cache and finish much faster. Do not build on a laptop you need.
 
 ```bash
 git clone https://github.com/yojona/InceptionJS.git
