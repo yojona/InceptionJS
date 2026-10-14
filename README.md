@@ -149,7 +149,6 @@ and that an agent can read and drive, all on the person's own device. So we buil
   memory by default, and Android often lets a page reserve much less, so on a real
   phone it may not start. Lowering `maxMemoryMB` helps; mobile support is planned,
   though not the top priority.
-
 - **Planned, not built:** a Chrome DevTools Protocol adapter, snapshot enrichers and
   the `agent` and `vision` snapshot modes (only `accessibility` ships), and localized UI.
 
