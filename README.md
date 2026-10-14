@@ -8,6 +8,7 @@
   <img src="https://img.shields.io/badge/engine-WebKit%20%2B%20WebAssembly-6d5efc" alt="Engine: WebKit and WebAssembly">
   <img src="https://img.shields.io/badge/runs%20in-Chrome%20%7C%20Firefox%20%7C%20Safari-informational" alt="Runs in Chrome, Firefox and Safari">
   <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="Pull requests welcome"></a>
+  <a href="https://github.com/sponsors/yojona"><img src="https://img.shields.io/github/sponsors/yojona?label=sponsors&logo=githubsponsors" alt="GitHub Sponsors"></a>
   <a href="https://github.com/yojona/InceptionJS/stargazers"><img src="https://img.shields.io/github/stars/yojona/InceptionJS?style=flat" alt="GitHub stars"></a>
 </p>
 
@@ -548,5 +549,6 @@ sponsorship pays for what a browser engine needs to stay safe and keep improving
 servers that build WebKit, keeping up with WebKit security fixes every month, an
 external security review, and time for performance work.
 
-If your company builds on InceptionJS or wants to, and would like to sponsor it, get in
-touch through [inceptionjs.com](https://inceptionjs.com).
+Sponsor it through [GitHub Sponsors](https://github.com/sponsors/yojona). If your
+company builds on InceptionJS and wants a larger sponsorship, get in touch through
+[inceptionjs.com](https://inceptionjs.com).
