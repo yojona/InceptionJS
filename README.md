@@ -1,6 +1,25 @@
-# InceptionJS
+<p align="center">
+  <img src=".github/assets/logo.svg" alt="InceptionJS" width="310">
+</p>
 
-A web browser engine (WebKit: WebCore plus JavaScriptCore, compiled to WebAssembly)
+<h3 align="center">The world's first truly usable browser inside a browser. For real.</h3>
+
+<p align="center">
+  Not an iframe. Not a screenshot. Not a remote stream. Not a cloud browser.<br>
+  A full web engine, compiled for the web.<br>
+  Browse the modern web. Watch YouTube. Play Spotify. All running locally inside your browser.
+</p>
+
+<p align="center">
+  <a href="https://inceptionjs.com">Website</a> /
+  <a href="#compatibility">Compatibility</a> /
+  <a href="#quick-start">Quick start</a> /
+  <a href="#agents">Agents</a>
+</p>
+
+---
+
+InceptionJS is a web browser engine (WebKit: WebCore plus JavaScriptCore, compiled to WebAssembly)
 that runs inside a web page and draws into a canvas. Your app embeds a real browser
 with `<inception-view>`; rendering, JavaScript and media run on the visitor's device.
 Network traffic leaves through a small WebSocket relay that you run or host.
@@ -8,8 +27,6 @@ Network traffic leaves through a small WebSocket relay that you run or host.
 ```html
 <inception-view src="https://example.com"></inception-view>
 ```
-
-Website: https://inceptionjs.com
 
 **Status: early release (0.x).** It works and is covered by an automated browser
 suite, but APIs and the protocol can still change, and it has had little real-world
