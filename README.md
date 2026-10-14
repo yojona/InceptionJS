@@ -87,7 +87,11 @@ use. Read [Limitations](#limitations) before you build on it.
   JavaScript-heavy sites are noticeably slower than in a native browser. See
   [Performance](#performance). Memory is capped at 4 GB per view (wasm32).
 - **No UDP.** No WebRTC (the API exists but never negotiates) and no QUIC.
-- **No DRM.** Encrypted media is out of scope; services that require it do not play.
+- **DRM goes through the host browser.** Encrypted Media uses the host's own CDM, so
+  Widevine works only where the host browser has it. ClearKey is covered by tests;
+  Netflix does not play.
+- **Disabled in the build:** WebAssembly inside loaded pages, WebGPU and WOFF2 web
+  fonts (pages fall back to other font formats or system fonts).
 - **A relay is required.** Pages cannot open raw TCP, so every connection goes through
   a relay. TLS ends inside the engine; the relay sees ciphertext plus the destination
   host and port.
