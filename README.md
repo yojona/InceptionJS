@@ -9,6 +9,8 @@ Network traffic leaves through a small WebSocket relay that you run or host.
 <inception-view src="https://example.com"></inception-view>
 ```
 
+Website: https://inceptionjs.com
+
 **Status: early release (0.x).** It works and is covered by an automated browser
 suite, but APIs and the protocol can still change, and it has had little real-world
 use. Read [Limitations](#limitations) before you build on it.
