@@ -110,6 +110,85 @@ use. Read [Limitations](#limitations) before you build on it.
 - **Planned, not built:** a Chrome DevTools Protocol adapter, snapshot enrichers and
   the `agent` and `vision` snapshot modes (only `accessibility` ships), and localized UI.
 
+## Compatibility
+
+What pages loaded inside the engine can use today. **Works** means covered by the
+browser test suite or verified on real sites; **Partial** has a limit noted.
+
+**Rendering and graphics**
+
+| API | Status | Notes |
+| --- | --- | --- |
+| HTML / CSS layout | Works | Real sites render; Wikipedia, YouTube, BBC measured |
+| Canvas 2D | Works | OffscreenCanvas on the main thread only |
+| WebGL 1 | Works | Many contexts per page, with a shared budget |
+| WebGL 2 | Works | Runs on the host GPU |
+| WebGPU | No | Disabled in the build |
+| System fonts, emoji, CJK | Works | Bundled fallback fonts, including color emoji |
+| WOFF2 web fonts | No | Disabled in the build; other formats load |
+
+**Media**
+
+| API | Status | Notes |
+| --- | --- | --- |
+| Video / audio elements | Works | Decoded by the host browser |
+| Media Source Extensions | Works | Adaptive streaming players run |
+| Encrypted Media (EME) | Partial | Host browser's CDM; ClearKey tested, Netflix does not play |
+| Web Audio | Works | Silent when fed from a media element in Safari hosts |
+| Fullscreen | Works | The view goes fullscreen through the host |
+| getUserMedia (camera / mic) | No | Always denied |
+
+**Network**
+
+| API | Status | Notes |
+| --- | --- | --- |
+| fetch / XHR | Works | Through the relay |
+| WebSocket | Works | Text and binary |
+| CORS | Works | Enforced; stricter filtering in site isolation |
+| Cookies | Works | Persistent per profile, shared across windows |
+| Third-party cookies | Works | Blocked by default in site isolation |
+| HTTP/3 (QUIC) | No | No UDP |
+| WebRTC | No | The API exists but never connects |
+
+**Storage**
+
+| API | Status | Notes |
+| --- | --- | --- |
+| localStorage | Works | Persistent, shared across windows, storage events |
+| IndexedDB | Works | Persistent, shared across windows |
+
+**JavaScript**
+
+| API | Status | Notes |
+| --- | --- | --- |
+| JavaScript | Partial | Interpreter, no JIT: about 7 times slower than native |
+| WebAssembly in pages | No | Disabled in the build |
+
+**Device and UI** (the embedder decides; see [Safe defaults](#safe-defaults))
+
+| API | Status | Notes |
+| --- | --- | --- |
+| alert / confirm / prompt | Works | Host events; answered without UI by default |
+| File upload | Works | Through the host's file picker |
+| Downloads | Works | Host events; not saved to disk by default |
+| Popups / window.open | Works | Host events; blocked by default |
+| Clipboard | Works | Write only after the person's own input |
+| Geolocation | Works | Denied unless the embedder grants it |
+| Notifications | Works | Denied unless the embedder grants it |
+| Permissions | Works | Reported to the host as events |
+| IME / accented input | Works | Composition events reach the page |
+| Drag and drop | Partial | Enabled, little tested |
+| Gamepad | No | Disabled in the build |
+
+**Other**
+
+| API | Status | Notes |
+| --- | --- | --- |
+| Cross-origin iframes | Works | postMessage between frames works |
+| Intl / ICU | Works | Time zone and languages from the host or the embedder |
+| WebXR | No | Disabled in the build |
+| Web Bluetooth / USB / Serial | No | Not implemented |
+
 ## Performance
 
 Measured on an Apple M5 MacBook (macOS 26.5), InceptionJS running inside headless
