@@ -1,6 +1,6 @@
 {
   "name": "inceptionjs",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A web browser engine (WebKit compiled to WebAssembly) that runs inside a web page and draws into a canvas. GPU-first, with a JSON-RPC protocol and an opt-in, policy-guarded API for AI agents.",
   "keywords": [
     "browser",
