@@ -46,7 +46,7 @@
     "./types/*": "./types/*.d.ts"
   },
   "bin": {
-    "inceptionjs": "./bin/inceptionjs.js"
+    "inceptionjs": "bin/inceptionjs.js"
   },
   "files": [
     "dist",
