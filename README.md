@@ -53,12 +53,14 @@ use. Read [Limitations](#limitations) before you build on it.
 
 ## Why we built it
 
-We are building an operating system for people and AI agents that runs entirely on the
-web: a full desktop with files, apps, terminals and agents working next to you, all in a
-browser tab. Web-based desktops like this are common, and until now they all shared the
-same gap: none of them could offer a real web browser. Their browser app is an iframe
-that most sites refuse to load, or a stream of a browser running on someone else's
-server.
+We are building an operating system for people and AI agents. It installs on a Linux
+base, on your own hardware or on a server that runs 24/7, and its desktop is a web app:
+you can open it from any browser, anywhere in the world, and on the device itself the
+screen simply shows that same desktop in a browser. A full desktop with files, apps,
+terminals and agents working next to you, all in a browser tab. Web-based desktops like
+this are common, and until now they all shared the same gap: none of them could offer a
+real web browser. Their browser app is an iframe that most sites refuse to load, or a
+stream of a browser running on someone else's server.
 
 We needed an engine that plays video and audio, runs modern web apps, keeps sessions,
 and that an agent can read and drive, all on the person's own device. So we built one.
