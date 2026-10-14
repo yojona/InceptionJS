@@ -2,6 +2,15 @@
   <img src=".github/assets/logo.svg" alt="InceptionJS" width="310">
 </p>
 
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/status-early%20release%200.x-orange" alt="Status: early release 0.x">
+  <img src="https://img.shields.io/badge/engine-WebKit%20%2B%20WebAssembly-6d5efc" alt="Engine: WebKit and WebAssembly">
+  <img src="https://img.shields.io/badge/runs%20in-Chrome%20%7C%20Firefox%20%7C%20Safari-informational" alt="Runs in Chrome, Firefox and Safari">
+  <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="Pull requests welcome"></a>
+  <a href="https://github.com/yojona/InceptionJS/stargazers"><img src="https://img.shields.io/github/stars/yojona/InceptionJS?style=flat" alt="GitHub stars"></a>
+</p>
+
 <h3 align="center">The world's first truly usable browser inside a browser. For real.</h3>
 
 <p align="center">
