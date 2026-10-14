@@ -1,0 +1,14 @@
+InceptionJS
+Copyright 2026 The InceptionJS Authors
+
+This product includes software developed by the InceptionJS project
+(https://github.com/yojona/InceptionJS). The people who made it are listed in
+the AUTHORS file.
+
+The engine files built from this repository contain WebKit (WebCore and
+JavaScriptCore), which is licensed under the GNU Lesser General Public License
+and BSD-style licenses. See LGPL.md for what that means and how to rebuild or
+replace the engine.
+
+Other software included in, or built into, InceptionJS and its engine is listed
+with its license in THIRD_PARTY_NOTICES.md.
