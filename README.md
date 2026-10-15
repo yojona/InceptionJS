@@ -99,6 +99,31 @@ and that an agent can read and drive, all on the person's own device. So we buil
 - Integrations: Vite plugin, Next.js adapter, React wrapper (`@inceptionjs/react`),
   a relay (`inceptionjs/server`) and a CLI (`npx inceptionjs`).
 
+## How is it different?
+
+People often compare InceptionJS with browser automation tools and cloud browsers.
+The difference is where the browser runs.
+
+| | Runs where | A person sees | Driven by |
+| --- | --- | --- | --- |
+| **InceptionJS** | Inside a web page, on the visitor's device | The real page, drawn in their tab | Your app, a person, or an agent through the `agent` namespace |
+| **Playwright, Puppeteer** | A browser process on a computer or server | Usually nothing (headless), or a separate window | A script, from outside the browser (CDP and similar) |
+| **Browser Use and other agent libraries** | A browser on a server or in their cloud | Usually nothing, or a video stream | A language model, through Playwright or CDP |
+| **Cloud browsers (Kernel, Browserbase and others)** | Their servers | A video stream of the remote browser | Your code, through CDP |
+| **An iframe** | The visitor's own browser | The page, if the site allows framing (most major sites do not) | Nothing: you cannot read or control another site's frame |
+
+In short: Playwright and cloud browsers control a browser somewhere else. InceptionJS
+*is* the browser: WebKit compiled to WebAssembly, running in your tab and painting with
+WebGL, with no server running the browser for each user (the relay only forwards
+encrypted bytes). We use Playwright to test it.
+
+They can work together: a Chrome DevTools Protocol adapter is planned, so tools that
+speak CDP could drive an InceptionJS view.
+
+When to pick something else: thousands of headless browsers on servers, maximum
+JavaScript speed, or sites with strict bot detection are better served by a native
+browser on a server.
+
 ## Limitations
 
 - **Host browsers.** The host page runs in Chromium based browsers (Chrome 137 or
