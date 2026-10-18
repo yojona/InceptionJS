@@ -159,6 +159,7 @@ test('development mode opens loopback to the listed ports only', async () => {
 test('a relay reachable from outside the machine refuses to start without a secret', async () => {
   await assert.rejects(startRelay({ host: '0.0.0.0', log: quiet }), /secret/);
   await assert.rejects(startRelay({ host: '192.168.1.5', log: quiet }), /secret/);
+  await assert.rejects(startRelay({ host: '0.0.0.0', secret: 'short', log: quiet }), /at least 32 characters/);
   const relay = await startRelay({ host: '0.0.0.0', secret: 's'.repeat(40), log: quiet });
   await relay.close();
   const local = await startRelay({ host: 'localhost', log: quiet });
