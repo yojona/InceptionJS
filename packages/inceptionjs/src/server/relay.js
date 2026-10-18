@@ -41,6 +41,10 @@ function isLoopbackHost(host) {
 }
 // Stop reading from a remote socket while this much is queued towards the page.
 const HIGH_WATER = 4 * 1024 * 1024;
+// What a stream may queue while its connection opens. Before the connection
+// the page sends little more than a TLS hello; the window is only granted once
+// the connection is up, so a page that keeps sending past this ignores it.
+const PENDING_MAX = 1024 * 1024;
 
 function packet(type, id, payload = Buffer.alloc(0)) {
   const header = Buffer.alloc(5);
@@ -191,7 +195,7 @@ export async function startRelay(options = {}) {
       session.opened++;
       const port = payload.readUInt16LE(1);
       const hostname = payload.subarray(3).toString('utf8');
-      const stream = { socket: null, pending: [], sinceContinue: 0, bytesIn: 0, bytesOut: 0 };
+      const stream = { socket: null, pending: [], pendingBytes: 0, owed: false, sinceContinue: 0, bytesIn: 0, bytesOut: 0 };
       streams.set(id, stream);
 
       const refused = nameRefusal(hostname, policy);
@@ -229,6 +233,8 @@ export async function startRelay(options = {}) {
       socket.once('connect', () => {
         socket.setTimeout(0);
         for (const chunk of stream.pending.splice(0)) socket.write(chunk);
+        stream.pendingBytes = 0;
+        if (stream.owed) grant(id, stream);
       });
       socket.on('data', (chunk) => {
         stream.bytesOut += chunk.length;
@@ -248,17 +254,32 @@ export async function startRelay(options = {}) {
       const stream = streams.get(id);
       if (!stream) return;
       stream.bytesIn += payload.length;
-      if (!stream.socket || stream.socket.connecting) stream.pending.push(Buffer.from(payload));
-      else stream.socket.write(payload);
-      // Grant a new window once half of it is used and the remote side keeps up.
+      const connecting = !stream.socket || stream.socket.connecting;
+      if (connecting) {
+        stream.pendingBytes += payload.length;
+        if (stream.pendingBytes > PENDING_MAX) {
+          log('warn', `stream sent ${stream.pendingBytes} bytes before its connection opened, closed`);
+          close(id, CloseReason.Throttled);
+          return;
+        }
+        stream.pending.push(Buffer.from(payload));
+      } else stream.socket.write(payload);
+      // Grant a new window once half of it is used and the remote side keeps
+      // up; a connection that is still opening gets it once it opens.
       if (++stream.sinceContinue < WINDOW / 2) return;
-      const grant = () => {
+      if (connecting) stream.owed = true;
+      else grant(id, stream);
+    }
+
+    function grant(id, stream) {
+      stream.owed = false;
+      const grantWindow = () => {
         if (!streams.has(id)) return;
         stream.sinceContinue = 0;
         send(CONTINUE, id, u32(WINDOW));
       };
-      if (stream.socket && stream.socket.writableNeedDrain) stream.socket.once('drain', grant);
-      else grant();
+      if (stream.socket.writableNeedDrain) stream.socket.once('drain', grantWindow);
+      else grantWindow();
     }
   }
 
