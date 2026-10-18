@@ -227,3 +227,17 @@ test('the log carries destinations and sizes, never content', async () => {
   assert.match(text, /\d+ bytes/);
   assert.doesNotMatch(text, /password/);
 });
+
+test('a stream that is still connecting gets no new window and cannot queue without limit', async () => {
+  // The name never resolves, so the stream stays in its connecting state.
+  const relay = await startRelay({ log: quiet, hooks: { resolve: () => new Promise(() => {}) } });
+  const { ws, next } = await client(relay.url);
+  ws.send(packet(0x01, 1, connectPayload('example.com', 443)));
+  const chunk = Buffer.alloc(64 * 1024);
+  for (let i = 0; i < 20; i++) ws.send(packet(0x02, 1, chunk));
+  const answer = await next((p) => p.id === 1 && (p.type === 0x03 || p.type === 0x04));
+  assert.equal(answer.type, 0x04, 'no CONTINUE before the connection opens');
+  assert.equal(answer.payload[0], CloseReason.Throttled);
+  ws.close();
+  await relay.close();
+});
