@@ -12,7 +12,7 @@ const VERSION = 'v1';
 const encode = (data) => Buffer.from(data).toString('base64url');
 const sign = (secret, body) => createHmac('sha256', secret).update(body).digest('base64url');
 
-function requireSecret(secret) {
+export function requireSecret(secret) {
   if (typeof secret !== 'string' || secret.length < 32) throw new TypeError('the relay secret must be a string of at least 32 characters');
 }
 

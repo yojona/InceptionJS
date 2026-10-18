@@ -14,7 +14,7 @@ import net from 'node:net';
 import { lookup } from 'node:dns/promises';
 import { WebSocketServer } from 'ws';
 import { connectRefusal, nameRefusal } from './policy.js';
-import { RelayTokenError, verifyRelayToken } from './token.js';
+import { RelayTokenError, requireSecret, verifyRelayToken } from './token.js';
 
 const CONNECT = 0x01;
 const DATA = 0x02;
@@ -99,6 +99,8 @@ export async function startRelay(options = {}) {
   const connectTcp = hooks.connect ?? net.connect;
   if (!secret && !isLoopbackHost(host))
     throw new Error(`the relay would listen on ${host} without a secret: set INCEPTION_RELAY_SECRET (or secret), or listen on 127.0.0.1`);
+  // A secret too short to verify with would refuse every token later.
+  if (secret) requireSecret(secret);
   const policy = { dev, devPorts: new Set(devPorts.map(Number)) };
 
   const server = http.createServer((req, res) => res.writeHead(404).end());
