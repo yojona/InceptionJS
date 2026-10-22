@@ -146,3 +146,13 @@ test('a window that never read localStorage still hears another window\'s change
   await expect.poll(() => evaluateIn(page, second, 'seen')).toBe('fresh=yes');
   expect(await evaluateIn(page, second, 'localStorage.getItem("fresh")')).toBe('yes');
 });
+
+test('windows started at the same time leave the page\'s Worker as it was', async ({ page }) => {
+  await page.addInitScript(() => { window.NativeWorker = Worker; });
+  await start(page);
+  const ids = await view(page).evaluate(async (el) => (await Promise.all([el.openWindow({ url: 'about:blank' }), el.openWindow({ url: 'about:blank' })])).map((w) => w.id));
+  expect(ids.sort()).toEqual([2, 3]);
+  expect(await page.evaluate(() => Worker === window.NativeWorker)).toBe(true);
+  // Each engine still answers on its own window.
+  for (const id of ids) expect(await evaluateIn(page, id, '1 + 1')).toBe('2');
+});
