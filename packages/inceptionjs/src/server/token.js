@@ -29,8 +29,9 @@ export function signRelayToken({ secret, subject = '', origin = '', ttlSeconds =
 export class RelayTokenError extends Error {}
 
 /**
- * The token's payload when it is authentic, unexpired and, if `origin` is
- * given and the token names one, issued for that origin. Throws otherwise.
+ * The token's payload when it is authentic, unexpired and, if the token names
+ * an origin, presented by that origin. A request without an origin cannot use
+ * such a token. Throws otherwise.
  */
 export function verifyRelayToken(token, { secret, origin, now = Date.now(), leewaySeconds = 30 } = {}) {
   requireSecret(secret);
@@ -49,6 +50,6 @@ export function verifyRelayToken(token, { secret, origin, now = Date.now(), leew
   const seconds = Math.floor(now / 1000);
   if (!(payload.exp + leewaySeconds >= seconds)) throw new RelayTokenError('expired');
   if (payload.iat - leewaySeconds > seconds) throw new RelayTokenError('issued in the future');
-  if (origin && payload.origin && payload.origin !== origin) throw new RelayTokenError('issued for another origin');
+  if (payload.origin && payload.origin !== origin) throw new RelayTokenError(origin ? 'issued for another origin' : 'issued for an origin, presented without one');
   return payload;
 }
