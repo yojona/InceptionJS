@@ -105,6 +105,17 @@ test('risk classes from what the engine says about the target', () => {
   assert.equal(classify('press', { key: 'Enter' }, { editable: true, formRisk: 'login' }), 'login');
   assert.equal(classify('press', { key: 'Tab' }, { editable: true, formRisk: 'login' }), 'interact');
   assert.equal(classify('scroll', {}, null), 'interact');
+  // type, fill and press click a target that is not an editable field.
+  assert.equal(classify('type', { text: '' }, { link: 'https://evil.example/', editable: false }), 'navigate');
+  assert.equal(classify('fill', { text: 'x' }, { link: 'https://a.example/f.zip', download: true, editable: false }), 'download');
+  assert.equal(classify('press', { key: 'a' }, { link: 'https://evil.example/', editable: false }), 'navigate');
+  assert.equal(classify('press', { key: 'Tab' }, { submits: true, formRisk: 'login', editable: false }), 'login');
+  // A character pressed into a password or card field is typed into it.
+  assert.equal(classify('press', { key: 'a' }, { field: 'password', editable: true }), 'login');
+  assert.equal(classify('press', { key: 'Shift+A' }, { field: 'password', editable: true }), 'login');
+  assert.equal(classify('press', { key: '4' }, { field: 'payment', editable: true }), 'payment');
+  assert.equal(classify('press', { key: 'Control+a' }, { field: 'password', editable: true }), 'interact');
+  assert.equal(classify('press', { key: 'ArrowLeft' }, { field: 'password', editable: true }), 'interact');
 });
 
 test("a label's text beside its control is dropped", () => {

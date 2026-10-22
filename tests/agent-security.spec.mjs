@@ -126,3 +126,19 @@ test.describe('without a policy callback the agent stays on the site it is on', 
     expect((await agent(page, 'snapshot')).text).toContain('Note');
   });
 });
+
+test('typing into or pressing a key on a link is weighed as following it', async ({ page }) => {
+  // A download link: refused without a policy whatever the page's site.
+  await open(page, `<a download href="https://example.com/file.bin">file</a>`);
+  const link = await ref(page, 'link', 'file');
+  await agent(page, 'requestControl');
+  for (const [method, ...args] of [['type', link, ''], ['fill', link, 'x'], ['press', 'a', { ref: link }]])
+    expect(await outcome(page, method, ...args), method).toMatchObject({ reason: 'denied_by_policy', data: { risk: 'download' } });
+});
+
+test('a character pressed into a password field needs approval', async ({ page }) => {
+  await open(page, `<input type="password" aria-label="Password">`);
+  const field = await ref(page, 'textbox', 'Password');
+  await agent(page, 'requestControl');
+  expect(await outcome(page, 'press', 'h', { ref: field })).toMatchObject({ reason: 'denied_by_policy', data: { risk: 'login' } });
+});
