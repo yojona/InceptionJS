@@ -385,6 +385,14 @@ export declare class InceptionView extends HTMLElement {
   readonly securityState: SecurityState | null;
   /** Resolves when the engine is running: {renderer: 'gpu' | 'cpu', ...}. */
   readonly ready: Promise<{ renderer: 'gpu' | 'cpu'; persistent?: boolean }>;
+  /**
+   * Stops the view's engines, its share of the profile service and its hold on the profile, so another
+   * view can open the profile. Removing the view from the page does this too, unless it is put back in
+   * the same task. A closed view cannot be used again.
+   */
+  close(): void;
+  /** Whether close() ran, or the view was removed from the page. */
+  readonly closed: boolean;
   /** Setting merges; a field set to 'auto' follows the host again. */
   preferences: Partial<Preferences>;
 

@@ -205,6 +205,12 @@ export class InceptionView extends HTMLElement {
   #connection = null;
   #standby = null;
   #attachHost = null;
+  #profile = null;
+  // The profile lock when no service holds it (isolation 'shared').
+  #lock = null;
+  // Listeners the view puts on the document, removed when it closes.
+  #documentListeners = new AbortController();
+  #closed = false;
   get #state() { return this.#remote ? this.#remote.state : this.#main.state; }
   get #tabs() { return this.#main.tabs; }
   get #agentHost() { return this.#main.agent; }
@@ -334,6 +340,45 @@ export class InceptionView extends HTMLElement {
 
   disconnectedCallback() {
     this.#provenance.stop();
+    // A view moved elsewhere in the page is back by the next task; one that
+    // stays out of the page stops its engines.
+    setTimeout(() => this.isConnected || this.close());
+  }
+
+  // Stops everything the view runs: its engines, its share of the profile
+  // service, its attach host and its hold on the profile, so another view can
+  // open the profile again. A closed view cannot be used again.
+  close() {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#teardown();
+    // A view still starting tears down what it started once it gets there.
+    this.#ready?.then(() => this.#teardown(), () => this.#teardown());
+    this.dataset.role = 'closed';
+  }
+
+  get closed() { return this.#closed; }
+
+  #teardown() {
+    this.#standby?.abort();
+    this.#connection?.close('the view closed');
+    this.#connection = null;
+    this.#remote = null;
+    for (const slot of [...this.#slots]) {
+      slot.primary = false;
+      this.#closeSlot(slot);
+    }
+    this.#display?.stop();
+    this.#service?.release();
+    this.#service = null;
+    if (this.#attachHost) {
+      this.#attachHost.stop();
+      if (attachHosts.get(this.#profile) === this.#attachHost) attachHosts.delete(this.#profile);
+      this.#attachHost = null;
+    }
+    this.#lock?.release();
+    this.#lock = null;
+    this.#documentListeners.abort();
   }
 
   // The embedding page hid the badge: the view does not show content unseen
@@ -361,7 +406,8 @@ export class InceptionView extends HTMLElement {
     if (!this.hasAttribute('tabindex')) this.tabIndex = 0;
     // Deferred so a page can define the element and configure it in the same
     // script, in either order.
-    queueMicrotask(() => this.ready.catch((error) => {
+    queueMicrotask(() => this.#closed || this.ready.catch((error) => {
+      if (this.#closed) return;
       const reason = String(error?.message ?? error);
       this.#showMessage(reason);
       this.dispatchEvent(new CustomEvent('crash', { detail: { reason } }));
@@ -644,7 +690,9 @@ export class InceptionView extends HTMLElement {
   // document share it and need no lock.
   async #start() {
     if (!config.engineUrl) throw new Error('Inception.configure({engineUrl, relayUrl}) first');
+    if (this.#closed) throw new Error('the view is closed');
     const profile = this.getAttribute('profile') ?? config.storage?.profile ?? 'default';
+    this.#profile = profile;
     const shared = this.#isolation() !== 'shared' && (ProfileService.running(profile) || config.storage?.ephemeral === true);
     if (shared) return this.#startHost(profile, { lock: null });
     const lock = await tryLock(profileLockName(profile));
@@ -677,6 +725,7 @@ export class InceptionView extends HTMLElement {
       await this.#service.start();
       this.#watchService(this.#service);
     } else {
+      this.#lock = lock;
       navigator.storage?.persist?.().catch(() => {});
     }
     const primary = this.#createSlot({ primary: true, site: isolation === 'site' ? await this.#siteOf(url) : undefined });
@@ -726,7 +775,7 @@ export class InceptionView extends HTMLElement {
       for (const media of this.#mediaHosts()) media.userGesture();
       for (const slot of this.#slots) slot.audio.userGesture();
     };
-    for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, gesture, { capture: true });
+    for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, gesture, { capture: true, signal: this.#documentListeners.signal });
 
     const { width, height } = this.#cssSize();
     const gpu = this.getAttribute('gpu') ?? 'auto';
@@ -748,7 +797,7 @@ export class InceptionView extends HTMLElement {
     document.addEventListener('fullscreenchange', () => {
       if (document.fullscreenElement !== this) this.#main.channel.send('fullscreen.changed', { active: false });
       this.dispatchEvent(new CustomEvent('fullscreen', { detail: { active: document.fullscreenElement === this } }));
-    });
+    }, { signal: this.#documentListeners.signal });
     this.#attachHost?.serve(this, { policy, brokerUrl: config.brokerUrl });
     this.dataset.role = 'host';
     return ready;
@@ -809,6 +858,7 @@ export class InceptionView extends HTMLElement {
   // The profile's lock came to this document: the view stops being a client
   // and runs the profile itself, starting where its window was.
   #promote(profile, lock) {
+    if (this.#closed) return lock.release();
     const url = this.#remote?.state.url || this.getAttribute('src') || '';
     this.#connection?.close('this tab took over the profile');
     this.#connection = null;
