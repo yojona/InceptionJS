@@ -505,18 +505,28 @@ export function registerAgentMethods(server, hostFor) {
   }
 }
 
+// Whether pressing `key` ("a", "Shift+A", "Control+c") types a character.
+function typesText(key) {
+  const parts = String(key ?? '').split('+');
+  const last = parts.pop();
+  return [...last].length === 1 && !parts.some((modifier) => /^(Control|Meta|Alt)$/i.test(modifier));
+}
+
 // What an action risks, from what the engine says about its target.
 export function classify(action, params, target) {
   if (!target) return 'interact';
   let risk = 'interact';
   const pressesTarget = action === 'press' && /^(Enter|Space| )$/i.test(String(params.key ?? ''));
-  if (action === 'click' || pressesTarget) {
+  // type, fill and press focus their target with a click; on anything but an
+  // editable field that click is what the action does (a link followed).
+  const clicksTarget = (action === 'type' || action === 'fill' || action === 'press') && !target.editable;
+  if (action === 'click' || pressesTarget || clicksTarget) {
     if (target.link) risk = target.download ? 'download' : 'navigate';
     // A submit button outside any form submits nothing.
     if (target.submits && target.formRisk) risk = higher(risk, target.formRisk);
   }
   if (action === 'press' && /^Enter$/i.test(String(params.key ?? '')) && target.editable && target.formRisk) risk = higher(risk, target.formRisk);
-  if (action === 'type' || action === 'fill') {
+  if (action === 'type' || action === 'fill' || (action === 'press' && typesText(params.key))) {
     if (target.field === 'password') risk = 'login';
     if (target.field === 'payment') risk = 'payment';
     if (String(params.text ?? '').includes('\n') && target.formRisk) risk = higher(risk, target.formRisk);
