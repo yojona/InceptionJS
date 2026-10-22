@@ -201,54 +201,51 @@ export class EngineRuntime extends EventTarget {
     const started = new Promise((resolve) => this.addEventListener('started', resolve, { once: true }));
     // The engine's thread announces itself as soon as it runs, possibly before
     // the module promise settles, so listeners go on each worker as it is
-    // created rather than afterwards.
+    // created rather than afterwards. The engine creates its thread pool and
+    // exports PThread synchronously, before its first await; Worker is swapped
+    // only for that synchronous part, so another engine starting at the same
+    // time never sees this one's Worker, and threads started later are caught
+    // where PThread allocates them.
     const NativeWorker = globalThis.Worker;
     const runtime = this;
+    const moduleArg = {
+      wasmMemory: new WebAssembly.Memory({ initial: (INITIAL_MEMORY_MB * 1024 * 1024) / PAGE_BYTES, maximum: memoryLimitPages(this.#maxMemoryMB), shared: true }),
+      locateFile: (path) => new URL(path, this.engineUrl).href,
+      print: (text) => this.#quiet || console.log('[engine]', text),
+      printErr: (text) => this.#quiet || console.warn('[engine]', text),
+      ...(code ? {
+        instantiateWasm: (imports, receive) => {
+          if (this.#role === 'content') lockImports(imports);
+          this.#watchMainThread(imports);
+          WebAssembly.instantiate(code.module, imports).then((instance) => receive(instance, code.module));
+          return {};
+        },
+        getPreloadedPackage: () => code.data,
+      } : {}),
+    };
+    let created;
     globalThis.Worker = class extends NativeWorker {
       constructor(...args) {
         super(...args);
-        // Before the engine's own first message, so the thread knows its
-        // role when it instantiates the engine.
-        this.postMessage({ inceptionRole: runtime.#role });
-        runtime.#workers.add(this);
-        this.addEventListener('message', (e) => runtime.#onWorkerMessage(this, e.data));
+        runtime.#adoptWorker(this);
       }
     };
     try {
-      this.#module = await createEngine({
-        wasmMemory: new WebAssembly.Memory({ initial: (INITIAL_MEMORY_MB * 1024 * 1024) / PAGE_BYTES, maximum: memoryLimitPages(this.#maxMemoryMB), shared: true }),
-        locateFile: (path) => new URL(path, this.engineUrl).href,
-        print: (text) => this.#quiet || console.log('[engine]', text),
-        printErr: (text) => this.#quiet || console.warn('[engine]', text),
-        ...(code ? {
-          instantiateWasm: (imports, receive) => {
-            if (this.#role === 'content') lockImports(imports);
-            this.#watchMainThread(imports);
-            WebAssembly.instantiate(code.module, imports).then((instance) => receive(instance, code.module));
-            return {};
-          },
-          getPreloadedPackage: () => code.data,
-        } : {}),
-      });
+      created = createEngine(moduleArg);
     } finally {
       globalThis.Worker = NativeWorker;
     }
-    // Threads the engine starts later are told their role too.
-    const threads = this.#module.PThread;
+    const threads = moduleArg.PThread;
     const allocate = threads?.allocateUnusedWorker;
     if (allocate) {
       threads.allocateUnusedWorker = (...args) => {
         const before = new Set(threads.unusedWorkers);
         const result = allocate.apply(threads, args);
-        for (const worker of threads.unusedWorkers) {
-          if (before.has(worker)) continue;
-          worker.postMessage({ inceptionRole: this.#role });
-          this.#workers.add(worker);
-          worker.addEventListener('message', (e) => this.#onWorkerMessage(worker, e.data));
-        }
+        for (const worker of threads.unusedWorkers) if (!before.has(worker)) this.#adoptWorker(worker);
         return result;
       };
     }
+    this.#module = await created;
     await started;
   }
 
@@ -314,6 +311,14 @@ export class EngineRuntime extends EventTarget {
   }
 
   #workers = new Set();
+
+  // A thread of this engine: told its role before the engine's own first
+  // message, so it knows it when it instantiates the engine.
+  #adoptWorker(worker) {
+    worker.postMessage({ inceptionRole: this.#role });
+    this.#workers.add(worker);
+    worker.addEventListener('message', (e) => this.#onWorkerMessage(worker, e.data));
+  }
   #terminated = false;
 
   #onWorkerMessage(worker, data) {
