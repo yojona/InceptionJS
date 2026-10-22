@@ -18,5 +18,7 @@ test('tampered, expired, foreign-origin and short-secret tokens are refused', ()
   assert.throws(() => verifyRelayToken(fresh.slice(0, -2) + 'xx', { secret }), /signature/);
   assert.throws(() => verifyRelayToken(fresh, { secret: 'b'.repeat(40) }), /signature/);
   assert.throws(() => verifyRelayToken(fresh, { secret, origin: 'https://evil.example' }), /origin/);
+  assert.throws(() => verifyRelayToken(fresh, { secret }), /without one/);
+  assert.equal(verifyRelayToken(signRelayToken({ secret }), { secret }).origin, '');
   assert.throws(() => signRelayToken({ secret: 'short' }), /32/);
 });
