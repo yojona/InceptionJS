@@ -410,6 +410,10 @@ export declare class InceptionView extends HTMLElement {
   deleteHistory(range: { url: string } | { from?: number; to?: number }): Promise<void>;
   download(url: string): Promise<void>;
   cancelDownload(id: number): Promise<void>;
+  pauseDownload(id: number): Promise<void>;
+  resumeDownload(id: number): Promise<void>;
+  /** An editing command in the focused frame, as if the person used the menu or a shortcut. */
+  edit(command: 'Copy' | 'Cut' | 'Paste' | 'SelectAll' | 'Undo' | 'Redo'): Promise<void>;
   /**
    * Connects another protocol client (an iframe, a worker, a remote agent). It may negotiate only
    * `capabilities`, by default just 'view'; 'find' (a text oracle), 'history', 'observe' (console) and
@@ -547,6 +551,8 @@ export declare function createDisplay(canvas: HTMLCanvasElement, port: MessagePo
 }): {
   close(notify?: boolean): void;
   setLevel(level: { volume?: number; muted?: boolean }): void;
+  /** Input as if the person made it, such as an editing command: input('edit', { command: 'Paste' }). */
+  input(command: string, args?: Record<string, unknown>): void;
   /** Counters of the Web Audio samples received, and the state of the output ("suspended" until the person has used the document). */
   readonly audio: { readonly stats: { chunks: number; frames: number; peak: number; state: string } };
 };
@@ -588,6 +594,7 @@ export declare class RemoteWindow extends EventTarget {
   findClear(): Promise<void>;
   zoom(factor: number): Promise<void>;
   history(options?: { text?: string; limit?: number; before?: number }): Promise<HistoryEntry[]>;
+  deleteHistory(range?: { url: string } | { from?: number; to?: number }): Promise<void>;
   createTab(url?: string, options?: { activate?: boolean }): Promise<unknown>;
   activateTab(id: number): Promise<void>;
   closeTab(id: number): Promise<void>;
@@ -599,6 +606,9 @@ export declare class RemoteWindow extends EventTarget {
 
 /** This document's attachment to a profile whose host is another document. */
 export declare class ProfileConnection extends EventTarget {
+  /** This connection's id, and that of the host document it is attached to (null until attached). */
+  readonly id: string;
+  readonly hostId: string | null;
   readonly profile: string;
   readonly state: 'new' | 'attached' | 'lost' | 'closed';
   readonly windows: RemoteWindow[];
