@@ -682,6 +682,13 @@ void FrameLoaderClientImpl::dispatchDidCommitLoad(std::optional<HasInsecureConte
     emitEvent("navigate"_s, WTF::move(data));
     emitSecurityState(m_view, *loader);
     History::recordVisit(url);
+    // A new document starts with its loader's title, empty until its <title>
+    // is parsed; WebKit only reports titles that are set, so without this a
+    // page with none would keep the previous page's.
+    auto title = JSON::Object::create();
+    title->setInteger("tab"_s, m_view.id());
+    title->setString("title"_s, loader->title().string);
+    emitEvent("title"_s, WTF::move(title));
 }
 
 static void emitLoadFinished(View& view, const ResourceError* error)
