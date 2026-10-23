@@ -419,6 +419,10 @@ public:
 
     IDBServer::IDBConnectionToClient& connection() { return m_connection.get(); }
     IDBConnectionIdentifier connectionIdentifier() const { return m_identifier; }
+    // Database connections the server opened for this engine: the only ones
+    // it may close, abort or answer version changes for.
+    bool ownsDatabaseConnection(IDBDatabaseConnectionIdentifier connection) const { return m_databaseConnections.contains(connection); }
+    void databaseConnectionClosed(IDBDatabaseConnectionIdentifier connection) { m_databaseConnections.remove(connection); }
 
 private:
     ServiceIDBClient(Link& link, IDBConnectionIdentifier identifier)
@@ -436,7 +440,12 @@ private:
     std::optional<IDBConnectionIdentifier> identifier() const final { return m_identifier; }
 
     void didDeleteDatabase(const IDBResultData& result) final { send(IDBOp::DidDeleteDatabase, result); }
-    void didOpenDatabase(const IDBResultData& result) final { send(IDBOp::DidOpenDatabase, result); }
+    void didOpenDatabase(const IDBResultData& result) final
+    {
+        if (result.type() == IDBResultType::OpenDatabaseSuccess || result.type() == IDBResultType::OpenDatabaseUpgradeNeeded)
+            m_databaseConnections.add(result.databaseConnectionIdentifier());
+        send(IDBOp::DidOpenDatabase, result);
+    }
     void didAbortTransaction(const IDBResourceIdentifier& id, const IDBError& error) final { send(IDBOp::DidAbortTransaction, id, error); }
     void didCommitTransaction(const IDBResourceIdentifier& id, const IDBError& error) final { send(IDBOp::DidCommitTransaction, id, error); }
     void didCreateObjectStore(const IDBResultData& result) final { send(IDBOp::DidCreateObjectStore, result); }
@@ -469,6 +478,7 @@ private:
     RefPtr<Link> m_link;
     IDBConnectionIdentifier m_identifier;
     Ref<IDBServer::IDBConnectionToClient> m_connection;
+    HashSet<IDBDatabaseConnectionIdentifier> m_databaseConnections;
 };
 
 class ServiceIDB {
@@ -564,6 +574,7 @@ void ServiceIDB::receive(Link& link, Decoder& decoder)
     // A content engine acts only for its own connection.
     auto mine = [&](IDBConnectionIdentifier connection) { return connection == identifier; };
     auto ownsResource = [&](const IDBResourceIdentifier& resource) { return resource.connectionIdentifier() == identifier; };
+    auto ownsConnection = [&](IDBDatabaseConnectionIdentifier connection) { return it->value->ownsDatabaseConnection(connection); };
     Locker locker { m_lock };
     auto& server = this->server();
     switch (static_cast<IDBOp>(*op)) {
@@ -607,8 +618,18 @@ void ServiceIDB::receive(Link& link, Decoder& decoder)
         return withArguments<IDBRequestData, IDBObjectStoreIdentifier, IDBIndexIdentifier, String>(decoder, [&](auto&& request, auto&& store, auto&& index, auto&& name) { if (mine(request.serverConnectionIdentifier())) server.renameIndex(request, store, index, name); });
     case IDBOp::PutOrAdd:
         return withArguments<IDBRequestData, IDBKeyData, IDBValue, IndexIDToIndexKeyMap, IndexedDB::ObjectStoreOverwriteMode>(decoder, [&](auto&& request, auto&& key, auto&& value, auto&& indexKeys, auto&& mode) {
-            if (mine(request.serverConnectionIdentifier()))
-                server.putOrAdd(request, key, value, indexKeys, mode);
+            if (!mine(request.serverConnectionIdentifier()))
+                return;
+            // A record's blobs must be files this engine wrote (IDBBlobWrite):
+            // the server moves them into the database, where the engine can
+            // read them back, so any other path would copy a file of the
+            // profile out to it.
+            auto files = linkFiles().find(link.id());
+            for (auto& path : value.blobFilePaths()) {
+                if (files == linkFiles().end() || !files->value.written.contains(path))
+                    return;
+            }
+            server.putOrAdd(request, key, value, indexKeys, mode);
         });
     case IDBOp::GetRecord:
         return withArguments<IDBRequestData, IDBGetRecordData>(decoder, [&](auto&& request, auto&& data) { if (mine(request.serverConnectionIdentifier())) server.getRecord(request, data); });
@@ -623,15 +644,20 @@ void ServiceIDB::receive(Link& link, Decoder& decoder)
     case IDBOp::IterateCursor:
         return withArguments<IDBRequestData, IDBIterateCursorData>(decoder, [&](auto&& request, auto&& data) { if (mine(request.serverConnectionIdentifier())) server.iterateCursor(request, data); });
     case IDBOp::EstablishTransaction:
-        return withArguments<IDBDatabaseConnectionIdentifier, IDBTransactionInfo>(decoder, [&](auto&& connection, auto&& info) { if (ownsResource(info.identifier())) server.establishTransaction(connection, info); });
+        return withArguments<IDBDatabaseConnectionIdentifier, IDBTransactionInfo>(decoder, [&](auto&& connection, auto&& info) { if (ownsConnection(connection) && ownsResource(info.identifier())) server.establishTransaction(connection, info); });
     case IDBOp::DatabaseConnectionPendingClose:
-        return withArguments<IDBDatabaseConnectionIdentifier>(decoder, [&](auto&& connection) { server.databaseConnectionPendingClose(connection); });
+        return withArguments<IDBDatabaseConnectionIdentifier>(decoder, [&](auto&& connection) { if (ownsConnection(connection)) server.databaseConnectionPendingClose(connection); });
     case IDBOp::DatabaseConnectionClosed:
-        return withArguments<IDBDatabaseConnectionIdentifier>(decoder, [&](auto&& connection) { server.databaseConnectionClosed(connection); });
+        return withArguments<IDBDatabaseConnectionIdentifier>(decoder, [&](auto&& connection) {
+            if (!ownsConnection(connection))
+                return;
+            it->value->databaseConnectionClosed(connection);
+            server.databaseConnectionClosed(connection);
+        });
     case IDBOp::AbortOpenAndUpgradeNeeded:
-        return withArguments<IDBDatabaseConnectionIdentifier, std::optional<IDBResourceIdentifier>>(decoder, [&](auto&& connection, auto&& transaction) { server.abortOpenAndUpgradeNeeded(connection, transaction); });
+        return withArguments<IDBDatabaseConnectionIdentifier, std::optional<IDBResourceIdentifier>>(decoder, [&](auto&& connection, auto&& transaction) { if (ownsConnection(connection)) server.abortOpenAndUpgradeNeeded(connection, transaction); });
     case IDBOp::DidFireVersionChangeEvent:
-        return withArguments<IDBDatabaseConnectionIdentifier, IDBResourceIdentifier, IndexedDB::ConnectionClosedOnBehalfOfServer>(decoder, [&](auto&& connection, auto&& request, auto&& closed) { server.didFireVersionChangeEvent(connection, request, closed); });
+        return withArguments<IDBDatabaseConnectionIdentifier, IDBResourceIdentifier, IndexedDB::ConnectionClosedOnBehalfOfServer>(decoder, [&](auto&& connection, auto&& request, auto&& closed) { if (ownsConnection(connection)) server.didFireVersionChangeEvent(connection, request, closed); });
     case IDBOp::DidGenerateIndexKeyForRecord:
         return withArguments<IDBResourceIdentifier, IDBResourceIdentifier, IDBIndexInfo, IDBKeyData, IndexKey, std::optional<int64_t>>(decoder, [&](auto&& transaction, auto&& request, auto&& info, auto&& key, auto&& indexKey, auto&& recordID) {
             if (ownsResource(transaction))
