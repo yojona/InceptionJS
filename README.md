@@ -345,6 +345,11 @@ From the command line: `npx inceptionjs relay --origin https://app.example.com
 in its own container or network namespace with no route to your private network.
 Use `--dev` only on a development machine: it allows loopback to your dev ports.
 
+`GET /healthz` answers `{"ok":true}` for load balancers and orchestrators. With
+`metrics: true` (`--metrics`), `GET /metrics` serves Prometheus counters: sessions,
+streams, bytes, and refusals and stream closes by reason, never destinations. Keep
+`/metrics` off the public internet. `relay.stats()` returns the same numbers.
+
 ### Vite
 
 ```bash
