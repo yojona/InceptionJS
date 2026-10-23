@@ -74,3 +74,21 @@ test('host lists keep only host names, lowercased', async () => {
   assert.deepEqual(resolvePolicy({ hosts: { allow: [] } }).hosts, { allow: [], block: [] });
   assert.equal(resolvePolicy({}).hosts, null);
 });
+
+test("a window's own host rules narrow the view's, never widen them", async () => {
+  const { hostRules, narrowHostRules, sameHostRules } = await import('../../host/policy.js');
+  const base = hostRules({ block: ['intranet.corp'] });
+  assert.equal(narrowHostRules(base, null), base);
+  assert.equal(narrowHostRules(null, hostRules({ allow: ['a.example'] })).allow[0], 'a.example');
+  // An empty rule set or another block list cannot lift the view's block list.
+  assert.deepEqual(narrowHostRules(base, hostRules({})), { block: ['intranet.corp'] });
+  assert.deepEqual(narrowHostRules(base, hostRules({ allow: ['intranet.corp'] })), { allow: ['intranet.corp'], block: ['intranet.corp'] });
+  // Allow lists keep what both reach.
+  const allowed = hostRules({ allow: ['example.com', 'b.org'] });
+  assert.deepEqual(narrowHostRules(allowed, hostRules({ allow: ['a.example.com', 'c.net'] })).allow, ['a.example.com']);
+  assert.deepEqual(narrowHostRules(hostRules({ allow: ['a.example.com'] }), hostRules({ allow: ['example.com'] })).allow, ['a.example.com']);
+  assert.deepEqual(narrowHostRules(allowed, hostRules({ block: ['x.example.com'] })), { allow: ['example.com', 'b.org'], block: ['x.example.com'] });
+  assert.ok(sameHostRules(hostRules({ allow: ['b', 'a'] }), hostRules({ allow: ['a', 'b'] })));
+  assert.ok(!sameHostRules(null, hostRules({})));
+  assert.ok(sameHostRules(null, null));
+});
