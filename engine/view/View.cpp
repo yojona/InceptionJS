@@ -262,6 +262,8 @@ View::View(Window& window, IntSize cssSize, float deviceScaleFactor)
     settings.setLocalStorageEnabled(true);
     settings.setSessionStorageEnabled(true);
     settings.setDataTransferItemsEnabled(true);
+    // <a download>: off by default in WebCore, on in every browser.
+    settings.setDownloadAttributeEnabled(true);
     // Features shipping browsers have on; raw WebCore defaults them off.
     settings.setBeaconAPIEnabled(true);
     settings.setCompressionStreamEnabled(true);
