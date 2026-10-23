@@ -33,7 +33,7 @@
 //   {type: 'crash', key, reason, kind?}     its engine crashed
 // Everything on the channel is untrusted by the side that reads it.
 
-import { ProtocolClient, createPostMessageTransport } from './protocol.js';
+import { ProtocolClient, ProtocolError, createPostMessageTransport } from './protocol.js';
 import { createDisplay } from './display.js';
 import { clientLockName, heldLocks, hostLockName, tryLock, whenFree } from './profile-lock.js';
 
@@ -480,6 +480,8 @@ export class RemoteWindow extends EventTarget {
   _detach() {
     this.#display?.close(false);
     this.#display = null;
+    // What it asked the host that went away is not coming back.
+    this.#client?.close?.(ProtocolError.fromReason('not_ready', "the profile's host went away"));
     this.#client = null;
     this.#displayPort?.close();
     this.#displayPort = null;
@@ -491,6 +493,7 @@ export class RemoteWindow extends EventTarget {
   _closed(reason) {
     if (this.closed) return;
     this.closed = true;
+    this.#client?.close?.(ProtocolError.fromReason('not_ready', reason ?? 'the window is closed'));
     this.#display?.close(false);
     this.#display = null;
     this.#rejectAttached(new Error(reason ?? 'the window is closed'));
