@@ -1190,6 +1190,14 @@ static void act(int id, JSON::Object& args)
             else
                 return fail(id, "invalid_params"_s, makeString("unknown modifier "_s, part));
         }
+        // A character typed into a secret field needs the same approval as
+        // type and fill.
+        if (parts.last().length() == 1 && !(modifiers & (2 | 4 | 8))) {
+            if (RefPtr target = focusedElement()) {
+                if (auto risk = guardField(*target); !risk.isNull())
+                    return reply(id, deniedResult(risk));
+            }
+        }
         if (!pressKey(parts.last(), modifiers))
             return fail(id, "invalid_params"_s, makeString("unknown key "_s, parts.last()));
         return reply(id, JSON::Object::create());
