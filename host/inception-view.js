@@ -610,7 +610,12 @@ export class InceptionView extends HTMLElement {
   }
 
   #attachRecordDisplay(record, display, sink) {
-    if (record.display && record.display !== display) record.display.close?.();
+    // The display it replaces stops: a remote one is closed, one in this
+    // document stops taking input.
+    if (record.display && record.display !== display) {
+      if (record.display.close) record.display.close();
+      else record.display.stop?.();
+    }
     record.display = display;
     record.detachSink?.();
     record.detachSink = record.slot.runtime.attachDisplay(record.slot.localOf(record.id), sink);

@@ -178,6 +178,7 @@ export class InceptionWindowElement extends HTMLElement {
   #attaching = null;
   #view = null;
   #attachedTo = null;
+  #generation = 0;
 
   constructor() {
     super();
@@ -241,10 +242,13 @@ export class InceptionWindowElement extends HTMLElement {
     this.#release();
     this.#attaching = key;
     this.#attachedTo = view;
+    // Several changes in one task queue several attaches: only the last one
+    // attaches once the view is ready.
+    const generation = ++this.#generation;
     if (!view?.[ATTACH_DISPLAY] || !Number.isInteger(id) || id < 2) return;
     try {
       await view.ready;
-      if (!this.isConnected || this.#attaching !== key) return;
+      if (!this.isConnected || generation !== this.#generation) return;
       this.#detach = view[ATTACH_DISPLAY](id, this);
     } catch (error) {
       this.dispatchEvent(new CustomEvent('error', { detail: { reason: String(error?.message ?? error) } }));
