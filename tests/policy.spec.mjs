@@ -234,3 +234,31 @@ test('a download the embedder asks for arrives flagged as the person\'s, so the 
   }));
   expect(flagged).toBe(true);
 });
+
+test('a window a page opens without a gesture is refused and reported', async ({ page }) => {
+  await open(page);
+  const blocked = view(page).evaluate((el) => new Promise((resolve) => el.addEventListener('popupblocked', (e) => resolve(e.detail), { once: true })));
+  expect(await evaluate(page, 'String(window.open("https://example.com/") === null)')).toBe('true');
+  const detail = await blocked;
+  expect(detail.userGesture).toBe(false);
+  expect(detail.url).toBe('https://example.com/');
+  expect((await tabIds(page)).length).toBe(1);
+});
+
+test('a link download the person clicks arrives with their gesture; one the page starts by script does not', async ({ page }) => {
+  await open(page);
+  // Same origin: a browser ignores the download attribute of a link to another origin.
+  await view(page).evaluate((el) => el.navigate('https://example.com/'));
+  await expect.poll(() => view(page).evaluate((el) => el.title), { timeout: 60_000 }).toBe('Example Domain');
+  await write(page, '<title>file</title><a id="d" download="page.html" href="/" style="display:block;font-size:40px">file</a>');
+  const started = view(page).evaluate((el) => new Promise((resolve) => {
+    el.addEventListener('downloadstart', (e) => resolve(e.detail), { once: true });
+    el.addEventListener('downloadblocked', (e) => resolve({ blocked: e.detail.reason }), { once: true });
+  }));
+  await click(page);
+  expect(await started).toMatchObject({ userGesture: true, initiator: 'person' });
+
+  const refused = view(page).evaluate((el) => new Promise((resolve) => el.addEventListener('downloadblocked', (e) => resolve(e.detail.reason), { once: true })));
+  await evaluate(page, 'document.getElementById("d").click(), "clicked"');
+  expect(await refused).toBe('no-gesture');
+});
