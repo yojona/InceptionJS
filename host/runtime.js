@@ -198,7 +198,10 @@ export class EngineRuntime extends EventTarget {
     if (!crossOriginIsolated)
       throw new Error('InceptionJS needs a cross-origin isolated page (COOP: same-origin, COEP: require-corp)');
     const [{ default: createEngine }, code] = await Promise.all([import(this.engineUrl), this.#shareCode ? loadEngine(this.engineUrl) : null]);
-    const started = new Promise((resolve) => this.addEventListener('started', resolve, { once: true }));
+    const started = new Promise((resolve, reject) => {
+      this.addEventListener('started', resolve, { once: true });
+      this.addEventListener('crash', (e) => reject(new Error(e.detail.message)), { once: true });
+    });
     // The engine's thread announces itself as soon as it runs, possibly before
     // the module promise settles, so listeners go on each worker as it is
     // created rather than afterwards. The engine creates its thread pool and
@@ -344,8 +347,13 @@ export class EngineRuntime extends EventTarget {
     const { event, payload } = message;
     if (event === 'started') {
       if (this.#worker) return;
-      if (payload.version !== BRIDGE_VERSION)
-        throw new Error(`engine speaks bridge v${payload.version}, host speaks v${BRIDGE_VERSION}`);
+      // Engine files of another release than the host: nothing the two say to
+      // each other can be trusted, so the engine stops and the view says why.
+      if (payload.version !== BRIDGE_VERSION) {
+        this.#crashed({ message: `the engine files speak bridge v${payload.version} and the inceptionjs package v${BRIDGE_VERSION}: serve the engine files of the same release as the package`, stack: '' });
+        this.terminate();
+        return;
+      }
       this.#worker = worker;
       this.features = Array.isArray(payload.features) ? payload.features.filter((f) => typeof f === 'string') : [];
       for (const [message, transfer] of this.#pending.splice(0)) worker.postMessage(message, transfer);
