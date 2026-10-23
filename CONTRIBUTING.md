@@ -71,6 +71,7 @@ rebase-friendly. Batch C++ changes before triggering a build.
 ## Pull requests
 
 - One logical change per commit, with a meaningful message. Add or update tests.
+- Note user-facing changes in `CHANGELOG.md`, under Unreleased.
 - Keep patches to WebKit small and explain why in the commit message.
 - Security issues: do not open a PR or issue; see [SECURITY.md](SECURITY.md).
 

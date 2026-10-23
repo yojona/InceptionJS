@@ -30,6 +30,7 @@
   <a href="#compatibility">Compatibility</a> /
   <a href="#agents">Agents</a> /
   <a href="#limitations">Limitations</a> /
+  <a href="CHANGELOG.md">Changelog</a> /
   <a href="https://github.com/sponsors/yojona">Sponsor</a>
 </p>
 
