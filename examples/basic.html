@@ -70,7 +70,8 @@
     view.navigate(address.value);
   });
   view.addEventListener('navigate', (e) => (address.value = e.detail.url));
-  view.addEventListener('title', (e) => (document.title = e.detail.title || 'InceptionJS'));
+  // A page without a title reports '': show its address, as browsers do.
+  view.addEventListener('title', (e) => (document.title = e.detail.title || view.url || 'InceptionJS'));
   const $ = (id) => document.getElementById(id);
   $('back').onclick = () => view.back();
   $('forward').onclick = () => view.forward();

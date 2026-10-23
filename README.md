@@ -311,7 +311,8 @@ relay.
     relayUrl: 'wss://relay.example.com/?token=...',
   });
   const view = document.getElementById('v');
-  view.addEventListener('title', (e) => (document.title = e.detail.title));
+  // '' for a page without a title: show its address, as browsers do.
+  view.addEventListener('title', (e) => (document.title = e.detail.title || view.url));
   await view.ready;
   view.navigate('https://wikipedia.org');
 </script>

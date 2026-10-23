@@ -301,6 +301,7 @@ export interface ContextMenuDetail {
 
 export interface InceptionViewEventMap {
   navigate: CustomEvent<{ url: string }>;
+  /** The page's title; '' when it has none (show its address instead, as browsers do). */
   title: CustomEvent<{ title: string }>;
   loading: CustomEvent<{ loading: boolean; error?: string; failedURL?: string; errorKind?: 'certificate' }>;
   navigationstate: CustomEvent<{ canGoBack: boolean; canGoForward: boolean }>;
