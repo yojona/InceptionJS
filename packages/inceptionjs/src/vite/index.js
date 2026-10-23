@@ -12,6 +12,9 @@ import { dirname, extname, join, resolve, sep } from 'node:path';
 import { startRelay } from '../server/relay.js';
 
 const BASE = '/__inception';
+// What the host loads of binaryen (the WebAssembly translator), and its
+// license: the package's CLI binaries and typings stay out of the build.
+const BINARYEN_FILES = ['index.js', 'LICENSE'];
 const VIRTUAL_ID = 'virtual:inceptionjs/config';
 const RESOLVED_ID = '\0' + VIRTUAL_ID;
 
@@ -30,11 +33,14 @@ export function isolationHeaders(coep = 'require-corp') {
   };
 }
 
-function serveFrom(root, prefix) {
+// `only`: the file names served, when not every file under root.
+function serveFrom(root, prefix, only = null) {
   return (req, res, next) => {
     const { pathname } = new URL(req.url, 'http://local');
     if (!pathname.startsWith(prefix + '/')) return next();
-    const file = resolve(root, decodeURIComponent(pathname.slice(prefix.length + 1)));
+    const name = decodeURIComponent(pathname.slice(prefix.length + 1));
+    if (only && !only.includes(name)) return next();
+    const file = resolve(root, name);
     if (!file.startsWith(root + sep) || !existsSync(file) || !statSync(file).isFile()) return next();
     res.setHeader('Content-Type', TYPES[extname(file)] ?? 'application/octet-stream');
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
@@ -78,7 +84,7 @@ export default function inception(options = {}) {
       next();
     });
     if (!options.engineUrl) server.middlewares.use(serveFrom(engineDir, `${BASE}/engine`));
-    server.middlewares.use(serveFrom(binaryenDir, `${BASE}/binaryen`));
+    server.middlewares.use(serveFrom(binaryenDir, `${BASE}/binaryen`, BINARYEN_FILES));
   }
 
   return {
@@ -120,7 +126,7 @@ export default function inception(options = {}) {
       if (command !== 'build' || options.engineUrl || options.copyEngine === false) return;
       if (!existsSync(engineDir)) return;
       cpSync(engineDir, join(outDir, BASE.slice(1), 'engine'), { recursive: true });
-      cpSync(binaryenDir, join(outDir, BASE.slice(1), 'binaryen'), { recursive: true });
+      for (const name of BINARYEN_FILES) cpSync(join(binaryenDir, name), join(outDir, BASE.slice(1), 'binaryen', name));
     },
   };
 }
