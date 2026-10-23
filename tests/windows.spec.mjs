@@ -325,3 +325,25 @@ test('the engine refuses commands for a window that is not a positive integer or
   expect(await view(page).evaluate((el) => el.tabs.map((t) => t.active))).toEqual([true, false]);
   expect(await evaluateIn(page, 1, 'document.title')).toBe('one');
 });
+
+test('an <inception-window> given its view and window in one task attaches once', async ({ page }) => {
+  await page.goto(`${PAGE}?url=about:blank`);
+  await view(page).evaluate((el) => el.ready);
+  const id = await view(page).evaluate(async (el) => {
+    const handle = await el.openWindow({ width: 300, height: 200, url: 'about:blank' });
+    // Connected first, then both properties set in the same task, as a framework does.
+    const element = document.createElement('inception-window');
+    element.id = 'late';
+    element.style.cssText = 'position: fixed; left: 0; top: 0; z-index: 10; width: 300px; height: 200px; display: block';
+    document.body.append(element);
+    element.view = el;
+    element.setAttribute('window', String(handle.id));
+    return handle.id;
+  });
+  await expect.poll(() => write(page, id, '<title>counted</title><style>html,body{margin:0;height:100%}</style><script>window.downs = 0; addEventListener("mousedown", () => downs++)</script>'), { timeout: 60_000 }).toBe('counted');
+  await page.waitForTimeout(300);
+  await page.mouse.click(150, 100);
+  await expect.poll(() => evaluateIn(page, id, 'String(window.downs)')).toBe('1');
+  await page.waitForTimeout(500);
+  expect(await evaluateIn(page, id, 'String(window.downs)')).toBe('1');
+});
