@@ -63,6 +63,34 @@ export const POLICY_DEFAULTS = Object.freeze({
   thirdPartyCookies: 'block',
 });
 
+// A window's own host rules within the view's (policy.hosts): a window can be
+// given less than the policy allows, never more. Block lists add up; allow
+// lists keep the hosts both reach (a host matches itself and its subdomains).
+export function narrowHostRules(base, extra) {
+  if (!extra) return base ?? null;
+  if (!base) return extra;
+  const within = (host, pattern) => host === pattern || host.endsWith(`.${pattern}`);
+  const block = [...new Set([...base.block, ...extra.block])];
+  let allow = extra.allow ?? base.allow;
+  if (extra.allow && base.allow) {
+    allow = [];
+    for (const a of extra.allow) {
+      for (const b of base.allow) {
+        if (within(a, b)) allow.push(a);
+        else if (within(b, a)) allow.push(b);
+      }
+    }
+    allow = [...new Set(allow)];
+  }
+  return { ...(allow ? { allow } : {}), block };
+}
+
+// Whether two sets of host rules are the same (null: none).
+export function sameHostRules(a, b) {
+  const key = (rules) => (rules ? JSON.stringify({ allow: rules.allow ? [...rules.allow].sort() : null, block: [...rules.block].sort() }) : null);
+  return key(a) === key(b);
+}
+
 // A host list as the engine takes it: lowercase names, nothing else.
 export function hostRules(value) {
   if (!value || typeof value !== 'object') return null;
