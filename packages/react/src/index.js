@@ -24,9 +24,26 @@ const EVENTS = {
   onDownloadStart: 'downloadstart',
   onDownloadProgress: 'downloadprogress',
   onDownloadFinish: 'downloadfinish',
+  onDownloadBlocked: 'downloadblocked',
+  onDialogBlocked: 'dialogblocked',
+  onPopupBlocked: 'popupblocked',
+  onNewTab: 'newtab',
+  onSecurityState: 'securitystate',
+  onCertificateError: 'certificateerror',
+  onSensitivePage: 'sensitivepage',
+  onProvenanceTampered: 'provenancetampered',
+  onHostLost: 'hostlost',
+  onReattached: 'reattached',
+  onPromoted: 'promoted',
+  onSiteSwap: 'siteswap',
   onWindowOpen: 'windowopen',
   onWindowCreated: 'windowcreated',
   onWindowClosed: 'windowclosed',
+  onWindowUpdated: 'windowupdated',
+  onWindowFocusRequest: 'windowfocusrequest',
+  onControl: 'control',
+  onAgentAction: 'agentaction',
+  onAgentBlocked: 'agentblocked',
 };
 
 // Prop name -> element attribute. Booleans set or remove the attribute.
@@ -39,9 +56,18 @@ const ATTRIBUTES = {
   autoplaySound: 'autoplay-sound',
   debug: 'debug',
   provenanceCorner: 'provenance-corner',
+  agent: 'agent',
+  isolation: 'isolation',
+  headless: 'headless',
+  muted: 'muted',
+  volume: 'volume',
 };
 
-const METHODS = ['navigate', 'back', 'forward', 'reload', 'stop', 'find', 'findClear', 'zoom', 'history', 'deleteHistory', 'download', 'cancelDownload', 'serve', 'focusInput', 'openWindow', 'window', 'exportWindow', 'debugEvaluate', 'debugHeap', 'debugCommand'];
+// Props whose false value is an attribute of its own ("off").
+const OFF_ATTRIBUTES = { attach: 'attach', provenance: 'provenance' };
+
+const METHODS = ['navigate', 'back', 'forward', 'reload', 'stop', 'find', 'findClear', 'zoom', 'history', 'deleteHistory', 'download', 'cancelDownload', 'pauseDownload', 'resumeDownload', 'edit', 'close', 'serve', 'focusInput', 'openWindow', 'window', 'exportWindow', 'debugEvaluate', 'debugHeap', 'debugCommand'];
+const PROPERTIES = ['url', 'title', 'loading', 'canGoBack', 'canGoForward', 'windows', 'securityState', 'agent', 'closed'];
 
 let configured = false;
 let loading = null;
@@ -53,7 +79,9 @@ function load(config) {
   loading ??= import('inceptionjs');
   return loading.then((module) => {
     if (!configured && config.engineUrl) {
-      module.Inception.configure(config);
+      // Only what the props set: an undefined policy or modules must not undo
+      // what the app passed to Inception.configure() itself.
+      module.Inception.configure(Object.fromEntries(Object.entries(config).filter(([, value]) => value !== undefined)));
       configured = true;
     }
     return module;
@@ -98,8 +126,7 @@ export const InceptionView = forwardRef(function InceptionView(props, ref) {
   useImperativeHandle(ref, () => {
     const handle = { get element() { return element.current; }, get ready() { return element.current?.ready; } };
     for (const name of METHODS) handle[name] = (...args) => element.current[name](...args);
-    for (const name of ['url', 'title', 'loading', 'canGoBack', 'canGoForward', 'windows'])
-      Object.defineProperty(handle, name, { get: () => element.current?.[name] });
+    for (const name of PROPERTIES) Object.defineProperty(handle, name, { get: () => element.current?.[name] });
     return handle;
   }, []);
 
@@ -113,6 +140,7 @@ export const InceptionView = forwardRef(function InceptionView(props, ref) {
     if (value === true) attributes[attribute] = '';
     else if (value !== undefined && value !== false && value !== null) attributes[attribute] = String(value);
   }
+  for (const [prop, attribute] of Object.entries(OFF_ATTRIBUTES)) if (rest[prop] === false) attributes[attribute] = 'off';
   return createElement('inception-view', attributes);
 });
 
