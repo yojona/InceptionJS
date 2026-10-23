@@ -173,3 +173,16 @@ test('once the engine budget is spent, a window with its own host list still run
   await evaluateIn(page, limited, `window.out = 'pending'; fetch('https://example.org/', { mode: 'no-cors' }).then(() => out = 'loaded', () => out = 'refused'); 1`);
   await expect.poll(() => evaluateIn(page, limited, 'out'), { timeout: 30_000 }).toBe('refused');
 });
+
+test('a find the engine never answers fails when its window closes', async ({ page }) => {
+  await start(page);
+  const id = await openWindow(page, { show: false });
+  // The window's engine is busy, so the find waits in its queue.
+  await evaluateIn(page, id, 'setTimeout(() => { const until = Date.now() + 5000; while (Date.now() < until); }, 0); 1');
+  const outcome = view(page).evaluate((el, w) => el.window(w).find('anything').then(() => 'answered', (error) => error.message), id);
+  await page.waitForTimeout(200);
+  const closedAt = Date.now();
+  await view(page).evaluate((el, w) => el.window(w).close(), id);
+  expect(await outcome).toMatch(/closed/);
+  expect(Date.now() - closedAt).toBeLessThan(3000);
+});
