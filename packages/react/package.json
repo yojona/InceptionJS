@@ -39,6 +39,7 @@
     "react": ">=18"
   },
   "scripts": {
-    "prepack": "node ../legal.mjs"
+    "prepack": "node ../legal.mjs",
+    "test": "node --test test/*.test.mjs"
   }
 }
