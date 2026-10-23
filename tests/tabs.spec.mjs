@@ -101,3 +101,11 @@ test('a download can be paused and resumed', async ({ page }) => {
   expect(result.seen[1]).toMatch(/^resume:/);
   expect(result.size).toBe(1024 * 1024);
 });
+
+test('a page without a title does not keep the previous page\'s', async ({ page }) => {
+  await view(page).evaluate((el) => el.navigate('https://example.com/'));
+  await expect.poll(() => view(page).evaluate((el) => el.title), { timeout: 60_000 }).toBe('Example Domain');
+  await view(page).evaluate((el) => el.navigate('https://www.iana.org/robots.txt'));
+  await expect.poll(() => view(page).evaluate((el) => el.url), { timeout: 60_000 }).toBe('https://www.iana.org/robots.txt');
+  await expect.poll(() => view(page).evaluate((el) => el.title)).toBe('');
+});
