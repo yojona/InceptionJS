@@ -247,6 +247,13 @@ export class ProtocolClient extends EventTarget {
     });
   }
 
+  // The other side is gone: what was asked and not yet answered fails with
+  // `error`, so no caller waits forever.
+  close(error = ProtocolError.fromReason('not_ready', 'the connection closed')) {
+    for (const { reject } of this.#inflight.values()) reject(error);
+    this.#inflight.clear();
+  }
+
   #receive(message) {
     if (message?.method === 'event') {
       const { name, data } = message.params ?? {};

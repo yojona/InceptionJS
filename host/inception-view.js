@@ -1561,6 +1561,25 @@ export class InceptionView extends HTMLElement {
       registerAgentMethods(server, (window) => this.#windows.get(window)?.agent ?? null);
     }
     const send = (window, command, args) => this.#windowFor(window).channel.send(command, args);
+    // An answer the engine sends as an event: `subscribe(done)` listens for it
+    // and returns how to stop. The request fails instead when the window's
+    // engine crashes or the window closes, or after 30 s.
+    const engineAnswer = (record, subscribe, ask) => new Promise((resolve, reject) => {
+      const stops = [];
+      const finish = (settle, value) => {
+        for (const stop of stops) stop();
+        settle(value);
+      };
+      stops.push(subscribe((value) => finish(resolve, value)));
+      for (const [type, reason, message] of [['crash', 'engine_crashed', 'the engine crashed'], ['close', 'not_ready', 'the window closed']]) {
+        const listener = () => finish(reject, ProtocolError.fromReason(reason, message));
+        record.target.addEventListener(type, listener, { once: true });
+        stops.push(() => record.target.removeEventListener(type, listener));
+      }
+      const timer = setTimeout(() => finish(reject, ProtocolError.fromReason('timeout', 'the engine did not answer')), 30_000);
+      stops.push(() => clearTimeout(timer));
+      ask();
+    });
     server.handle('view.navigate', ({ url }, { window }) => {
       if (typeof url !== 'string' || !url) throw new TypeError('url must be a non-empty string');
       send(window, 'load', { url });
@@ -1570,27 +1589,27 @@ export class InceptionView extends HTMLElement {
     server.handle('view.forward', (params, { window }) => { this.#traverse(this.#windowFor(window), 1); });
     server.handle('view.reload', ({ bypassCache } = {}, { window }) => send(window, 'reload', { bypassCache: !!bypassCache }));
     server.handle('view.stop', (params, { window }) => send(window, 'stop'));
-    server.handle('view.find', ({ text, backwards, caseSensitive } = {}, { window }) => new Promise((resolve) => {
+    server.handle('view.find', ({ text, backwards, caseSensitive } = {}, { window }) => {
       const record = this.#windowFor(window);
-      const listener = (e) => {
-        if ((e.detail.window ?? 1) !== record.id) return;
-        events.removeEventListener('find.result', listener);
-        resolve({ found: e.detail.found, matches: e.detail.matches });
-      };
-      events.addEventListener('find.result', listener);
-      record.channel.send('find', { text: String(text ?? ''), backwards: !!backwards, caseSensitive: !!caseSensitive });
-    }), 'find');
+      return engineAnswer(record, (done) => {
+        const listener = (e) => {
+          if ((e.detail.window ?? 1) === record.id) done({ found: e.detail.found, matches: e.detail.matches });
+        };
+        events.addEventListener('find.result', listener);
+        return () => events.removeEventListener('find.result', listener);
+      }, () => record.channel.send('find', { text: String(text ?? ''), backwards: !!backwards, caseSensitive: !!caseSensitive }));
+    }, 'find');
     server.handle('view.findClear', (params, { window }) => send(window, 'find.clear'), 'find');
-    server.handle('history.query', (args = {}) => new Promise((resolve) => {
+    server.handle('history.query', (args = {}) => {
       const id = ++lastHistoryRequest;
-      const listener = (e) => {
-        if (e.detail.id !== id) return;
-        events.removeEventListener('history.result', listener);
-        resolve(e.detail.entries);
-      };
-      events.addEventListener('history.result', listener);
-      this.#profileSend('history.query', { id, text: String(args.text ?? ''), limit: args.limit | 0 || 100, ...(args.before ? { before: Number(args.before) } : {}) });
-    }));
+      return engineAnswer(this.#main, (done) => {
+        const listener = (e) => {
+          if (e.detail.id === id) done(e.detail.entries);
+        };
+        events.addEventListener('history.result', listener);
+        return () => events.removeEventListener('history.result', listener);
+      }, () => this.#profileSend('history.query', { id, text: String(args.text ?? ''), limit: args.limit | 0 || 100, ...(args.before ? { before: Number(args.before) } : {}) }));
+    });
     server.handle('history.delete', (args = {}) => this.#profileSend('history.delete', args.url ? { url: String(args.url) } : { from: Number(args.from ?? 0), to: Number(args.to ?? Number.MAX_VALUE) }));
     server.handle('view.zoom', ({ factor } = {}, { window }) => {
       if (!(factor > 0)) throw new TypeError('factor must be a positive number');
