@@ -142,3 +142,11 @@ test('a character pressed into a password field needs approval', async ({ page }
   await agent(page, 'requestControl');
   expect(await outcome(page, 'press', 'h', { ref: field })).toMatchObject({ reason: 'denied_by_policy', data: { risk: 'login' } });
 });
+
+test('a character pressed into a focused password field without a ref needs approval too', async ({ page }) => {
+  await open(page, `<input type="password" aria-label="Password" autofocus>`);
+  await evaluate(page, 'document.querySelector("input").focus(), "focused"');
+  await agent(page, 'requestControl');
+  expect(await outcome(page, 'press', 'h')).toMatchObject({ reason: 'denied_by_policy', data: { risk: 'login' } });
+  expect(await evaluate(page, 'document.querySelector("input").value')).toBe('');
+});
