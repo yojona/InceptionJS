@@ -51,6 +51,14 @@ directory `tests/serve.mjs` reads (`ENGINE_DIR`, default `.work/out/engine`). Se
 Verify behavior in a real browser; passing tests alone are not enough for a change to
 rendering, input or media.
 
+Pages load through a relay on `ws://127.0.0.1:5001/`; start a development one with
+`node -e "import('./packages/inceptionjs/src/server/relay.js').then((m) => m.startRelay({ port: 5001 }))"`.
+
+CI runs the unit tests, the package's tests and the type check on every push and pull
+request (`.github/workflows/ci.yml`). The browser suite runs weekly and on demand
+against the latest release's engine (`.github/workflows/e2e.yml`, Actions → E2E →
+Run workflow).
+
 ## Building the engine
 
 Building WebKit takes a large machine and hours. The scripts in `build/` pin every
