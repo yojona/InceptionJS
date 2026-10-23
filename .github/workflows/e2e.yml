@@ -1,0 +1,50 @@
+# The browser suite against the engine of the latest release: Chrome, with a
+# development relay. Manual, and weekly so a change on the web shows up.
+name: E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      specs:
+        description: 'Spec files to run (default: a smoke set)'
+        required: false
+        default: tests/render.spec.mjs tests/bridge.spec.mjs tests/tabs.spec.mjs tests/policy.spec.mjs tests/lifecycle.spec.mjs
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  chrome:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SPECS: ${{ github.event.inputs.specs || 'tests/render.spec.mjs tests/bridge.spec.mjs tests/tabs.spec.mjs tests/policy.spec.mjs tests/lifecycle.spec.mjs' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chrome
+      - name: Engine files of the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .work/engine
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern 'inception-engine.*' --pattern SHA256SUMS --dir .work/engine
+          cd .work/engine && sha256sum -c SHA256SUMS
+      - name: Browser tests
+        env:
+          ENGINE_DIR: ${{ github.workspace }}/.work/engine
+        run: |
+          node -e "import('./packages/inceptionjs/src/server/relay.js').then((m) => m.startRelay({ port: 5001, log: () => {} }))" &
+          npx playwright test -c tests/playwright.config.mjs --project=chrome $SPECS
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-results
+          path: test-results/
+          retention-days: 7
