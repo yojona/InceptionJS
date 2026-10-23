@@ -694,9 +694,24 @@ export class InceptionView extends HTMLElement {
     const profile = this.getAttribute('profile') ?? config.storage?.profile ?? 'default';
     this.#profile = profile;
     const shared = this.#isolation() !== 'shared' && (ProfileService.running(profile) || config.storage?.ephemeral === true);
-    if (shared) return this.#startHost(profile, { lock: null });
+    if (shared) return this.#startHostOrRelease(profile, { lock: null });
     const lock = await tryLock(profileLockName(profile));
-    return lock ? this.#startHost(profile, { lock }) : this.#startAttached(profile);
+    return lock ? this.#startHostOrRelease(profile, { lock }) : this.#startAttached(profile);
+  }
+
+  // A view that fails to start lets go of what it took (engines, its share of
+  // the service, the attach host, the profile lock), so another tab or view
+  // can open the profile instead of waiting on one that will never answer.
+  async #startHostOrRelease(profile, options) {
+    try {
+      return await this.#startHost(profile, options);
+    } catch (error) {
+      // A lock handed to the service is released with it.
+      const handedToService = !!this.#service;
+      this.#teardown();
+      if (!handedToService) options.lock?.release();
+      throw error;
+    }
   }
 
   #attachEnabled() {
@@ -865,7 +880,7 @@ export class InceptionView extends HTMLElement {
     this.#remote = null;
     this.#client = null;
     this.#hideMessage();
-    const ready = this.#startHost(profile, { lock, url });
+    const ready = this.#startHostOrRelease(profile, { lock, url });
     this.#ready = ready;
     ready.then(() => this.dispatchEvent(new CustomEvent('promoted')), (error) => {
       const reason = String(error?.message ?? error);
