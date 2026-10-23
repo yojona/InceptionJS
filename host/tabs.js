@@ -13,7 +13,8 @@
 //                'foreground' or 'background' accept the ones that follow a
 //                user gesture.
 //   popupblocked {tab, opener, url, userGesture}: a tab was closed instead of
-//                shown, so the embedder can tell the person.
+//                shown, or the engine refused one a page opened without a
+//                user gesture, so the embedder can tell the person.
 export class Tabs {
   #view;
   #send;
@@ -84,6 +85,8 @@ export class Tabs {
     const id = data.tab;
     if (name === 'tab.created') {
       this.#add(id, data.opener ? { opener: data.opener } : {});
+    } else if (name === 'tab.popupblocked') {
+      this.#view.dispatchEvent(new CustomEvent('popupblocked', { detail: { tab: id, opener: data.opener, url: data.url ?? '', userGesture: false } }));
     } else if (name === 'tab.opened') {
       const tab = this.#tabs.get(id) ?? this.#add(id, {});
       tab.opener = data.opener;

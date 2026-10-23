@@ -350,7 +350,17 @@ RefPtr<Page> ChromeClientImpl::createWindow(LocalFrame&, const String& openedMai
     data->setString("url"_s, action.url().string());
     if (!openedMainFrameName.isEmpty())
         data->setString("name"_s, openedMainFrameName);
-    data->setBoolean("userGesture"_s, UserGestureIndicator::processingUserGesture());
+    // WebCore lets every window.open() through to here (View.cpp turns its
+    // own blocker off) so a blocked one can be reported: without the person's
+    // input nothing opens, and the host hears of it.
+    if (!UserGestureIndicator::processingUserGesture()) {
+        data->setInteger("tab"_s, m_view.id());
+        data->setBoolean("userGesture"_s, false);
+        WindowScope scope(m_view);
+        emitEvent("tab.popupblocked"_s, WTF::move(data));
+        return nullptr;
+    }
+    data->setBoolean("userGesture"_s, true);
     if (s_popupsOpenWindows) {
         // A new window, hidden until a display shows it, sized as asked or
         // as the opener's.

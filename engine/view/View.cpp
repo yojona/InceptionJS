@@ -254,6 +254,9 @@ View::View(Window& window, IntSize cssSize, float deviceScaleFactor)
     // these is a feature pages expect.
     auto& settings = m_page->settings();
     settings.setScriptEnabled(true);
+    // Pop-ups without a user gesture are refused in ChromeClientImpl::createWindow,
+    // which reports them; WebCore's own blocker would drop them silently.
+    settings.setJavaScriptCanOpenWindowsAutomatically(true);
     settings.setLoadsImagesAutomatically(true);
     settings.setRequestIdleCallbackEnabled(true);
     settings.setLocalStorageEnabled(true);
