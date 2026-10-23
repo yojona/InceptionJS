@@ -81,3 +81,53 @@ test('requires a valid token when a secret is set, and checks the origin', async
   ok.ws.close();
   await relay.close();
 });
+
+test('/healthz answers, /metrics only when asked for, and counters add up', async () => {
+  const plain = await startRelay({ log: () => {} });
+  const base = plain.url.replace('ws://', 'http://');
+  const health = await fetch(`${base}healthz`);
+  assert.equal(health.status, 200);
+  assert.deepEqual(await health.json(), { ok: true });
+  assert.equal((await fetch(`${base}metrics`)).status, 404);
+  await plain.close();
+
+  const relay = await startRelay({ log: () => {}, metrics: true, origins: ['https://app.example'] });
+  const http = relay.url.replace('ws://', 'http://');
+  // A refused origin is counted.
+  await new Promise((resolve) => {
+    const ws = new WebSocket(relay.url, { headers: { Origin: 'https://other.example' } });
+    ws.on('error', resolve);
+    ws.on('close', resolve);
+  });
+  const text = await (await fetch(`${http}metrics`)).text();
+  assert.match(text, /^inception_relay_sessions 0$/m);
+  assert.match(text, /^inception_relay_refused_total\{reason="origin"\} 1$/m);
+  assert.match(text, /^inception_relay_bytes_total\{direction="in"\} 0$/m);
+  assert.equal(relay.stats().refused.origin, 1);
+  await relay.close();
+});
+
+test('stream counters follow streams through relaying and refusal', async () => {
+  const echo = net.createServer((s) => s.pipe(s)).listen(0, '127.0.0.1');
+  await new Promise((r) => echo.once('listening', r));
+  const echoPort = echo.address().port;
+  const relay = await startRelay({ dev: true, devPorts: [echoPort], log: quiet, metrics: true });
+  const { ws, next } = await client(relay.url);
+  ws.send(packet(0x01, 1, connectPayload('127.0.0.1', echoPort)));
+  ws.send(packet(0x02, 1, Buffer.from('ping')));
+  await next((p) => p.type === 0x02 && p.id === 1);
+  assert.equal(relay.stats().streams, 1);
+  ws.send(packet(0x01, 2, connectPayload('127.0.0.1', 9)));
+  await next((p) => p.type === 0x04 && p.id === 2);
+  ws.send(packet(0x04, 1, Buffer.from([0x02])));
+  await new Promise((r) => setTimeout(r, 50));
+  const stats = relay.stats();
+  assert.equal(stats.streamsOpened, 2);
+  assert.equal(stats.streams, 0);
+  assert.equal(stats.closed.blocked, 1);
+  assert.equal(stats.closed.voluntary, 1);
+  assert.ok(stats.bytesIn > 0 && stats.bytesOut >= 4);
+  ws.close();
+  await relay.close();
+  echo.close();
+});
