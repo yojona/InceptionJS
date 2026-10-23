@@ -156,3 +156,20 @@ test('windows started at the same time leave the page\'s Worker as it was', asyn
   // Each engine still answers on its own window.
   for (const id of ids) expect(await evaluateIn(page, id, '1 + 1')).toBe('2');
 });
+
+test('a window\'s own host list cannot lift the view\'s policy.hosts', async ({ page }) => {
+  await start(page, `&policy=${encodeURIComponent(JSON.stringify({ hosts: { block: ['example.org'] } }))}`);
+  const id = await view(page).evaluate(async (el) => (await el.openWindow({ width: 300, height: 200, hosts: {} })).id);
+  await navigate(page, id, 'https://example.com/');
+  await evaluateIn(page, id, `window.out = 'pending'; fetch('https://example.org/', { mode: 'no-cors' }).then(() => out = 'loaded', () => out = 'refused'); 1`);
+  await expect.poll(() => evaluateIn(page, id, 'out'), { timeout: 30_000 }).toBe('refused');
+});
+
+test('once the engine budget is spent, a window with its own host list still runs under it', async ({ page }) => {
+  await start(page, '&engines=2');
+  await openWindow(page, { show: false });
+  const limited = await view(page).evaluate(async (el) => (await el.openWindow({ width: 300, height: 200, hosts: { allow: ['example.com'] } })).id);
+  await navigate(page, limited, 'https://example.com/');
+  await evaluateIn(page, limited, `window.out = 'pending'; fetch('https://example.org/', { mode: 'no-cors' }).then(() => out = 'loaded', () => out = 'refused'); 1`);
+  await expect.poll(() => evaluateIn(page, limited, 'out'), { timeout: 30_000 }).toBe('refused');
+});
