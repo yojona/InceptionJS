@@ -16,7 +16,8 @@ const HELP = `Usage: inceptionjs <command>
   check <url> [--relay <ws-url>]      Check a deployment's headers, engine and relay
   relay [--port 5001] [--host 127.0.0.1] [--dev] [--dev-ports 5173,3000]
         [--origin https://app.example.com] [--secret-env INCEPTION_RELAY_SECRET]
-                                      Run a relay
+        [--metrics]                   Run a relay (GET /healthz; --metrics adds
+                                      Prometheus counters at GET /metrics)
 `;
 
 const commands = { init, check, relay };
@@ -174,6 +175,7 @@ async function relay(argv) {
       'dev-ports': { type: 'string', default: '' },
       origin: { type: 'string', multiple: true, default: [] },
       'secret-env': { type: 'string', default: 'INCEPTION_RELAY_SECRET' },
+      metrics: { type: 'boolean', default: false },
     },
   });
   const { startRelay } = await import('../dist/server/relay.js');
@@ -186,6 +188,7 @@ async function relay(argv) {
     devPorts: values['dev-ports'].split(',').filter(Boolean).map(Number),
     origins: values.origin,
     secret,
+    metrics: values.metrics,
   }).catch((error) => fail(`[relay] ${error.message}`));
   const stop = () => server.close().then(() => process.exit(0));
   process.on('SIGINT', stop);

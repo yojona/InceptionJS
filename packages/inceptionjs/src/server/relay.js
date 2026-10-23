@@ -70,6 +70,8 @@ const u32 = (value) => {
  *   maxBytes             bytes a session may move in both directions (default 4 GiB)
  *   connectsPerMinute    new streams a session may open per minute (default 600)
  *   connectTimeoutMs     default 10000
+ *   metrics              serve Prometheus counters at GET /metrics (default false);
+ *                        GET /healthz always answers {ok: true}
  *   log                  (level, message) => void; it gets destinations, ports
  *                        and sizes, never content
  *   hooks                { resolve(hostname), connect(options) } replace DNS and
@@ -77,7 +79,7 @@ const u32 = (value) => {
  *
  * Listening on anything but a loopback address requires `secret`: an open relay
  * would let anyone on the internet use the host as a proxy.
- * Resolves to {url, port, close()}.
+ * Resolves to {url, port, stats(), close()}.
  */
 export async function startRelay(options = {}) {
   const {
@@ -92,6 +94,7 @@ export async function startRelay(options = {}) {
     maxBytes = 4 * 1024 ** 3,
     connectsPerMinute = 600,
     connectTimeoutMs = 10_000,
+    metrics = false,
     log = (level, message) => console[level === 'warn' ? 'warn' : 'log'](`[relay] ${message}`),
     hooks = {},
   } = options;
@@ -103,18 +106,61 @@ export async function startRelay(options = {}) {
   if (secret) requireSecret(secret);
   const policy = { dev, devPorts: new Set(devPorts.map(Number)) };
 
-  const server = http.createServer((req, res) => res.writeHead(404).end());
+  // Counters for /metrics and stats(): no destinations, only totals.
+  const stats = { streams: 0, streamsOpened: 0, bytesIn: 0, bytesOut: 0, refused: {}, closed: {} };
+  const count = (table, key) => (table[key] = (table[key] ?? 0) + 1);
+  const reasonName = Object.fromEntries(Object.entries(CloseReason).map(([name, code]) => [code, name.toLowerCase()]));
+
+  const server = http.createServer((req, res) => {
+    const { pathname } = new URL(req.url, 'http://relay');
+    if (req.method === 'GET' && pathname === '/healthz') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/metrics' && metrics) {
+      res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4', 'Cache-Control': 'no-store' }).end(metricsText());
+      return;
+    }
+    res.writeHead(404).end();
+  });
+
+  function metricsText() {
+    const lines = [
+      '# HELP inception_relay_sessions Open sessions (WebSockets).',
+      '# TYPE inception_relay_sessions gauge',
+      `inception_relay_sessions ${wss.clients.size}`,
+      '# HELP inception_relay_streams Open streams.',
+      '# TYPE inception_relay_streams gauge',
+      `inception_relay_streams ${stats.streams}`,
+      '# HELP inception_relay_streams_opened_total Streams opened.',
+      '# TYPE inception_relay_streams_opened_total counter',
+      `inception_relay_streams_opened_total ${stats.streamsOpened}`,
+      '# HELP inception_relay_bytes_total Bytes relayed, from pages (in) and to them (out).',
+      '# TYPE inception_relay_bytes_total counter',
+      `inception_relay_bytes_total{direction="in"} ${stats.bytesIn}`,
+      `inception_relay_bytes_total{direction="out"} ${stats.bytesOut}`,
+      '# HELP inception_relay_refused_total Sessions and streams refused, by reason.',
+      '# TYPE inception_relay_refused_total counter',
+      ...Object.entries(stats.refused).map(([reason, n]) => `inception_relay_refused_total{reason="${reason}"} ${n}`),
+      '# HELP inception_relay_streams_closed_total Streams closed, by reason.',
+      '# TYPE inception_relay_streams_closed_total counter',
+      ...Object.entries(stats.closed).map(([reason, n]) => `inception_relay_streams_closed_total{reason="${reason}"} ${n}`),
+    ];
+    return `${lines.join('\n')}\n`;
+  }
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
 
   server.on('upgrade', (req, socket, head) => {
     if (wss.clients.size >= maxConnections) {
       log('warn', `refused connection: ${maxConnections} sessions are open`);
+      count(stats.refused, 'connections');
       socket.end('HTTP/1.1 503 Service Unavailable\r\n\r\n');
       return;
     }
     const origin = req.headers.origin ?? '';
     if (origins.length && !origins.includes(origin)) {
       log('warn', `refused origin ${origin || '(none)'}`);
+      count(stats.refused, 'origin');
       socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
       return;
     }
@@ -124,6 +170,7 @@ export async function startRelay(options = {}) {
         verifyRelayToken(token, { secret, origin });
       } catch (error) {
         log('warn', `refused token: ${error instanceof RelayTokenError ? error.message : 'invalid'}`);
+        count(stats.refused, 'token');
         socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
         return;
       }
@@ -137,6 +184,7 @@ export async function startRelay(options = {}) {
     const overBudget = () => {
       if (session.bytesIn + session.bytesOut <= maxBytes) return false;
       log('warn', `session over its ${maxBytes} byte budget, closed`);
+      count(stats.refused, 'budget');
       ws.close(1008, 'byte budget exhausted');
       return true;
     };
@@ -147,6 +195,8 @@ export async function startRelay(options = {}) {
       const stream = streams.get(id);
       if (!stream) return;
       streams.delete(id);
+      stats.streams--;
+      count(stats.closed, reasonName[reason] ?? 'unknown');
       stream.socket?.destroy();
       send(CLOSE, id, Buffer.from([reason]));
     };
@@ -161,6 +211,7 @@ export async function startRelay(options = {}) {
     ws.on('message', (data, isBinary) => {
       if (!isBinary || data.length < 5) return;
       session.bytesIn += data.length;
+      stats.bytesIn += data.length;
       if (overBudget()) return;
       const type = data.readUInt8(0);
       const id = data.readUInt32LE(1);
@@ -173,12 +224,14 @@ export async function startRelay(options = {}) {
       clearInterval(drainTimer);
       log('info', `session closed: ${session.opened} streams, ${session.bytesIn} bytes from the page, ${session.bytesOut} bytes to it`);
       for (const stream of streams.values()) stream.socket?.destroy();
+      stats.streams -= streams.size;
       streams.clear();
     });
 
     async function open(id, payload) {
       if (streams.has(id) || id === 0) return;
       if (streams.size >= maxStreams) {
+        count(stats.refused, 'streams');
         send(CLOSE, id, Buffer.from([CloseReason.Throttled]));
         return;
       }
@@ -190,6 +243,7 @@ export async function startRelay(options = {}) {
       session.recent = session.recent.filter((time) => now - time < 60_000);
       if (session.recent.length >= connectsPerMinute) {
         log('warn', `session opened more than ${connectsPerMinute} streams in a minute`);
+        count(stats.refused, 'rate');
         send(CLOSE, id, Buffer.from([CloseReason.Throttled]));
         return;
       }
@@ -199,6 +253,8 @@ export async function startRelay(options = {}) {
       const hostname = payload.subarray(3).toString('utf8');
       const stream = { socket: null, pending: [], pendingBytes: 0, owed: false, sinceContinue: 0, bytesIn: 0, bytesOut: 0 };
       streams.set(id, stream);
+      stats.streams++;
+      stats.streamsOpened++;
 
       const refused = nameRefusal(hostname, policy);
       if (refused) {
@@ -241,6 +297,7 @@ export async function startRelay(options = {}) {
       socket.on('data', (chunk) => {
         stream.bytesOut += chunk.length;
         session.bytesOut += chunk.length;
+        stats.bytesOut += chunk.length;
         if (overBudget()) return;
         send(DATA, id, chunk);
         if (ws.bufferedAmount >= HIGH_WATER) socket.pause();
@@ -295,6 +352,7 @@ export async function startRelay(options = {}) {
   return {
     url,
     port: actualPort,
+    stats: () => ({ sessions: wss.clients.size, ...stats, refused: { ...stats.refused }, closed: { ...stats.closed } }),
     close: () =>
       new Promise((resolve) => {
         for (const client of wss.clients) client.terminate();

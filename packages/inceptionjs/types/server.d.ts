@@ -42,6 +42,8 @@ export interface RelayOptions {
   /** New streams a session may open per minute (default 600). */
   connectsPerMinute?: number;
   connectTimeoutMs?: number;
+  /** Serve Prometheus counters at GET /metrics (default false). GET /healthz always answers. */
+  metrics?: boolean;
   /** Receives destinations, ports and sizes, never content. */
   log?: (level: 'info' | 'warn', message: string) => void;
   /** Replace DNS resolution and TCP connection, for tests. */
@@ -51,6 +53,18 @@ export interface RelayOptions {
 export interface Relay {
   url: string;
   port: number;
+  /** Totals since start: no destinations. */
+  stats(): {
+    sessions: number;
+    streams: number;
+    streamsOpened: number;
+    bytesIn: number;
+    bytesOut: number;
+    /** Sessions and streams refused, by reason: connections, origin, token, budget, streams, rate. */
+    refused: Record<string, number>;
+    /** Streams closed, by close reason (voluntary, blocked, unreachable, throttled, ...). */
+    closed: Record<string, number>;
+  };
   close(): Promise<void>;
 }
 
