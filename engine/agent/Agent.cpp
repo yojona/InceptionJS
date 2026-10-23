@@ -317,6 +317,11 @@ bool allowsNavigation(View& view, const NavigationAction& action, const Resource
     return false;
 }
 
+bool inControl(View& view)
+{
+    return stateOf(view.window().id()).agentInControl;
+}
+
 bool allowsDownload(View& view, const URL& url)
 {
     auto& current = stateOf(view.window().id());

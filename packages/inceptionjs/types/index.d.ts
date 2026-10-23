@@ -329,7 +329,7 @@ export interface InceptionViewEventMap {
   /** preventDefault() to draw the list yourself; choose(index) answers. */
   selectmenu: CustomEvent<{ id: number; items: unknown[]; choose(index: number): void; [key: string]: unknown }>;
   permissionrequest: CustomEvent<{ kind: string; origin: string; grant(): void; deny(): void }>;
-  downloadstart: CustomEvent<{ id: number; url: string; filename: string; mime: string; size: number; userGesture?: boolean }>;
+  downloadstart: CustomEvent<{ id: number; url: string; filename: string; mime: string; size: number; userGesture?: boolean; initiator?: 'person' | 'agent' | 'page' }>;
   downloadprogress: CustomEvent<{ id: number; received: number; size: number }>;
   /** A download cancelled because policy.downloads is 'block'. */
   downloadblocked: CustomEvent<{ url: string; filename: string; mime: string; size: number; reason: 'policy' | 'no-gesture' }>;

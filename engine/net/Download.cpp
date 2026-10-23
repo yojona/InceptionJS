@@ -102,25 +102,26 @@ void Download::cancelMedia(uint64_t id)
         Ref { it->value }->cancel();
 }
 
-void Download::start(const ResourceRequest& request, const String& suggestedFilename, bool userGesture)
+void Download::start(const ResourceRequest& request, const String& suggestedFilename, bool userGesture, const String& initiator)
 {
     if (role() == Role::Content) {
         if (RefPtr link = Link::service()) {
             ResourceRequest copy = request;
             flattenBody(copy);
             Encoder encoder;
-            encoder << copy << suggestedFilename << userGesture;
+            encoder << copy << suggestedFilename << userGesture << initiator;
             link->send(Message::DownloadStart, WTF::move(encoder));
         }
         return;
     }
-    startForLink(request, suggestedFilename, userGesture, 0);
+    startForLink(request, suggestedFilename, userGesture, initiator, 0);
 }
 
-void Download::startForLink(const ResourceRequest& request, const String& suggestedFilename, bool userGesture, unsigned link)
+void Download::startForLink(const ResourceRequest& request, const String& suggestedFilename, bool userGesture, const String& initiator, unsigned link)
 {
     Ref download = adoptRef(*new Download(request, suggestedFilename));
     download->m_userGesture = userGesture;
+    download->m_initiator = initiator;
     download->m_link = link;
     active().add(download->m_id, download);
     download->begin();
@@ -128,13 +129,14 @@ void Download::startForLink(const ResourceRequest& request, const String& sugges
 
 void Download::installService()
 {
-    // {request, filename, userGesture}
+    // {request, filename, userGesture, initiator}
     Link::handle(Message::DownloadStart, [](Link& link, Decoder& decoder) {
         auto request = decoder.decode<ResourceRequest>();
         auto filename = decoder.string();
         auto userGesture = decoder.boolean();
-        if (userGesture && request->url().protocolIsInHTTPFamily() && LinkPolicy::allows(link.id(), request->url()))
-            startForLink(*request, *filename, *userGesture, link.id());
+        auto initiator = decoder.string();
+        if (request && filename && userGesture && initiator && request->url().protocolIsInHTTPFamily() && LinkPolicy::allows(link.id(), request->url()))
+            startForLink(*request, *filename, *userGesture, *initiator, link.id());
     });
     // {id, request, media}
     Link::handle(Message::MediaFetchStart, [](Link& link, Decoder& decoder) {
@@ -251,6 +253,7 @@ void Download::curlDidReceiveResponse(CurlRequest& curl, CurlResponse&& curlResp
     data->setString("mime"_s, response.mimeType());
     data->setDouble("size"_s, m_size);
     data->setBoolean("userGesture"_s, m_userGesture);
+    data->setString("initiator"_s, m_initiator);
     emitEvent(eventName("started"_s), WTF::move(data));
     curl.completeDidReceiveResponse();
 }
@@ -359,7 +362,7 @@ void Download::registerCommands()
         URL url { args.getString("url"_s) };
         auto link = std::max(args.getInteger("link"_s).value_or(0), 0);
         if (url.protocolIsInHTTPFamily())
-            Download::startForLink(ResourceRequest { WTF::move(url) }, args.getString("filename"_s), true, link);
+            Download::startForLink(ResourceRequest { WTF::move(url) }, args.getString("filename"_s), true, "person"_s, link);
     });
 }
 

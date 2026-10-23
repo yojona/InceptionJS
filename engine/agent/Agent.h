@@ -30,6 +30,8 @@ void registerCommands();
 // "agent.blocked".
 bool allowsNavigation(View&, const WebCore::NavigationAction&, const WebCore::ResourceRequest&, WebCore::FormState*);
 bool allowsDownload(View&, const URL&);
+// Whether the agent holds control of the view's window.
+bool inControl(View&);
 
 // Drops a closed window's state.
 void windowClosed(unsigned window);

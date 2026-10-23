@@ -5,7 +5,8 @@
 // and reports them as downloadblocked. Downloads are held in memory, so one
 // larger than policy.maxDownloadBytes is cancelled with an error.
 //   downloadblocked  {url, filename, mime, size, reason: 'policy' | 'no-gesture'}
-//   downloadstart    {id, url, filename, mime, size, userGesture}
+//   downloadstart    {id, url, filename, mime, size, userGesture, initiator}:
+//                    initiator is 'person', 'agent' (in control) or 'page'
 //   downloadprogress {id, received, size}
 //   downloadpause    {id, received}
 //   downloadresume   {id, received}; after a restart (the server could not

@@ -537,7 +537,17 @@ void FrameLoaderClientImpl::dispatchDecidePolicyForNavigationAction(const Naviga
         SiteLock::reportCrossSite(m_view.id(), request, requester ? requester->securityOrigin->toString() : String { }, action.processingUserGesture());
         return;
     }
+    m_navigationGesture = action.processingUserGesture();
     function(PolicyAction::Use);
+}
+
+// Who started a download: the agent while it holds control, otherwise the
+// person if their input did, otherwise the page.
+static String downloadInitiator(View& view, bool userGesture)
+{
+    if (Agent::inControl(view))
+        return "agent"_s;
+    return userGesture ? "person"_s : "page"_s;
 }
 
 void FrameLoaderClientImpl::dispatchDecidePolicyForResponse(const ResourceResponse& response, const ResourceRequest& request, const String& downloadAttribute, FramePolicyFunction&& function)
@@ -556,7 +566,8 @@ void FrameLoaderClientImpl::dispatchDecidePolicyForResponse(const ResourceRespon
             loader = m_frame->loader().provisionalDocumentLoader();
         if (loader)
             userGesture |= loader->triggeringAction().processingUserGesture();
-        Download::start(request, downloadAttribute, userGesture);
+        userGesture |= std::exchange(m_navigationGesture, false);
+        Download::start(request, downloadAttribute, userGesture, downloadInitiator(m_view, userGesture));
     }
 }
 
@@ -571,8 +582,10 @@ RefPtr<HistoryItem> FrameLoaderClientImpl::createHistoryItemTree(bool clipAtTarg
 // <a download> and similar: straight to a download.
 void FrameLoaderClientImpl::startDownload(const ResourceRequest& request, const String& suggestedName, FromDownloadAttribute)
 {
-    if (request.url().protocolIsInHTTPFamily() && Agent::allowsDownload(m_view, request.url()))
-        Download::start(request, suggestedName, UserGestureIndicator::processingUserGesture());
+    if (request.url().protocolIsInHTTPFamily() && Agent::allowsDownload(m_view, request.url())) {
+        bool userGesture = UserGestureIndicator::processingUserGesture() || std::exchange(m_navigationGesture, false);
+        Download::start(request, suggestedName, userGesture, downloadInitiator(m_view, userGesture));
+    }
 }
 
 // target=_blank and the like: WebCore opens a new tab through createWindow,
@@ -682,6 +695,7 @@ static void emitSecurityState(View& view, DocumentLoader& loader)
 
 void FrameLoaderClientImpl::dispatchDidCommitLoad(std::optional<HasInsecureContent>, std::optional<UsedLegacyTLS>, std::optional<WasPrivateRelayed>)
 {
+    m_navigationGesture = false;
     if (!isMainFrame())
         return;
     auto data = JSON::Object::create();

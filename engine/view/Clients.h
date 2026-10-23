@@ -135,6 +135,10 @@ private:
 
     WeakRef<WebCore::LocalFrame> m_frame;
     View& m_view;
+    // Whether input started the navigation now being loaded: a download it
+    // turns into (an attachment, <a download>) is decided later, when the
+    // input's gesture is no longer being processed.
+    bool m_navigationGesture { false };
 };
 
 } // namespace Inception

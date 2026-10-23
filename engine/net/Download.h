@@ -11,15 +11,16 @@ namespace Inception {
 // A file the page downloads: fetched by the engine (cookies, TLS, the relay,
 // like any load) and streamed to the host, which saves it where the embedder
 // decides. Events: download.started {id, url, filename, mime, size,
-// userGesture},
+// userGesture, initiator},
 // download.progress {id, received, size}, download.paused/resumed {id, received},
 // download.restarted {id}, download.finished {id, error?}; the
 // bytes travel next to them as transferable chunks.
 class Download final : public RefCounted<Download>, public WebCore::CurlRequestClient {
 public:
-    // `userGesture`: the person's input started it (a click on the link), so the
-    // host may require one before saving.
-    static void start(const WebCore::ResourceRequest&, const String& suggestedFilename, bool userGesture);
+    // `userGesture`: input started it (a click on the link), so the host may
+    // require one before saving. `initiator`: "person", "agent" (it acted while
+    // in control) or "page" (the page's own script).
+    static void start(const WebCore::ResourceRequest&, const String& suggestedFilename, bool userGesture, const String& initiator);
     // The same fetch for a media element's own src: events are media.fetch.*
     // with the element's player id, and the host plays the bytes instead of
     // saving them. Returns the fetch's id.
@@ -35,7 +36,7 @@ public:
 
 private:
     Download(const WebCore::ResourceRequest&, const String& suggestedFilename);
-    static void startForLink(const WebCore::ResourceRequest&, const String& suggestedFilename, bool userGesture, unsigned link);
+    static void startForLink(const WebCore::ResourceRequest&, const String& suggestedFilename, bool userGesture, const String& initiator, unsigned link);
     void begin();
     void cancel();
     void pause();
@@ -64,6 +65,7 @@ private:
     bool m_paused { false };
     bool m_resuming { false };
     bool m_userGesture { false };
+    String m_initiator;
     // The content engine it is for (0: this engine's own), and the id that
     // engine knows a media fetch by.
     unsigned m_link { 0 };
