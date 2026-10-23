@@ -9,7 +9,7 @@ import { EncryptedMedia } from './eme.js';
 import { AudioHost } from './audio.js';
 import { Modules } from './modules.js';
 import { Downloads } from './downloads.js';
-import { hostRules, resolvePolicy } from './policy.js';
+import { hostRules, narrowHostRules, resolvePolicy, sameHostRules } from './policy.js';
 import { EngineRuntime } from './runtime.js';
 import { ProfileService } from './profile-service.js';
 import { WasmTranslator } from './wasm-translator.js';
@@ -974,7 +974,8 @@ export class InceptionView extends HTMLElement {
     slot.link = this.#service.connect(slot.runtime, { onClosed: () => (slot.link = null) });
     // Where its pages may go, and the site it is locked to, enforced where the
     // network is.
-    const hosts = slot.hosts ?? policy().hosts;
+    // A window's own rules narrow the view's, never widen them.
+    const hosts = narrowHostRules(policy().hosts, slot.hosts);
     const site = typeof slot.site === 'string' ? { site: slot.site, ...(policy().thirdPartyCookies ? { thirdParty: policy().thirdPartyCookies } : {}) } : {};
     if (hosts || site.site !== undefined) this.#service.send('link.policy', { link: slot.link, ...hosts, ...site });
   }
@@ -1140,10 +1141,11 @@ export class InceptionView extends HTMLElement {
   // isolation 'window' and 'site': a window in an engine of its own.
   async #openEngineWindow({ width, height, deviceScaleFactor, url, hosts }) {
     const site = this.#isolation() === 'site' ? await this.#siteOf(url) : undefined;
-    const shared = this.#engineFor(site);
+    const rules = hostRules(hosts);
+    const shared = this.#engineFor(site, rules);
     if (shared) return this.#openSharedWindow(shared, { width, height, deviceScaleFactor, url });
     const slot = this.#createSlot({ primary: false, site });
-    slot.hosts = hostRules(hosts);
+    slot.hosts = rules;
     try {
       const ready = await this.#startSlot(slot, { width, height, deviceScaleFactor, url: '' });
       // "ready" already carries the view's id for the engine's first window.
@@ -1177,11 +1179,14 @@ export class InceptionView extends HTMLElement {
   // isolation 'site', an engine already showing that site (sites never share
   // one); with 'window', the engine with the fewest windows. null: an engine
   // of its own.
-  #engineFor(site) {
+  // An engine to share once the budget is spent: one of the site, with the
+  // same host rules as the window (a window never runs under another's). None
+  // (null) means the window gets an engine of its own.
+  #engineFor(site, hosts = null) {
     const live = this.#slots.filter((slot) => !slot.closed);
     if (live.length < this.#engineBudget()) return null;
     const load = (slot) => [...this.#windows.values()].filter((record) => record.slot === slot).length;
-    const candidates = this.#isolation() === 'site' ? live.filter((slot) => slot.site === site) : live;
+    const candidates = (this.#isolation() === 'site' ? live.filter((slot) => slot.site === site) : live).filter((slot) => sameHostRules(slot.hosts ?? null, hosts));
     return candidates.sort((a, b) => load(a) - load(b))[0] ?? null;
   }
 
@@ -1231,7 +1236,7 @@ export class InceptionView extends HTMLElement {
       history.engine = { entries: [], index: -1 };
       history.keepAfter = traverse;
     }
-    let slot = !isMain && this.#engineFor(site);
+    let slot = !isMain && this.#engineFor(site, old.hosts ?? null);
     let tab;
     if (slot) {
       // Into a running engine of the site: a window there, with this id.
@@ -1240,6 +1245,8 @@ export class InceptionView extends HTMLElement {
       tab = moved.tabs.active;
     } else {
       slot = this.#createSlot({ primary: isMain, site });
+      // The window keeps its own host rules in the engine of its new site.
+      slot.hosts = old.hosts;
       slot.windows.set(1, record.id);
       slot.locals.set(record.id, 1);
       slot.root = record;
