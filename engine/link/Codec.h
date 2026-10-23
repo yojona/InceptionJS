@@ -69,7 +69,15 @@ public:
     // A byte run without copying it; valid while the input is.
     std::optional<std::span<const uint8_t>> view();
 
-    template<typename T> std::optional<T> decode() { return Coder<T>::decode(*this); }
+    // A Coder that returns nothing marks the input bad, so a later read
+    // cannot pick up where a refused value stopped part-way.
+    template<typename T> std::optional<T> decode()
+    {
+        auto value = Coder<T>::decode(*this);
+        if (!value)
+            m_failed = true;
+        return value;
+    }
 
     // A collection's size, refused when the rest of the input could not hold
     // that many elements of at least `minimumElementBytes` each.

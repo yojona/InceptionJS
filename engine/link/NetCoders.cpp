@@ -49,8 +49,10 @@ std::optional<HTTPHeaderMap> Coder<HTTPHeaderMap>::decode(Decoder& decoder)
     for (uint32_t i = 0; i < *count; ++i) {
         auto name = decoder.string();
         auto value = name ? decoder.string() : std::nullopt;
-        if (!value || name->isEmpty())
+        if (!value || name->isEmpty()) {
+            decoder.fail();
             return std::nullopt;
+        }
         headers.add(*name, *value);
     }
     return headers;
@@ -81,7 +83,9 @@ std::optional<ResourceRequest> Coder<ResourceRequest>::decode(Decoder& decoder)
     auto isTopSite = decoder.boolean();
     auto allowCookies = decoder.boolean();
     auto hasBody = decoder.boolean();
-    if (!hasBody || !std::isfinite(*timeout))
+    // Every field read is checked through failed(): a read after a refused
+    // one fails too.
+    if (decoder.failed() || !hasBody || !std::isfinite(*timeout))
         return std::nullopt;
     ResourceRequest request { WTF::move(*url) };
     request.setFirstPartyForCookies(*firstParty);
@@ -137,7 +141,7 @@ std::optional<ResourceResponse> Coder<ResourceResponse>::decode(Decoder& decoder
     auto version = decoder.string();
     auto headers = decoder.decode<HTTPHeaderMap>();
     auto certificate = decoder.decode<std::optional<CertificateInfo>>();
-    if (!certificate || *status < 0 || *status > 999)
+    if (decoder.failed() || !certificate || *status < 0 || *status > 999)
         return std::nullopt;
     ResourceResponse response { WTF::move(*url), WTF::move(*mimeType), *expectedLength, WTF::move(*encoding) };
     response.setHTTPStatusCode(*status);

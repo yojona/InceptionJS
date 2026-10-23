@@ -143,7 +143,7 @@ void Download::installService()
         auto id = decoder.u64();
         auto request = decoder.decode<ResourceRequest>();
         auto mediaID = decoder.decode<unsigned>();
-        if (!mediaID || !*id || !request->url().protocolIsInHTTPFamily() || mediaFetches().contains({ link.id(), *id }) || !LinkPolicy::allows(link.id(), request->url()))
+        if (!id || !request || !mediaID || !*id || !request->url().protocolIsInHTTPFamily() || mediaFetches().contains({ link.id(), *id }) || !LinkPolicy::allows(link.id(), request->url()))
             return;
         Ref download = adoptRef(*new Download(*request, { }));
         download->m_mediaID = *mediaID;
