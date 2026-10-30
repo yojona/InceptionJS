@@ -326,6 +326,12 @@ relay.
 </script>
 ```
 
+The engine is about 150 MB, 46 MB with Brotli. Serve the files precompressed and
+cached under a versioned path (`Cache-Control: public, max-age=31536000, immutable`),
+and call `Inception.preload()` as early as you can, before any view mounts, so the
+download and compile overlap with the rest of your page. `npx inceptionjs check <url>`
+reports both.
+
 ### Server relay
 
 Run a relay next to your backend. It refuses private, loopback, link-local, CGNAT and
