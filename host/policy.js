@@ -17,6 +17,8 @@
 //                    as the person's.
 //   maxDownloadBytes largest download kept in memory (default 256 MiB); a bigger
 //                    one is cancelled, since a page could otherwise fill it.
+//   maxMediaBytes    largest <video>/<audio> source kept in memory (default
+//                    512 MiB); a bigger one fails as an unusable source does.
 //   newTabs          'block' (default): a window or tab a page opens is closed
 //                    and reported as "popupblocked"; the embedder may accept one
 //                    from the "newtab" event. 'foreground' / 'background' accept
@@ -54,6 +56,7 @@ export const POLICY_DEFAULTS = Object.freeze({
   downloads: 'events',
   gesturelessDownloads: 'block',
   maxDownloadBytes: 256 * 1024 * 1024,
+  maxMediaBytes: 512 * 1024 * 1024,
   newTabs: 'block',
   popups: 'tab',
   dialogs: 'dismiss',

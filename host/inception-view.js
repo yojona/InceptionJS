@@ -774,7 +774,7 @@ export class InceptionView extends HTMLElement {
     // `autoplay-sound`: the embedder knows playback with sound is allowed here.
     const soundAllowed = this.hasAttribute('autoplay-sound') || policy().autoplaySound;
     this.#soundAllowed = soundAllowed;
-    this.#media = new MediaHost(this.#mediaLayer, (command, args) => this.#primary.runtime.send(command, args), { soundAllowed, eme: primary.eme, audio: primary.audio });
+    this.#media = new MediaHost(this.#mediaLayer, (command, args) => this.#primary.runtime.send(command, args), { soundAllowed, eme: primary.eme, audio: primary.audio, maxBytes: () => policy().maxMediaBytes });
     this.#applyLevel();
     this.#downloads = new Downloads(this, (command, args) => this.#profileSend(command, args), policy);
     // binaryen next to the host modules (the package ships it there), or in the
@@ -1414,7 +1414,7 @@ export class InceptionView extends HTMLElement {
     record.target = handle;
     if (Number.isInteger(data.tab)) record.tabs.started(data.tab);
     // Its videos play muted, off screen, until a display here shows it.
-    const host = new MediaHost(document.createElement('div'), (command, args) => slot.runtime.send(command, args), { soundAllowed: this.#soundAllowed, eme: slot.eme, audio: slot.audio });
+    const host = new MediaHost(document.createElement('div'), (command, args) => slot.runtime.send(command, args), { soundAllowed: this.#soundAllowed, eme: slot.eme, audio: slot.audio, maxBytes: () => policy().maxMediaBytes });
     host.setMaster({ volume: 0, muted: true });
     record.media = { host, local: host };
     if (this.#agentEnabled()) record.agent = this.#createAgent(record);
