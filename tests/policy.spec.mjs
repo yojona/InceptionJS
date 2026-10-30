@@ -262,3 +262,15 @@ test('a link download the person clicks arrives with their gesture; one the page
   await evaluate(page, 'document.getElementById("d").click(), "clicked"');
   expect(await refused).toBe('no-gesture');
 });
+
+test('a media source larger than policy.maxMediaBytes fails instead of filling memory', async ({ page }) => {
+  await open(page, { maxMediaBytes: 100_000 });
+  await evaluate(page, `(() => {
+    const audio = new Audio('https://www.w3schools.com/html/mov_bbb.mp4');
+    window.mediaResult = 'pending';
+    audio.addEventListener('error', () => { window.mediaResult = 'error ' + (audio.error && audio.error.code); });
+    audio.addEventListener('loadedmetadata', () => { window.mediaResult = 'metadata'; });
+    return 'x';
+  })()`);
+  await expect.poll(() => evaluate(page, 'String(window.mediaResult)'), { timeout: 30_000 }).toBe('error 4');
+});
