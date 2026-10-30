@@ -355,6 +355,10 @@ Use `--dev` only on a development machine: it allows loopback to your dev ports.
 `metrics: true` (`--metrics`), `GET /metrics` serves Prometheus counters: sessions,
 streams, bytes, and refusals and stream closes by reason, never destinations. Keep
 `/metrics` off the public internet. `relay.stats()` returns the same numbers.
+`--log json` prints one JSON object per line for log collectors. On SIGTERM or
+SIGINT the relay drains: it refuses new sessions and gives open ones
+`--drain-seconds` (default 30) to finish; `relay.close({ graceMs })` does the same
+from code.
 
 ### Vite
 
