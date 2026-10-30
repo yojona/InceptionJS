@@ -45,6 +45,16 @@ function serveFrom(root, prefix, only = null) {
     res.setHeader('Content-Type', TYPES[extname(file)] ?? 'application/octet-stream');
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Vary', 'Accept-Encoding');
+    // A precompressed copy next to the file (file.br, file.gz) goes out as is:
+    // the engine is about 150 MB, 46 MB with Brotli.
+    const accepted = String(req.headers['accept-encoding'] ?? '');
+    for (const [encoding, suffix] of [['br', '.br'], ['gzip', '.gz']]) {
+      if (!new RegExp(`\\b${encoding}\\b`).test(accepted) || !existsSync(file + suffix)) continue;
+      res.setHeader('Content-Encoding', encoding);
+      createReadStream(file + suffix).pipe(res);
+      return;
+    }
     createReadStream(file).pipe(res);
   };
 }
