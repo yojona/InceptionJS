@@ -38,7 +38,7 @@ export const Inception = {
   // browser, safe unless the embedder opts in (host/policy.js); debug: enable
   // the view's debugEvaluate, debugCommand and debugHeap (development only);
   // maxMemoryMB: how far a view's engine memory may grow (default 2048, 512
-  // to 4096); agent: true or the agent options (host/agent.js) to offer the agent
+  // to 4096; 'auto' sizes it from the device's memory); agent: true or the agent options (host/agent.js) to offer the agent
   // namespace on every view, which is off otherwise. isolation: 'shared'
   // (default: one engine runs every window of a view, with the profile in it)
   // or 'window' (a profile service owns the profile, the network and the
