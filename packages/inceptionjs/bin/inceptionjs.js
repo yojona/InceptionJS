@@ -188,7 +188,8 @@ async function relay(argv) {
     : undefined;
   const { startRelay } = await import('../dist/server/relay.js');
   const secret = process.env[values['secret-env']] || undefined;
-  if (!secret && !values.dev) console.warn('[relay] no secret: anyone who can reach this port can use it. Set INCEPTION_RELAY_SECRET in production.');
+  const warn = (message) => (log ? log('warn', message) : console.warn(`[relay] ${message}`));
+  if (!secret && !values.dev) warn('no secret: anyone who can reach this port can use it. Set INCEPTION_RELAY_SECRET in production.');
   const server = await startRelay({
     port: Number(values.port),
     host: values.host,
@@ -198,7 +199,13 @@ async function relay(argv) {
     secret,
     metrics: values.metrics,
     ...(log ? { log } : {}),
-  }).catch((error) => fail(`[relay] ${error.message}`));
+  }).catch((error) => {
+    if (log) {
+      log('error', error.message);
+      process.exit(1);
+    }
+    fail(`[relay] ${error.message}`);
+  });
   // A stop signal drains: no new sessions, open ones get --drain-seconds to
   // finish. A second signal stops at once.
   let stopping = false;
