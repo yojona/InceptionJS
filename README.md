@@ -527,7 +527,12 @@ do. This is a feature, not a flag you are expected to remove.
 - **Provenance badge.** The host draws, above the canvas where the loaded page cannot
   cover it, a label "InceptionJS on <your-site>" naming the embedding site, and a
   warning bar when the loaded page shows a password or payment field or a major
-  sign-in page. Style it with `::part(provenance)` and `provenance-corner`.
+  sign-in page. Style it with `::part(provenance)` and `provenance-corner`. A badge the
+  embedding page hides (display, visibility, opacity, clipping, moving it out, text
+  that is transparent or the colour of its background, or an opaque element of the
+  page over it for 3 s or more) covers the view with a notice and fires
+  `provenancetampered` until it shows again. Translucent overlays, modal dialogs and
+  other views or windows with their own badge do not count.
 - **Turning it off.** `provenance="off"` hides the badge and the notice. It is on by
   default and meant only for first-party deployments where your own window chrome
   already says what the view is.
