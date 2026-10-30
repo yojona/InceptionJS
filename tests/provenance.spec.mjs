@@ -96,6 +96,7 @@ test('a badge made unreadable by its colours, or covered by the page for a while
   for (const css of [
     'inception-view::part(provenance) { color: transparent !important }',
     'inception-view::part(provenance) { color: rgb(20 20 28) !important; background: rgb(20 20 28) !important }',
+    'inception-view::part(provenance) { -webkit-text-fill-color: transparent !important }',
   ]) {
     const style = await page.addStyleTag({ content: css });
     await expect(tamper, css).toHaveCount(1, { timeout: 5000 });
@@ -117,5 +118,34 @@ test('a badge made unreadable by its colours, or covered by the page for a while
   await expect(tamper).toHaveCount(0);
   await expect(tamper).toHaveCount(1, { timeout: 6000 });
   await page.evaluate(() => document.getElementById('cover').remove());
+  await expect(tamper).toHaveCount(0, { timeout: 5000 });
+});
+
+test('translucent scrims and modal dialogs over the badge do not count; another element without a badge does', async ({ page }) => {
+  const tamper = view(page).locator('.tamper');
+  const place = (tag, css, setup = '') => page.evaluate(([tag, css, setup]) => {
+    const badge = document.querySelector('inception-view').shadowRoot.querySelector('.provenance').getBoundingClientRect();
+    const element = document.createElement(tag);
+    element.id = 'over';
+    element.style.cssText = `position: fixed; z-index: 100; margin: 0; padding: 0; border: 0; left: ${badge.left - 4}px; top: ${badge.top - 4}px; width: ${badge.width + 8}px; height: ${badge.height + 8}px; ${css}`;
+    document.body.append(element);
+    if (setup) new Function('element', setup)(element);
+  }, [tag, css, setup]);
+  const remove = () => page.evaluate(() => document.getElementById('over').remove());
+
+  // A loading scrim the badge shows through.
+  await place('div', 'background: rgb(0 0 0 / 0.4)');
+  await page.waitForTimeout(4500);
+  await expect(tamper).toHaveCount(0);
+  await remove();
+  // A modal dialog: the page, view included, is inert until it closes.
+  await place('dialog', 'background: #fff', 'element.showModal()');
+  await page.waitForTimeout(4500);
+  await expect(tamper).toHaveCount(0);
+  await remove();
+  // An <inception-window> with provenance="off" shows no badge of its own.
+  await place('inception-window', 'display: block; background: #fff', 'element.setAttribute("provenance", "off")');
+  await expect(tamper).toHaveCount(1, { timeout: 6000 });
+  await remove();
   await expect(tamper).toHaveCount(0, { timeout: 5000 });
 });
