@@ -157,8 +157,13 @@ browser on a server.
 - **DRM goes through the host browser.** Encrypted Media uses the host's own CDM, so
   Widevine works only where the host browser has it. ClearKey is covered by tests;
   Netflix does not play.
-- **Disabled in the build:** WebAssembly inside loaded pages, WebGPU and WOFF2 web
-  fonts (pages fall back to other font formats or system fonts).
+- **WebAssembly in pages is translated, not compiled.** The engine's JavaScriptCore
+  has no WebAssembly of its own, so the host translates each module to JavaScript with
+  binaryen's wasm2js and the page runs that. MVP modules (plus mutable globals,
+  sign extension, non-trapping float-to-int, bulk memory and multi-value) work, slowly;
+  modules that need threads, SIMD, exceptions or GC fail with a `CompileError`.
+- **Disabled in the build:** WebGPU and WOFF2 web fonts (pages fall back to other font
+  formats or system fonts).
 - **A relay is required.** Pages cannot open raw TCP, so every connection goes through
   a relay. TLS ends inside the engine; the relay sees ciphertext plus the destination
   host and port.
@@ -233,7 +238,7 @@ browser test suite or verified on real sites; **Partial** has a limit noted.
 | API | Status | Notes |
 | --- | --- | --- |
 | JavaScript | Partial | Interpreter, no JIT: about 7 times slower than native |
-| WebAssembly in pages | No | Disabled in the build |
+| WebAssembly in pages | Partial | Translated to JavaScript (wasm2js): MVP and a few extensions; no threads, SIMD, exceptions or GC |
 
 **Device and UI** (the embedder decides; see [Safe defaults](#safe-defaults))
 
