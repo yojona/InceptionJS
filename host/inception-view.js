@@ -66,7 +66,9 @@ export const Inception = {
   // later from the same URL share it. Resolves once it is ready.
   preload({ engineUrl = config.engineUrl } = {}) {
     if (!engineUrl) return Promise.reject(new Error('Inception.preload: no engineUrl (pass one, or configure() first)'));
-    return Promise.all([import(engineUrl), loadEngine(engineUrl)]).then(() => undefined);
+    // Resolved against the page, as a view resolves it.
+    const url = new URL(engineUrl, location.href).href;
+    return Promise.all([import(url), loadEngine(url)]).then(() => undefined);
   },
 };
 

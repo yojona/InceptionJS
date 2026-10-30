@@ -125,29 +125,23 @@ async function check(argv) {
     'Send "Cross-Origin-Embedder-Policy: require-corp" (or credentialless). Cross-origin scripts, images and iframes on the page then need CORP/CORS headers; credentialless relaxes that for no-cookie requests.');
 
   const engineUrl = new URL(values.engine ?? '/__inception/engine/inception-engine.js', response.url);
-  for (const [path, type] of [[engineUrl.href, 'javascript'], [engineUrl.href.replace(/\.js$/, '.wasm'), 'application/wasm']]) {
-    try {
-      const r = await fetch(path, { method: 'HEAD' });
-      const corp = r.headers.get('cross-origin-resource-policy');
-      const sameOrigin = new URL(path).origin === new URL(response.url).origin;
-      report(r.ok, `${path} (${r.status})`, 'Host the engine files there, or pass --engine with their URL.');
-      if (r.ok) {
-        report((r.headers.get('content-type') ?? '').includes(type), `  content-type ${r.headers.get('content-type') ?? '(missing)'}`, `Serve it as ${type}.`);
-        report(sameOrigin || corp === 'cross-origin', `  Cross-Origin-Resource-Policy ${corp ?? '(missing)'}`, 'A cross-origin engine needs "Cross-Origin-Resource-Policy: cross-origin".');
-      }
-    } catch (error) {
-      report(false, `${path}: ${error.message}`);
-    }
-  }
-  // Not required, but they decide how long the first start takes.
-  for (const path of [engineUrl.href.replace(/\.js$/, '.wasm'), engineUrl.href.replace(/\.js$/, '.data')]) {
+  for (const [path, type] of [[engineUrl.href, 'javascript'], [engineUrl.href.replace(/\.js$/, '.wasm'), 'application/wasm'], [engineUrl.href.replace(/\.js$/, '.data'), null]]) {
     try {
       const r = await fetch(path, { method: 'HEAD', headers: { 'Accept-Encoding': 'br, gzip' } });
+      const corp = r.headers.get('cross-origin-resource-policy');
+      const sameOrigin = new URL(path).origin === new URL(response.url).origin;
+      const name = path.split('/').pop();
+      report(r.ok, `${path} (${r.status})`, 'Host the engine files there, or pass --engine with their URL.');
       if (!r.ok) continue;
+      if (type) report((r.headers.get('content-type') ?? '').includes(type), `  content-type ${r.headers.get('content-type') ?? '(missing)'}`, `Serve it as ${type}.`);
+      report(sameOrigin || corp === 'cross-origin', `  Cross-Origin-Resource-Policy ${corp ?? '(missing)'}`, 'A cross-origin engine needs "Cross-Origin-Resource-Policy: cross-origin".');
+      // Not required, but they decide how long the first start takes. Some
+      // CDNs compress on the fly and say so only on GET: check in a browser.
+      if (type === 'javascript') continue;
       const encoding = r.headers.get('content-encoding');
       const caching = r.headers.get('cache-control') ?? '';
-      advise(!!encoding, `  ${path.split('/').pop()} content-encoding ${encoding ?? '(none)'}`, 'Serve it precompressed (Brotli: about 46 MB instead of 150 MB for the engine).');
-      advise(/max-age=[1-9]|immutable/.test(caching), `  ${path.split('/').pop()} cache-control ${caching || '(none)'}`, 'Cache it (a versioned path with "Cache-Control: public, max-age=31536000, immutable"), so returning visitors skip the download.');
+      advise(!!encoding, `  ${name} content-encoding ${encoding ?? '(none)'}`, 'Serve it precompressed (Brotli: about 46 MB instead of 150 MB for the engine). A CDN that compresses on the fly may not say so on HEAD.');
+      advise(/max-age=[1-9]|immutable/.test(caching), `  ${name} cache-control ${caching || '(none)'}`, 'Cache it (a versioned path with "Cache-Control: public, max-age=31536000, immutable"), so returning visitors skip the download.');
     } catch (error) {
       report(false, `${path}: ${error.message}`);
     }
