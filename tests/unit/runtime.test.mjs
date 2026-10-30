@@ -40,3 +40,25 @@ test("maxMemoryMB 'auto' follows the device's memory", () => {
   assert.equal(memoryLimitMB(1024, 2), 1024);
   assert.equal(memoryLimitPages('auto', 4), memoryLimitPages(1024));
 });
+
+test('the engine is fetched and compiled once per URL, however it is asked for', async () => {
+  const { createServer } = await import('node:http');
+  const { loadEngine } = await import('../../host/runtime.js');
+  // The smallest valid module: the header alone.
+  const wasm = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+  const requests = [];
+  const server = createServer((req, res) => {
+    requests.push(req.url);
+    if (req.url.endsWith('.wasm')) res.writeHead(200, { 'Content-Type': 'application/wasm' }).end(wasm);
+    else res.writeHead(200).end('data');
+  }).listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  const url = `http://127.0.0.1:${server.address().port}/engine/inception-engine.js`;
+  const [first, second] = await Promise.all([loadEngine(url), loadEngine(url)]);
+  const third = await loadEngine(url);
+  assert.ok(first.module instanceof WebAssembly.Module);
+  assert.equal(second.module, first.module);
+  assert.equal(third.module, first.module);
+  assert.deepEqual(requests.sort(), ['/engine/inception-engine.data', '/engine/inception-engine.wasm']);
+  server.close();
+});
