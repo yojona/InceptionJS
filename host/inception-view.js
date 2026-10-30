@@ -10,7 +10,7 @@ import { AudioHost } from './audio.js';
 import { Modules } from './modules.js';
 import { Downloads } from './downloads.js';
 import { hostRules, narrowHostRules, resolvePolicy, sameHostRules } from './policy.js';
-import { EngineRuntime } from './runtime.js';
+import { EngineRuntime, loadEngine } from './runtime.js';
 import { ProfileService } from './profile-service.js';
 import { WasmTranslator } from './wasm-translator.js';
 import { ProtocolClient, ProtocolError, ProtocolServer, createInPagePair } from './protocol.js';
@@ -60,6 +60,13 @@ export const Inception = {
     const { wispUrl, ...rest } = options;
     // wispUrl: the earlier name of relayUrl, still accepted.
     Object.assign(config, wispUrl !== undefined && rest.relayUrl === undefined ? { relayUrl: wispUrl } : {}, rest);
+  },
+  // Starts downloading and compiling the engine (and its module script)
+  // before any view needs it, so the first view starts sooner. Views started
+  // later from the same URL share it. Resolves once it is ready.
+  preload({ engineUrl = config.engineUrl } = {}) {
+    if (!engineUrl) return Promise.reject(new Error('Inception.preload: no engineUrl (pass one, or configure() first)'));
+    return Promise.all([import(engineUrl), loadEngine(engineUrl)]).then(() => undefined);
   },
 };
 
