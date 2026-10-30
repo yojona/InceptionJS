@@ -265,6 +265,8 @@ export interface NotificationProvider {
 
 export declare const Inception: {
   configure(options: Partial<InceptionConfig>): void;
+  /** Starts downloading and compiling the engine before any view needs it; views started later share it. */
+  preload(options?: { engineUrl?: string }): Promise<void>;
 };
 
 export interface Preferences {

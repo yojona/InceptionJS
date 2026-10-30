@@ -126,6 +126,7 @@ function afterFrameInBackground(callback) {
 const shared = new Map();
 
 export function loadEngine(engineUrl) {
+  engineUrl = new URL(engineUrl, globalThis.location?.href).href;
   let entry = shared.get(engineUrl);
   if (!entry) {
     const file = (name) => new URL(name, engineUrl).href;
