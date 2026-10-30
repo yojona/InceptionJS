@@ -30,9 +30,16 @@ const PAGE_BYTES = 64 * 1024;
 const INITIAL_MEMORY_MB = 256;
 export const DEFAULT_MAX_MEMORY_MB = 2048;
 
-export function memoryLimitPages(maxMemoryMB) {
-  const megabytes = Math.min(4096, Math.max(512, Math.floor(Number(maxMemoryMB) || DEFAULT_MAX_MEMORY_MB)));
-  return (megabytes * 1024 * 1024) / PAGE_BYTES;
+// 'auto': a quarter of the device's memory where the browser tells it
+// (navigator.deviceMemory, in GB, which browsers round and cap at 8), so a
+// phone does not reserve what it cannot give; the default where it does not.
+export function memoryLimitMB(maxMemoryMB, deviceMemory = globalThis.navigator?.deviceMemory) {
+  if (maxMemoryMB === 'auto') maxMemoryMB = Number(deviceMemory) > 0 ? Number(deviceMemory) * 256 : DEFAULT_MAX_MEMORY_MB;
+  return Math.min(4096, Math.max(512, Math.floor(Number(maxMemoryMB) || DEFAULT_MAX_MEMORY_MB)));
+}
+
+export function memoryLimitPages(maxMemoryMB, deviceMemory) {
+  return (memoryLimitMB(maxMemoryMB, deviceMemory) * 1024 * 1024) / PAGE_BYTES;
 }
 
 // A crash caused by the memory limit, told apart from the rest.
