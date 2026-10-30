@@ -132,18 +132,22 @@ test('stream counters follow streams through relaying and refusal', async () => 
   echo.close();
 });
 
-test('close({graceMs}) refuses new sessions and waits for open ones to finish', async () => {
+test('close({graceMs}) refuses new sessions, fails /healthz and waits for open ones to finish', async () => {
   const relay = await startRelay({ log: quiet });
+  const http = relay.url.replace('ws://', 'http://');
   const { ws } = await client(relay.url);
   const started = Date.now();
   const closing = relay.close({ graceMs: 5000 });
-  // A new session is refused while draining.
-  const refused = await new Promise((resolve) => {
+  // Still listening, but a new session is refused and the health check fails.
+  const refusal = await new Promise((resolve) => {
     const late = new WebSocket(relay.url);
-    late.on('open', () => resolve(false));
-    late.on('error', () => resolve(true));
+    late.on('open', () => resolve('opened'));
+    late.on('error', (error) => resolve(error.message));
   });
-  assert.ok(refused);
+  assert.match(refusal, /503/);
+  const health = await fetch(`${http}healthz`);
+  assert.equal(health.status, 503);
+  assert.deepEqual(await health.json(), { ok: false, draining: true });
   // The open session finishes on its own; close() resolves without waiting out the grace.
   setTimeout(() => ws.close(), 300);
   await closing;
