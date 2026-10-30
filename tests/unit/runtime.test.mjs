@@ -30,3 +30,14 @@ test('a content engine is instantiated without file system or socket imports', (
   assert.equal(imports.a.e(), 'posted');
   assert.equal(imports.a.f(), 1);
 });
+
+test("maxMemoryMB 'auto' follows the device's memory", async () => {
+  const { memoryLimitMB } = await import('../../host/runtime.js');
+  assert.equal(memoryLimitMB('auto', 8), 2048);
+  assert.equal(memoryLimitMB('auto', 4), 1024);
+  assert.equal(memoryLimitMB('auto', 2), 512);
+  assert.equal(memoryLimitMB('auto', 0.5), 512);
+  assert.equal(memoryLimitMB('auto', undefined), DEFAULT_MAX_MEMORY_MB);
+  assert.equal(memoryLimitMB(1024, 2), 1024);
+  assert.equal(memoryLimitPages('auto', 4), memoryLimitPages(1024));
+});
