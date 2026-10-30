@@ -46,6 +46,31 @@ export const PROVENANCE_STYLE = `
 
 const CORNERS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
 
+// "rgb(r g b / a)" or "rgba(r, g, b, a)" as [r, g, b, a]; null for anything else.
+function parseColor(value) {
+  const parts = String(value).match(/[\d.]+%?/g);
+  if (!/^rgba?\(/.test(String(value)) || !parts || parts.length < 3) return null;
+  const alpha = parts[3] === undefined ? 1 : parts[3].endsWith('%') ? parseFloat(parts[3]) / 100 : parseFloat(parts[3]);
+  return [Number(parts[0]), Number(parts[1]), Number(parts[2]), alpha];
+}
+
+// WCAG contrast ratio between two opaque colours.
+function contrast(a, b) {
+  const luminance = ([r, g, b]) => {
+    const channel = (c) => {
+      const v = c / 255;
+      return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+  };
+  const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (light + 0.05) / (dark + 0.05);
+}
+
+// How long something of the page may lie over the badge before it counts as
+// hiding it: a menu or a dialog passing over the corner does not.
+const COVERED_FOR_MS = 3000;
+
 export class Provenance {
   #badge;
   #notice;
@@ -60,6 +85,7 @@ export class Provenance {
   #host;
   #timer = null;
   #hidden = false;
+  #coveredSince = 0;
 
   // `onHidden(hidden)` is told when the badge becomes unseeable or seeable again.
   constructor(shadow, host, onHidden = () => {}) {
@@ -103,13 +129,51 @@ export class Provenance {
     const style = getComputedStyle(this.#badge);
     if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) < 0.5) return false;
     if (style.clipPath !== 'none' || style.filter !== 'none') return false;
+    // The text must stand out from the badge: a colour made transparent or
+    // the same as the background hides it as well as display: none does.
+    const color = parseColor(style.color);
+    const background = parseColor(style.backgroundColor);
+    if (color && color[3] < 0.5) return false;
+    if (color && background && background[3] >= 0.5 && contrast(color, background) < 2) return false;
     const badge = this.#badge.getBoundingClientRect();
     const view = this.#host.getBoundingClientRect();
     if (!this.#host.isConnected || !view.width || !view.height) return true;
     if (badge.width < 24 || badge.height < 10) return false;
     const inside = Math.min(badge.right, view.right) - Math.max(badge.left, view.left) >= badge.width * 0.9
       && Math.min(badge.bottom, view.bottom) - Math.max(badge.top, view.top) >= badge.height * 0.9;
-    return inside;
+    if (!inside) return false;
+    // Something of the page lying over the badge for a while hides it too.
+    if (this.#covered(badge)) {
+      this.#coveredSince ||= performance.now();
+      if (performance.now() - this.#coveredSince >= COVERED_FOR_MS) return false;
+    } else {
+      this.#coveredSince = 0;
+    }
+    return true;
+  }
+
+  // Whether another element of the page (not another view or window) is the
+  // topmost at most of the badge's points (its centre and corners, inset). Points outside the
+  // viewport tell nothing. Elements with pointer-events: none are not seen
+  // by hit testing, so an overlay can still pass unnoticed that way.
+  #covered(badge) {
+    const root = this.#host.getRootNode();
+    if (typeof root.elementFromPoint !== 'function') return false;
+    const inset = 3;
+    const points = [
+      [(badge.left + badge.right) / 2, (badge.top + badge.bottom) / 2],
+      [badge.left + inset, badge.top + inset], [badge.right - inset, badge.top + inset],
+      [badge.left + inset, badge.bottom - inset], [badge.right - inset, badge.bottom - inset],
+    ].filter(([x, y]) => x >= 0 && y >= 0 && x < innerWidth && y < innerHeight);
+    if (!points.length) return false;
+    const coveredPoints = points.filter(([x, y]) => {
+      const hit = root.elementFromPoint(x, y);
+      if (!hit || hit === this.#host || this.#host.contains(hit)) return false;
+      // Another view or window on top (overlapping windows of a desktop)
+      // shows its own badge: that is not hiding this one.
+      return !hit.closest('inception-view, inception-window');
+    }).length;
+    return coveredPoints * 2 > points.length;
   }
 
   verify() {
