@@ -131,3 +131,21 @@ test('stream counters follow streams through relaying and refusal', async () => 
   await relay.close();
   echo.close();
 });
+
+test('close({graceMs}) refuses new sessions and waits for open ones to finish', async () => {
+  const relay = await startRelay({ log: quiet });
+  const { ws } = await client(relay.url);
+  const started = Date.now();
+  const closing = relay.close({ graceMs: 5000 });
+  // A new session is refused while draining.
+  const refused = await new Promise((resolve) => {
+    const late = new WebSocket(relay.url);
+    late.on('open', () => resolve(false));
+    late.on('error', () => resolve(true));
+  });
+  assert.ok(refused);
+  // The open session finishes on its own; close() resolves without waiting out the grace.
+  setTimeout(() => ws.close(), 300);
+  await closing;
+  assert.ok(Date.now() - started < 4000);
+});
