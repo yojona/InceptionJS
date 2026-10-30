@@ -71,7 +71,7 @@ const u32 = (value) => {
  *   connectsPerMinute    new streams a session may open per minute (default 600)
  *   connectTimeoutMs     default 10000
  *   metrics              serve Prometheus counters at GET /metrics (default false);
- *                        GET /healthz always answers {ok: true}
+ *                        GET /healthz answers {ok: true} (503 while draining)
  *   log                  (level, message) => void; it gets destinations, ports
  *                        and sizes, never content
  *   hooks                { resolve(hostname), connect(options) } replace DNS and
@@ -80,8 +80,8 @@ const u32 = (value) => {
  * Listening on anything but a loopback address requires `secret`: an open relay
  * would let anyone on the internet use the host as a proxy.
  * Resolves to {url, port, stats(), close({graceMs})}. close() ends every session
- * at once; with graceMs it first stops taking new ones and lets open sessions
- * finish for up to that long (a rolling deploy's drain).
+ * at once; with graceMs it first refuses new ones (503, and /healthz fails) and
+ * lets open sessions finish for up to that long (a rolling deploy's drain).
  */
 export async function startRelay(options = {}) {
   const {
@@ -113,10 +113,13 @@ export async function startRelay(options = {}) {
   const count = (table, key) => (table[key] = (table[key] ?? 0) + 1);
   const reasonName = Object.fromEntries(Object.entries(CloseReason).map(([name, code]) => [code, name.toLowerCase()]));
 
+  // Draining (close with graceMs): new sessions are refused and /healthz
+  // fails, so a load balancer moves traffic away while open sessions finish.
+  let draining = false;
   const server = http.createServer((req, res) => {
     const { pathname } = new URL(req.url, 'http://relay');
     if (req.method === 'GET' && pathname === '/healthz') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify({ ok: true }));
+      res.writeHead(draining ? 503 : 200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(draining ? { ok: false, draining: true } : { ok: true }));
       return;
     }
     if (req.method === 'GET' && pathname === '/metrics' && metrics) {
@@ -152,7 +155,6 @@ export async function startRelay(options = {}) {
   }
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
 
-  let draining = false;
   server.on('upgrade', (req, socket, head) => {
     if (draining) {
       socket.end('HTTP/1.1 503 Service Unavailable\r\n\r\n');
@@ -362,12 +364,15 @@ export async function startRelay(options = {}) {
     stats: () => ({ sessions: wss.clients.size, ...stats, refused: { ...stats.refused }, closed: { ...stats.closed } }),
     close: async ({ graceMs = 0 } = {}) => {
       draining = true;
-      const closed = new Promise((resolve) => server.close(() => resolve()));
       if (graceMs > 0 && wss.clients.size) {
         log('info', `draining ${wss.clients.size} sessions for up to ${Math.round(graceMs / 1000)} s`);
-        const deadline = Date.now() + graceMs;
-        while (wss.clients.size && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 250));
+        // Still listening: new sessions get 503 and /healthz fails meanwhile.
+        const ended = Promise.all([...wss.clients].map((client) => new Promise((resolve) => client.once('close', resolve))));
+        let timer;
+        await Promise.race([ended, new Promise((resolve) => (timer = setTimeout(resolve, graceMs)))]);
+        clearTimeout(timer);
       }
+      const closed = new Promise((resolve) => server.close(() => resolve()));
       for (const client of wss.clients) client.terminate();
       await closed;
     },
