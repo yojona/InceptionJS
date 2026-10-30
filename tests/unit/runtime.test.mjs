@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_MAX_MEMORY_MB, isOutOfMemory, lockImports, memoryLimitPages } from '../../host/runtime.js';
+import { DEFAULT_MAX_MEMORY_MB, isOutOfMemory, lockImports, memoryLimitMB, memoryLimitPages } from '../../host/runtime.js';
 
 test('engine memory is bounded: 2 GiB by default, 512 MiB to 4 GiB when set', () => {
   const pages = (megabytes) => (megabytes * 1024 * 1024) / 65536;
@@ -31,8 +31,7 @@ test('a content engine is instantiated without file system or socket imports', (
   assert.equal(imports.a.f(), 1);
 });
 
-test("maxMemoryMB 'auto' follows the device's memory", async () => {
-  const { memoryLimitMB } = await import('../../host/runtime.js');
+test("maxMemoryMB 'auto' follows the device's memory", () => {
   assert.equal(memoryLimitMB('auto', 8), 2048);
   assert.equal(memoryLimitMB('auto', 4), 1024);
   assert.equal(memoryLimitMB('auto', 2), 512);
