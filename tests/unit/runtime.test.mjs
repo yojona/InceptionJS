@@ -55,7 +55,8 @@ test('the engine is fetched and compiled once per URL, however it is asked for',
   await new Promise((resolve) => server.once('listening', resolve));
   const url = `http://127.0.0.1:${server.address().port}/engine/inception-engine.js`;
   const [first, second] = await Promise.all([loadEngine(url), loadEngine(url)]);
-  const third = await loadEngine(url);
+  // The same file written another way.
+  const third = await loadEngine(url.replace('/engine/', '/engine/../engine/'));
   assert.ok(first.module instanceof WebAssembly.Module);
   assert.equal(second.module, first.module);
   assert.equal(third.module, first.module);
