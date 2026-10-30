@@ -108,6 +108,8 @@ async function check(argv) {
     console.log(`${ok ? 'ok  ' : 'FAIL'} ${message}${!ok && fix ? `\n     ${fix}` : ''}`);
     if (!ok) failures++;
   };
+  // A recommendation: shown, but it does not fail the check.
+  const advise = (ok, message, tip) => console.log(`${ok ? 'ok  ' : 'warn'} ${message}${!ok && tip ? `\n     ${tip}` : ''}`);
 
   let response;
   try {
@@ -133,6 +135,19 @@ async function check(argv) {
         report((r.headers.get('content-type') ?? '').includes(type), `  content-type ${r.headers.get('content-type') ?? '(missing)'}`, `Serve it as ${type}.`);
         report(sameOrigin || corp === 'cross-origin', `  Cross-Origin-Resource-Policy ${corp ?? '(missing)'}`, 'A cross-origin engine needs "Cross-Origin-Resource-Policy: cross-origin".');
       }
+    } catch (error) {
+      report(false, `${path}: ${error.message}`);
+    }
+  }
+  // Not required, but they decide how long the first start takes.
+  for (const path of [engineUrl.href.replace(/\.js$/, '.wasm'), engineUrl.href.replace(/\.js$/, '.data')]) {
+    try {
+      const r = await fetch(path, { method: 'HEAD', headers: { 'Accept-Encoding': 'br, gzip' } });
+      if (!r.ok) continue;
+      const encoding = r.headers.get('content-encoding');
+      const caching = r.headers.get('cache-control') ?? '';
+      advise(!!encoding, `  ${path.split('/').pop()} content-encoding ${encoding ?? '(none)'}`, 'Serve it precompressed (Brotli: about 46 MB instead of 150 MB for the engine).');
+      advise(/max-age=[1-9]|immutable/.test(caching), `  ${path.split('/').pop()} cache-control ${caching || '(none)'}`, 'Cache it (a versioned path with "Cache-Control: public, max-age=31536000, immutable"), so returning visitors skip the download.');
     } catch (error) {
       report(false, `${path}: ${error.message}`);
     }
