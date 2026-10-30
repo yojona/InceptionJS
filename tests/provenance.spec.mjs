@@ -90,3 +90,32 @@ test('sensitivepage fires with provenance="off" too', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => window.sensitive)).toEqual(['password']);
   await expect(view(page).locator('.notice')).toBeHidden();
 });
+
+test('a badge made unreadable by its colours, or covered by the page for a while, counts as hidden', async ({ page }) => {
+  const tamper = view(page).locator('.tamper');
+  for (const css of [
+    'inception-view::part(provenance) { color: transparent !important }',
+    'inception-view::part(provenance) { color: rgb(20 20 28) !important; background: rgb(20 20 28) !important }',
+  ]) {
+    const style = await page.addStyleTag({ content: css });
+    await expect(tamper, css).toHaveCount(1, { timeout: 5000 });
+    await style.evaluate((node) => node.remove());
+    await expect(tamper, css).toHaveCount(0, { timeout: 5000 });
+  }
+  // An element of the page over the badge's corner.
+  const cover = await page.evaluate(() => {
+    const badge = document.querySelector('inception-view').shadowRoot.querySelector('.provenance').getBoundingClientRect();
+    const box = document.createElement('div');
+    box.id = 'cover';
+    box.style.cssText = `position: fixed; z-index: 100; background: #fff; left: ${badge.left - 4}px; top: ${badge.top - 4}px; width: ${badge.width + 8}px; height: ${badge.height + 8}px`;
+    document.body.append(box);
+    return true;
+  });
+  expect(cover).toBe(true);
+  // Briefly is fine (a menu passing over it); for a while it is not.
+  await page.waitForTimeout(1500);
+  await expect(tamper).toHaveCount(0);
+  await expect(tamper).toHaveCount(1, { timeout: 6000 });
+  await page.evaluate(() => document.getElementById('cover').remove());
+  await expect(tamper).toHaveCount(0, { timeout: 5000 });
+});
