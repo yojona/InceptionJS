@@ -16,8 +16,10 @@ const HELP = `Usage: inceptionjs <command>
   check <url> [--relay <ws-url>]      Check a deployment's headers, engine and relay
   relay [--port 5001] [--host 127.0.0.1] [--dev] [--dev-ports 5173,3000]
         [--origin https://app.example.com] [--secret-env INCEPTION_RELAY_SECRET]
-        [--metrics]                   Run a relay (GET /healthz; --metrics adds
-                                      Prometheus counters at GET /metrics)
+        [--metrics] [--log text|json] [--drain-seconds 30]
+                                      Run a relay (GET /healthz; --metrics adds
+                                      Prometheus counters at GET /metrics; a stop
+                                      signal drains open sessions first)
 `;
 
 const commands = { init, check, relay };
@@ -176,8 +178,14 @@ async function relay(argv) {
       origin: { type: 'string', multiple: true, default: [] },
       'secret-env': { type: 'string', default: 'INCEPTION_RELAY_SECRET' },
       metrics: { type: 'boolean', default: false },
+      log: { type: 'string', default: 'text' },
+      'drain-seconds': { type: 'string', default: '30' },
     },
   });
+  // --log json: one JSON object per line, for log collectors.
+  const log = values.log === 'json'
+    ? (level, message) => process.stdout.write(`${JSON.stringify({ time: new Date().toISOString(), level, message })}\n`)
+    : undefined;
   const { startRelay } = await import('../dist/server/relay.js');
   const secret = process.env[values['secret-env']] || undefined;
   if (!secret && !values.dev) console.warn('[relay] no secret: anyone who can reach this port can use it. Set INCEPTION_RELAY_SECRET in production.');
@@ -189,8 +197,16 @@ async function relay(argv) {
     origins: values.origin,
     secret,
     metrics: values.metrics,
+    ...(log ? { log } : {}),
   }).catch((error) => fail(`[relay] ${error.message}`));
-  const stop = () => server.close().then(() => process.exit(0));
+  // A stop signal drains: no new sessions, open ones get --drain-seconds to
+  // finish. A second signal stops at once.
+  let stopping = false;
+  const stop = () => {
+    if (stopping) process.exit(0);
+    stopping = true;
+    server.close({ graceMs: Math.max(0, Number(values['drain-seconds']) || 0) * 1000 }).then(() => process.exit(0));
+  };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
 }

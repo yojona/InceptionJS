@@ -79,7 +79,9 @@ const u32 = (value) => {
  *
  * Listening on anything but a loopback address requires `secret`: an open relay
  * would let anyone on the internet use the host as a proxy.
- * Resolves to {url, port, stats(), close()}.
+ * Resolves to {url, port, stats(), close({graceMs})}. close() ends every session
+ * at once; with graceMs it first stops taking new ones and lets open sessions
+ * finish for up to that long (a rolling deploy's drain).
  */
 export async function startRelay(options = {}) {
   const {
@@ -150,7 +152,12 @@ export async function startRelay(options = {}) {
   }
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
 
+  let draining = false;
   server.on('upgrade', (req, socket, head) => {
+    if (draining) {
+      socket.end('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+      return;
+    }
     if (wss.clients.size >= maxConnections) {
       log('warn', `refused connection: ${maxConnections} sessions are open`);
       count(stats.refused, 'connections');
@@ -353,10 +360,16 @@ export async function startRelay(options = {}) {
     url,
     port: actualPort,
     stats: () => ({ sessions: wss.clients.size, ...stats, refused: { ...stats.refused }, closed: { ...stats.closed } }),
-    close: () =>
-      new Promise((resolve) => {
-        for (const client of wss.clients) client.terminate();
-        server.close(() => resolve());
-      }),
+    close: async ({ graceMs = 0 } = {}) => {
+      draining = true;
+      const closed = new Promise((resolve) => server.close(() => resolve()));
+      if (graceMs > 0 && wss.clients.size) {
+        log('info', `draining ${wss.clients.size} sessions for up to ${Math.round(graceMs / 1000)} s`);
+        const deadline = Date.now() + graceMs;
+        while (wss.clients.size && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      for (const client of wss.clients) client.terminate();
+      await closed;
+    },
   };
 }

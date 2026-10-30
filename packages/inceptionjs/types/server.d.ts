@@ -65,7 +65,8 @@ export interface Relay {
     /** Streams closed, by close reason (voluntary, blocked, unreachable, throttled, ...). */
     closed: Record<string, number>;
   };
-  close(): Promise<void>;
+  /** Ends every session; with graceMs, first refuses new sessions and lets open ones finish for up to that long. */
+  close(options?: { graceMs?: number }): Promise<void>;
 }
 
 export declare function startRelay(options?: RelayOptions): Promise<Relay>;
