@@ -8,6 +8,7 @@
 
 import { encodeInitData } from './eme.js';
 import { mediaLog } from './media-log.js';
+import { POLICY_DEFAULTS } from './policy.js';
 
 const STATE_EVENTS = ['loadedmetadata', 'loadeddata', 'canplay', 'canplaythrough', 'playing', 'pause', 'waiting',
   'seeking', 'seeked', 'ended', 'durationchange', 'ratechange', 'volumechange', 'resize', 'error', 'stalled', 'emptied'];
@@ -55,9 +56,6 @@ export async function probeMediaCapabilities() {
   return result;
 }
 
-// policy.maxMediaBytes (host/policy.js) where the host has no policy.
-const DEFAULT_MAX_MEDIA_BYTES = 512 * 1024 * 1024;
-
 export class MediaHost {
   #maxBytes;
   #players = new Map();
@@ -77,7 +75,7 @@ export class MediaHost {
 
   // `audio`: the AudioHost that captures elements' sound for Web Audio.
   // `maxBytes()`: the largest source fetch kept in memory (policy.maxMediaBytes).
-  constructor(layer, send, { soundAllowed = false, eme = null, audio = null, maxBytes = () => DEFAULT_MAX_MEDIA_BYTES } = {}) {
+  constructor(layer, send, { soundAllowed = false, eme = null, audio = null, maxBytes = () => POLICY_DEFAULTS.maxMediaBytes } = {}) {
     this.#maxBytes = maxBytes;
     this.#audio = audio;
     this.#layer = layer;
@@ -214,7 +212,7 @@ export class MediaHost {
       else this.#fail(player);
       return;
     }
-    player.fetch = { id: fetch, url, chunks: [], bytes: 0, mime: '' };
+    player.fetch = { id: fetch, url, chunks: [], bytes: 0, max: this.#maxBytes(), tooLarge: false, mime: '' };
     this.#fetches.set(fetch, player);
   }
 
@@ -241,8 +239,10 @@ export class MediaHost {
       return;
     }
     if (name !== 'media.fetch.finished') return;
-    const { chunks, mime } = player.fetch;
+    const { chunks, mime, tooLarge } = player.fetch;
     this.#dropFetch(player);
+    // Already failed when it went past maxMediaBytes.
+    if (tooLarge) return;
     mediaLog(`video ${player.id} fetch finished`, { bytes: chunks.reduce((n, c) => n + c.byteLength, 0), error: data.error ?? null });
     if (data.error) {
       // The video reports the failure as a browser would for this source; the
@@ -274,19 +274,20 @@ export class MediaHost {
   }
 
   // A source is held in memory until it is complete, so one larger than
-  // maxMediaBytes fails as an unusable file does instead of filling it; its
-  // remaining bytes are dropped as they come.
+  // maxMediaBytes fails as an unusable file does instead of filling it; the
+  // rest of its bytes are dropped as they come, until the fetch finishes.
   fetchChunk({ id, bytes }) {
-    const player = this.#fetches.get(id);
-    if (!player) return;
-    const fetch = player.fetch;
+    const fetch = this.#fetches.get(id)?.fetch;
+    if (!fetch || fetch.tooLarge) return;
     fetch.bytes += bytes.byteLength;
-    if (fetch.bytes <= this.#maxBytes()) {
+    if (fetch.bytes <= fetch.max) {
       fetch.chunks.push(bytes);
       return;
     }
-    mediaLog(`video ${player.id} source over ${this.#maxBytes()} bytes, dropped`);
-    this.#dropFetch(player);
+    const player = this.#fetches.get(id);
+    mediaLog(`video ${player.id} source over ${fetch.max} bytes, dropped`);
+    fetch.tooLarge = true;
+    fetch.chunks = [];
     this.#fail(player);
   }
 
