@@ -67,6 +67,17 @@ function contrast(a, b) {
   return (light + 0.05) / (dark + 0.05);
 }
 
+// Whether an element over the badge hides it: mostly opaque, with an opaque
+// background, an image, or content that paints its own pixels.
+function hides(element) {
+  const style = getComputedStyle(element);
+  if (Number(style.opacity) < 0.5 || style.visibility !== 'visible') return false;
+  if (/^(img|video|canvas|iframe|svg|object|embed)$/.test(element.localName)) return true;
+  if (style.backgroundImage !== 'none') return true;
+  const background = parseColor(style.backgroundColor);
+  return !!background && background[3] >= 0.9;
+}
+
 // How long something of the page may lie over the badge before it counts as
 // hiding it: a menu or a dialog passing over the corner does not.
 const COVERED_FOR_MS = 3000;
@@ -130,8 +141,9 @@ export class Provenance {
     if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) < 0.5) return false;
     if (style.clipPath !== 'none' || style.filter !== 'none') return false;
     // The text must stand out from the badge: a colour made transparent or
-    // the same as the background hides it as well as display: none does.
-    const color = parseColor(style.color);
+    // the same as a mostly opaque background (alpha 0.5 or more) hides it as
+    // well as display: none does. The fill colour, when set, is what paints.
+    const color = parseColor(style.webkitTextFillColor || style.color);
     const background = parseColor(style.backgroundColor);
     if (color && color[3] < 0.5) return false;
     if (color && background && background[3] >= 0.5 && contrast(color, background) < 2) return false;
@@ -152,26 +164,33 @@ export class Provenance {
     return true;
   }
 
-  // Whether another element of the page (not another view or window) is the
-  // topmost at most of the badge's points (its centre and corners, inset). Points outside the
-  // viewport tell nothing. Elements with pointer-events: none are not seen
-  // by hit testing, so an overlay can still pass unnoticed that way.
+  // Whether something of the page hides most of the badge's points (its
+  // centre and inset corners): an opaque element above the view there. Not
+  // counted: translucent elements (a loading scrim), a modal dialog (it makes
+  // the rest of the page, the view included, inert until it closes), and
+  // another view or window that shows its own badge (overlapping windows of a
+  // desktop). Points outside the viewport tell nothing, and elements with
+  // pointer-events: none are not seen by hit testing.
   #covered(badge) {
     const root = this.#host.getRootNode();
-    if (typeof root.elementFromPoint !== 'function') return false;
+    if (typeof root.elementsFromPoint !== 'function') return false;
     const inset = 3;
+    const { clientWidth, clientHeight } = document.documentElement;
     const points = [
       [(badge.left + badge.right) / 2, (badge.top + badge.bottom) / 2],
       [badge.left + inset, badge.top + inset], [badge.right - inset, badge.top + inset],
       [badge.left + inset, badge.bottom - inset], [badge.right - inset, badge.bottom - inset],
-    ].filter(([x, y]) => x >= 0 && y >= 0 && x < innerWidth && y < innerHeight);
+    ].filter(([x, y]) => x >= 0 && y >= 0 && x < clientWidth && y < clientHeight);
     if (!points.length) return false;
     const coveredPoints = points.filter(([x, y]) => {
-      const hit = root.elementFromPoint(x, y);
-      if (!hit || hit === this.#host || this.#host.contains(hit)) return false;
-      // Another view or window on top (overlapping windows of a desktop)
-      // shows its own badge: that is not hiding this one.
-      return !hit.closest('inception-view, inception-window');
+      for (const element of root.elementsFromPoint(x, y)) {
+        if (element === this.#host || this.#host.contains(element)) return false;
+        if (element.closest(':modal')) return false;
+        const other = element.closest('inception-view, inception-window');
+        if (other && other.getAttribute('provenance') !== 'off') return false;
+        if (hides(element)) return true;
+      }
+      return false;
     }).length;
     return coveredPoints * 2 > points.length;
   }
