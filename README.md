@@ -181,8 +181,9 @@ browser on a server.
   redirects.
 - **Phones and tablets are not supported yet.** The engine reserves up to 2 GB of
   memory by default, and Android often lets a page reserve much less, so on a real
-  phone it may not start. Lowering `maxMemoryMB` helps; mobile support is planned,
-  though not the top priority.
+  phone it may not start. `maxMemoryMB: 'auto'` sizes the limit from the device's
+  memory (512 MiB on a 2 GB phone), which helps; mobile support is planned, though not
+  the top priority.
 - **Planned, not built:** a Chrome DevTools Protocol adapter, snapshot enrichers and
   the `agent` and `vision` snapshot modes (only `accessibility` ships), and localized UI.
 
