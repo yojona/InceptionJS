@@ -208,7 +208,7 @@ browser test suite or verified on real sites; **Partial** has a limit noted.
 
 | API | Status | Notes |
 | --- | --- | --- |
-| Video / audio elements | Works | Decoded by the host browser |
+| Video / audio elements | Works | Decoded by the host browser. A plain `src` plays once downloaded; live and large MP3/AAC play as they arrive |
 | Media Source Extensions | Works | Adaptive streaming players run |
 | Encrypted Media (EME) | Partial | Host browser's CDM; ClearKey tested, Netflix does not play |
 | Web Audio | Works | Silent when fed from a media element in Safari hosts |

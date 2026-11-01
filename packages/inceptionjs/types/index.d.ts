@@ -59,7 +59,7 @@ export interface InceptionPolicy {
   gesturelessDownloads?: 'block' | 'allow';
   /** Largest download kept in memory before it is cancelled (default 256 MiB). */
   maxDownloadBytes?: number;
-  /** Largest <video>/<audio> source kept in memory (default 512 MiB); a bigger one fails as an unusable file does. Streams (MSE, as YouTube uses) are not affected. */
+  /** Largest <video>/<audio> source kept in memory (default 512 MiB); a bigger one fails as an unusable file does. MP3 and AAC sources of unknown or larger size play as they download instead, and this bounds what waits to be played. Streams (MSE, as YouTube uses) are not affected. */
   maxMediaBytes?: number;
   /** 'block' (default): windows pages open are closed and reported as "popupblocked". Otherwise those after a user gesture are shown. */
   newTabs?: 'block' | 'foreground' | 'background';
