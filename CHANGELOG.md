@@ -17,6 +17,8 @@ break the API).
   `draining` while open sessions finish. The CLI has `--log json` and
   `--drain-seconds` (#34).
 - Tests and README notes for WebAssembly in pages, which runs through wasm2js (#35).
+- MP3 and AAC sources play as they download when their size is unknown (a live
+  stream) or larger than `policy.maxMediaBytes` (#56).
 
 ### Changed
 
