@@ -7,6 +7,26 @@ break the API).
 
 ## Unreleased
 
+### Added
+
+- `maxMemoryMB: 'auto'` sizes engine memory from the device's memory (#29).
+- `Inception.preload()` starts the engine download before any view exists. The Vite
+  plugin serves precompressed `.br`/`.gz` engine files, and `inceptionjs check` reports
+  compression and caching (#22).
+- Relay: `close({ graceMs })` drains. New sessions get 503 and `/healthz` reports
+  `draining` while open sessions finish. The CLI has `--log json` and
+  `--drain-seconds` (#34).
+- Tests and README notes for WebAssembly in pages, which runs through wasm2js (#35).
+
+### Changed
+
+- The provenance badge counts as hidden when the page makes it unreadable (low contrast
+  or transparent text) or covers it with an opaque element for 3 seconds or more (#25).
+
+### Security
+
+- Media source fetches are capped by `policy.maxMediaBytes`, 512 MiB by default (#10).
+
 ## 0.1.3 (2026-10-23)
 
 ### Security
