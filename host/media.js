@@ -56,6 +56,28 @@ export async function probeMediaCapabilities() {
   return result;
 }
 
+// Containers a MediaSource takes as they are, by the types servers send them
+// as: internet radio and most podcasts.
+const STREAMED = {
+  'audio/mpeg': 'audio/mpeg', 'audio/mp3': 'audio/mpeg', 'audio/mpeg3': 'audio/mpeg', 'audio/x-mpeg': 'audio/mpeg',
+  'audio/aac': 'audio/aac', 'audio/aacp': 'audio/aac', 'audio/x-aac': 'audio/aac',
+};
+
+function streamedType(mime) {
+  const type = STREAMED[mime.split(';')[0].trim().toLowerCase()];
+  return type && globalThis.MediaSource?.isTypeSupported(type) ? type : null;
+}
+
+function concat(chunks) {
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
 export class MediaHost {
   #maxBytes;
   #players = new Map();
@@ -201,23 +223,27 @@ export class MediaHost {
 
   // A plain src. The engine fetches http(s) sources itself (the host page,
   // cross-origin isolated, could not) and streams them here; the video plays
-  // them once complete. Only inline sources (data: and blob:) load directly:
-  // anything else the host fetched itself would leave through the person's own
-  // connection, past the relay's rules about where a page may go. Such a source
-  // fails as an unsupported one does.
+  // them once complete, or as they arrive (see #stream). Only inline sources
+  // (data: and blob:) load directly: anything else the host fetched itself
+  // would leave through the person's own connection, past the relay's rules
+  // about where a page may go. Such a source fails as an unsupported one does.
   #load(player, { url, fetch }) {
     this.#dropFetch(player);
+    player.stream = null;
     if (!fetch) {
       if (/^(data|blob):/i.test(url)) player.video.src = url;
       else this.#fail(player);
       return;
     }
-    player.fetch = { id: fetch, url, chunks: [], bytes: 0, max: this.#maxBytes(), tooLarge: false, mime: '' };
+    player.fetch = { id: fetch, url, chunks: [], bytes: 0, max: this.#maxBytes(), failed: false, mime: '' };
     this.#fetches.set(fetch, player);
   }
 
   // An empty source: the element fires a media error, as for an unusable file.
   #fail(player) {
+    player.stream = null;
+    // The rest of a fetch still under way is dropped as it comes.
+    if (player.fetch) player.fetch.failed = true;
     if (player.objectUrl) URL.revokeObjectURL(player.objectUrl);
     player.objectUrl = URL.createObjectURL(new Blob([], { type: 'application/octet-stream' }));
     player.video.src = player.objectUrl;
@@ -236,13 +262,25 @@ export class MediaHost {
     if (name === 'media.fetch.started') {
       player.fetch.mime = data.mime || '';
       mediaLog(`video ${player.id} fetch started`, { mime: data.mime, size: data.size });
+      // A file of known size that fits plays from one Blob, with its exact
+      // duration and every position seekable. A live stream (no size) or one
+      // too large to hold plays as it arrives, when its format allows.
+      const type = streamedType(player.fetch.mime);
+      if (type && !(data.size > 0 && data.size <= player.fetch.max)) this.#stream(player, type);
       return;
     }
     if (name !== 'media.fetch.finished') return;
-    const { chunks, mime, tooLarge } = player.fetch;
+    const { chunks, mime, failed } = player.fetch;
     this.#dropFetch(player);
-    // Already failed when it went past maxMediaBytes.
-    if (tooLarge) return;
+    if (player.stream) {
+      mediaLog(`video ${player.id} stream finished`, { error: data.error ?? null });
+      player.stream.finished = true;
+      player.stream.error = data.error ?? null;
+      this.#feed(player);
+      return;
+    }
+    // Already failed (past maxMediaBytes, or a stream that broke).
+    if (failed) return;
     mediaLog(`video ${player.id} fetch finished`, { bytes: chunks.reduce((n, c) => n + c.byteLength, 0), error: data.error ?? null });
     if (data.error) {
       // The video reports the failure as a browser would for this source; the
@@ -275,20 +313,86 @@ export class MediaHost {
 
   // A source is held in memory until it is complete, so one larger than
   // maxMediaBytes fails as an unusable file does instead of filling it; the
-  // rest of its bytes are dropped as they come, until the fetch finishes.
+  // rest of its bytes are dropped as they come, until the fetch finishes. A
+  // streamed source is bounded the same way by what waits to be appended.
   fetchChunk({ id, bytes }) {
-    const fetch = this.#fetches.get(id)?.fetch;
-    if (!fetch || fetch.tooLarge) return;
-    fetch.bytes += bytes.byteLength;
-    if (fetch.bytes <= fetch.max) {
-      fetch.chunks.push(bytes);
-      return;
-    }
     const player = this.#fetches.get(id);
+    const fetch = player?.fetch;
+    if (!fetch || fetch.failed) return;
+    const { stream } = player;
+    if (stream) {
+      stream.queue.push(bytes);
+      stream.queued += bytes.byteLength;
+      if (stream.queued <= fetch.max) return this.#feed(player);
+    } else {
+      fetch.bytes += bytes.byteLength;
+      if (fetch.bytes <= fetch.max) {
+        fetch.chunks.push(bytes);
+        return;
+      }
+    }
     mediaLog(`video ${player.id} source over ${fetch.max} bytes, dropped`);
-    fetch.tooLarge = true;
     fetch.chunks = [];
     this.#fail(player);
+  }
+
+  // Plays a source as it downloads: its bytes go to a MediaSource as they
+  // arrive. Only for bytestreams a SourceBuffer takes without declared codecs
+  // (MP3, and AAC in ADTS). The browser frees what has played when the buffer
+  // fills, so a live stream plays on indefinitely.
+  #stream(player, type) {
+    const source = new MediaSource();
+    const stream = { source, native: null, queue: [], queued: 0, finished: false, error: null, retry: null };
+    player.stream = stream;
+    if (player.objectUrl) URL.revokeObjectURL(player.objectUrl);
+    player.objectUrl = URL.createObjectURL(source);
+    player.video.src = player.objectUrl;
+    source.addEventListener('sourceopen', () => {
+      if (player.stream !== stream) return;
+      try {
+        stream.native = source.addSourceBuffer(type);
+      } catch (error) {
+        console.warn(`[media] streaming ${type}:`, error);
+        return this.#fail(player);
+      }
+      stream.native.addEventListener('updateend', () => this.#feed(player));
+      mediaLog(`video ${player.id} streaming`, { type });
+      this.#feed(player);
+      if (player.wantsPlay) this.#play(player);
+    }, { once: true });
+  }
+
+  // Appends what has arrived, in one piece, and ends the stream after its last
+  // bytes. A buffer full of what has not played yet is tried again later.
+  #feed(player) {
+    const stream = player.stream;
+    const native = stream?.native;
+    if (!native || native.updating || stream.source.readyState !== 'open') return;
+    if (!stream.queue.length) {
+      if (stream.finished) {
+        try {
+          stream.source.endOfStream(stream.error ? 'network' : undefined);
+        } catch {}
+      }
+      return;
+    }
+    const bytes = stream.queue.length === 1 ? stream.queue[0] : concat(stream.queue);
+    try {
+      native.appendBuffer(bytes);
+    } catch (error) {
+      if (error.name !== 'QuotaExceededError') {
+        console.warn('[media] streaming:', error);
+        return this.#fail(player);
+      }
+      stream.queue = [bytes];
+      stream.retry ??= setTimeout(() => {
+        stream.retry = null;
+        this.#feed(player);
+      }, 1000);
+      return;
+    }
+    stream.queue = [];
+    stream.queued = 0;
   }
 
   append(id, sb, seq, bytes) {
@@ -340,6 +444,7 @@ export class MediaHost {
   }
 
   #attachSource(player) {
+    player.stream = null;
     const source = new MediaSource();
     player.source = source;
     for (const type of ['sourceopen', 'sourceended', 'sourceclose']) source.addEventListener(type, () => mediaLog(`source of video ${player.id} ${type}`));
