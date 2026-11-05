@@ -1,6 +1,6 @@
 {
   "name": "@inceptionjs/react",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "React component for InceptionJS: a web browser engine that runs inside your app.",
   "keywords": [
     "react",
