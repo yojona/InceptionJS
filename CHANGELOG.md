@@ -7,27 +7,51 @@ break the API).
 
 ## Unreleased
 
+## 0.1.4 (2026-11-05)
+
+The engine files are the same as 0.1.3's. `@inceptionjs/react` is 0.1.1.
+
+### Security
+
+- A window created over the protocol can no longer replace or lift `policy.hosts`.
+  Its own host rules only narrow the view's, and they are kept when the engine
+  budget is spent (#11, #12).
+- Media source fetches are capped by `policy.maxMediaBytes`, 512 MiB by default (#10).
+
 ### Added
 
 - `maxMemoryMB: 'auto'` sizes engine memory from the device's memory (#29).
 - `Inception.preload()` starts the engine download before any view exists. The Vite
   plugin serves precompressed `.br`/`.gz` engine files, and `inceptionjs check` reports
   compression and caching (#22).
+- MP3 and AAC sources play as they download when their size is unknown (a live
+  stream) or larger than `policy.maxMediaBytes` (#56).
+- Relay: `GET /healthz`, an opt-in Prometheus `/metrics` and `stats()` (#34).
 - Relay: `close({ graceMs })` drains. New sessions get 503 and `/healthz` reports
   `draining` while open sessions finish. The CLI has `--log json` and
   `--drain-seconds` (#34).
+- `@inceptionjs/react`: a prop for every attribute and event of the view, and
+  `agent`, `securityState` and `close()` on the handle (#19).
+- Typings for `edit()`, `pauseDownload()`, `resumeDownload()` and the rest of the
+  runtime API that was missing (#20).
 - Tests and README notes for WebAssembly in pages, which runs through wasm2js (#35).
-- MP3 and AAC sources play as they download when their size is unknown (a live
-  stream) or larger than `policy.maxMediaBytes` (#56).
 
 ### Changed
 
 - The provenance badge counts as hidden when the page makes it unreadable (low contrast
   or transparent text) or covers it with an opaque element for 3 seconds or more (#25).
+- The Vite plugin ships only the binaryen files the host loads (#18).
 
-### Security
+### Fixed
 
-- Media source fetches are capped by `policy.maxMediaBytes`, 512 MiB by default (#10).
+- A bridge version mismatch fails the view instead of hanging `view.ready` (#16).
+- A view whose engine fails to start releases its profile and attach-host locks
+  (#14).
+- An `<inception-window>` changed several times in one task attaches once (#15).
+- Protocol requests fail instead of hanging when the engine crashes, the window
+  closes or the attach host goes away (#13).
+- `@inceptionjs/react` no longer undoes an earlier `Inception.configure()` with
+  undefined `policy` or `modules` (#19).
 
 ## 0.1.3 (2026-10-23)
 
