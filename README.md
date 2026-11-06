@@ -184,6 +184,11 @@ browser on a server.
   phone it may not start. `maxMemoryMB: 'auto'` sizes the limit from the device's
   memory (512 MiB on a 2 GB phone), which helps; mobile support is planned, though not
   the top priority.
+- **Touch is translated, not passed through.** A tap clicks, one finger scrolls (with
+  momentum), two fingers pinch-zoom the page and a long press opens the context menu.
+  Pages that listen for `touchstart` or pointer events of type `touch` (maps, games)
+  see mouse and wheel events instead. Tapping a text field does not open the
+  on-screen keyboard yet.
 - **Planned, not built:** a Chrome DevTools Protocol adapter, snapshot enrichers and
   the `agent` and `vision` snapshot modes (only `accessibility` ships), and localized UI.
 
