@@ -23,9 +23,10 @@ function belongsToHost(event) {
 // accents, IME composition, the emoji picker, dictation) only works on a real
 // text field. Plain keys are forwarded as key events and kept out of it;
 // composed text arrives through composition and input events. `clipboard`:
-// whether the page may receive the host's clipboard on paste.
+// whether the page may receive the host's clipboard on paste. `zoom()`: the
+// page's current zoom factor, which a pinch starts from.
 // Returns a function that removes every listener it added.
-export function attachInput(element, canvas, textInput, send, { clipboard = true } = {}) {
+export function attachInput(element, canvas, textInput, send, { clipboard = true, zoom = () => 1 } = {}) {
   const controller = new AbortController();
   const { signal } = controller;
   const position = (event) => {
@@ -39,6 +40,7 @@ export function attachInput(element, canvas, textInput, send, { clipboard = true
   let pressedButton = null;
   canvas.addEventListener('mousedown', (event) => {
     event.preventDefault();
+    textInput.inputMode = '';
     focusInput();
     pressedButton = event.button;
     send('mouse', { type: 'down', ...position(event), button: event.button, clickCount: event.detail || 1, modifiers: modifiersOf(event) });
@@ -61,6 +63,8 @@ export function attachInput(element, canvas, textInput, send, { clipboard = true
     event.preventDefault();
     send('wheel', { ...position(event), deltaX: event.deltaX, deltaY: event.deltaY, deltaMode: event.deltaMode, modifiers: modifiersOf(event) });
   }, { passive: false, signal });
+
+  attachTouch(canvas, textInput, send, { position, focusInput, zoom, signal });
 
   // While composing, keys belong to the input method; a dead key starts a
   // composition of its own.
@@ -122,6 +126,141 @@ export function attachInput(element, canvas, textInput, send, { clipboard = true
     send('focus', { focused: false });
   }, { signal });
   return () => controller.abort();
+}
+
+// How far a finger may move and still tap (CSS pixels), how long it holds for
+// a context menu, and how close in time and place two taps make a double tap.
+const TAP_SLOP = 10;
+const LONG_PRESS_MS = 500;
+const DOUBLE_TAP_MS = 300;
+const DOUBLE_TAP_SLOP = 25;
+// Momentum after a flick: the speed (px/ms) kept per 16 ms frame, and the
+// speed below which it stops.
+const FRICTION = 0.95;
+const MIN_SPEED = 0.02;
+
+// Touch and pen input, until the engine takes touch events of its own: a tap
+// clicks, one finger scrolls (with momentum), two fingers pinch-zoom the page
+// and a long press opens the context menu. Canceling pointerdown keeps the
+// browser from also sending the mouse events it makes up after a touch, and
+// touch-action keeps it from scrolling or zooming the host page instead.
+// A tap focuses the view without the on-screen keyboard (inputmode none);
+// the keyboard needs to know that the page focused a text field.
+function attachTouch(canvas, textInput, send, { position, focusInput, zoom, signal }) {
+  canvas.style.touchAction = 'none';
+  const points = new Map();
+  let gesture = null;
+  let lastTap = null;
+  let momentum = 0;
+
+  const stopMomentum = () => {
+    cancelAnimationFrame(momentum);
+    momentum = 0;
+  };
+  const click = (at, button, clickCount) => {
+    send('mouse', { type: 'move', ...at, button: 0, pressed: false, modifiers: 0 });
+    send('mouse', { type: 'down', ...at, button, clickCount, modifiers: 0 });
+    send('mouse', { type: 'up', ...at, button, clickCount, modifiers: 0 });
+  };
+  const scroll = (at, dx, dy) => send('wheel', { ...at, deltaX: dx, deltaY: dy, deltaMode: 0, modifiers: 0 });
+  const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const pair = () => [...points.values()].slice(0, 2);
+  const glide = (at, vx, vy) => {
+    let last = performance.now();
+    const step = (now) => {
+      const dt = Math.min(now - last, 50);
+      last = now;
+      scroll(at, vx * dt, vy * dt);
+      const keep = FRICTION ** (dt / 16);
+      vx *= keep;
+      vy *= keep;
+      momentum = Math.hypot(vx, vy) < MIN_SPEED ? 0 : requestAnimationFrame(step);
+    };
+    momentum = requestAnimationFrame(step);
+  };
+  const endPinch = () => {
+    canvas.style.transform = '';
+    canvas.style.transformOrigin = '';
+    const factor = Math.min(5, Math.max(0.25, gesture.zoom * gesture.scale));
+    if (Math.abs(gesture.scale - 1) > 0.02) send('zoom', { factor });
+  };
+
+  canvas.addEventListener('pointerdown', (event) => {
+    if (event.pointerType === 'mouse') return;
+    event.preventDefault();
+    stopMomentum();
+    canvas.setPointerCapture?.(event.pointerId);
+    const at = position(event);
+    points.set(event.pointerId, at);
+    textInput.inputMode = 'none';
+    focusInput();
+    if (points.size === 1) {
+      gesture = { kind: 'press', start: at, last: at, samples: [{ ...at, t: event.timeStamp }] };
+      gesture.timer = setTimeout(() => {
+        if (gesture?.kind !== 'press') return;
+        gesture.kind = 'held';
+        click(gesture.start, 2, 1);
+      }, LONG_PRESS_MS);
+    } else if (points.size === 2) {
+      clearTimeout(gesture?.timer);
+      const [a, b] = pair();
+      gesture = { kind: 'pinch', distance: distance(a, b) || 1, zoom: zoom(), scale: 1 };
+      canvas.style.transformOrigin = `${(a.x + b.x) / 2}px ${(a.y + b.y) / 2}px`;
+    }
+  }, { signal });
+
+  canvas.addEventListener('pointermove', (event) => {
+    if (!points.has(event.pointerId) || !gesture) return;
+    const at = position(event);
+    points.set(event.pointerId, at);
+    if (gesture.kind === 'pinch') {
+      const [a, b] = pair();
+      gesture.scale = distance(a, b) / gesture.distance;
+      canvas.style.transform = `scale(${gesture.scale})`;
+      return;
+    }
+    if (gesture.kind === 'press' && distance(at, gesture.start) > TAP_SLOP) {
+      clearTimeout(gesture.timer);
+      gesture.kind = 'pan';
+    }
+    if (gesture.kind !== 'pan') return;
+    scroll(at, gesture.last.x - at.x, gesture.last.y - at.y);
+    gesture.last = at;
+    gesture.samples.push({ ...at, t: event.timeStamp });
+    while (gesture.samples.length > 2 && event.timeStamp - gesture.samples[0].t > 100) gesture.samples.shift();
+  }, { signal });
+
+  const release = (event) => {
+    if (!points.delete(event.pointerId) || !gesture) return;
+    if (gesture.kind === 'pinch') {
+      // The other finger stays down: nothing until it lifts too.
+      endPinch();
+      gesture = { kind: 'done' };
+      return;
+    }
+    if (points.size) return;
+    clearTimeout(gesture.timer);
+    const { kind, start, samples } = gesture;
+    gesture = null;
+    if (event.type === 'pointercancel') return;
+    if (kind === 'press') {
+      const double = lastTap && event.timeStamp - lastTap.t < DOUBLE_TAP_MS && distance(start, lastTap) < DOUBLE_TAP_SLOP;
+      const clickCount = double ? lastTap.count + 1 : 1;
+      lastTap = { ...start, t: event.timeStamp, count: clickCount };
+      click(start, 0, clickCount);
+    } else if (kind === 'pan' && samples.length > 1) {
+      const first = samples[0];
+      const last = samples[samples.length - 1];
+      const dt = last.t - first.t;
+      if (dt > 0 && event.timeStamp - last.t < 100) glide(last, (first.x - last.x) / dt, (first.y - last.y) / dt);
+    }
+  };
+  canvas.addEventListener('pointerup', release, { signal });
+  canvas.addEventListener('pointercancel', release, { signal });
+  signal.addEventListener('abort', () => {
+    stopMomentum();
+    clearTimeout(gesture?.timer);
+  });
 }
 
 // The engine copied or cut: mirror it to the system clipboard. Browsers allow
