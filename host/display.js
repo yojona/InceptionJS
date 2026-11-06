@@ -60,7 +60,7 @@ import { PcmPlayer, PcmTap } from './pcm.js';
 
 export const DISPLAY_INPUT_COMMANDS = new Set(['mouse', 'wheel', 'key', 'ime.set', 'ime.commit', 'ime.cancel', 'focus', 'edit', 'clipboard.set', 'select.choose', 'file.chosen']);
 // Events a display needs to draw its part.
-export const DISPLAY_EVENTS = new Set(['cursor', 'select.show', 'select.update', 'select.hide', 'control', 'file.choose', 'clipboard.write', 'fullscreen']);
+export const DISPLAY_EVENTS = new Set(['cursor', 'select.show', 'select.update', 'select.hide', 'control', 'file.choose', 'clipboard.write', 'fullscreen', 'zoom']);
 
 // What a display's videos and EME may send back to the engine.
 const MEDIA_COMMANDS = new Set(['media.state', 'media.bufferDone', 'media.keysUsable', 'media.encrypted']);
@@ -154,6 +154,7 @@ export class Display {
   #selectMenu;
   #resizeObserver = null;
   #detachInput = null;
+  #zoom = 1;
 
   constructor({ element, shadow, canvas, textInput, send }) {
     this.#element = element;
@@ -173,7 +174,7 @@ export class Display {
 
   // `input`: the sender input goes through (the agent's watch wraps it).
   start({ input = this.#send, clipboard = true } = {}) {
-    this.#detachInput = attachInput(this.#element, this.#canvas, this.#textInput, input, { clipboard });
+    this.#detachInput = attachInput(this.#element, this.#canvas, this.#textInput, input, { clipboard, zoom: () => this.#zoom });
     this.#resizeObserver = new ResizeObserver(() => this.#send('resize', { ...this.cssSize(), deviceScaleFactor: devicePixelRatio }));
     this.#resizeObserver.observe(this.#element);
   }
@@ -188,6 +189,7 @@ export class Display {
   // Engine events for this window that the display draws.
   handleEvent(name, data) {
     if (name === 'cursor') this.#canvas.style.cursor = data.cursor;
+    if (name === 'zoom') this.#zoom = data.factor;
     if (name === 'select.show') this.#selectMenu.show(this.#element, data);
     if (name === 'select.update') this.#selectMenu.update(data);
     if (name === 'select.hide') this.#selectMenu.hide(data.id);
@@ -392,7 +394,8 @@ export function createDisplay(canvas, port, { clipboard = true, element = canvas
   if (!element.hasAttribute('tabindex')) element.tabIndex = 0;
   const send = (command, args = {}) => port.postMessage({ type: 'input', command, args });
   const selectMenu = new SelectMenu(menuRoot ?? canvas.parentElement ?? document.body, send);
-  const detachInput = attachInput(element, canvas, textInput, send, { clipboard });
+  let zoom = 1;
+  const detachInput = attachInput(element, canvas, textInput, send, { clipboard, zoom: () => zoom });
 
   // Videos play in a box under the canvas, which the engine leaves
   // transparent where a video is.
@@ -496,6 +499,7 @@ export function createDisplay(canvas, port, { clipboard = true, element = canvas
       if (name === 'file.choose') chooseFiles(dialogTarget, chooser, { multiple: !!data.multiple, accept: Array.isArray(data.accept) ? data.accept.map(String).slice(0, 64) : [], directory: !!data.directory });
       if (name === 'clipboard.write' && isObject(data.items) && mayWriteClipboard()) writeClipboard(Object.fromEntries(Object.entries(data.items).filter(([, value]) => typeof value === 'string')));
       if (name === 'fullscreen') setFullscreen(!!data.active);
+      if (name === 'zoom' && data.factor > 0) zoom = Number(data.factor);
     } else if (message.type === 'ask' && Number.isInteger(message.id) && isObject(message.question)) {
       const { question: kind, message: text, defaultValue } = message.question;
       const question = { question: String(kind ?? '').slice(0, 32), message: String(text ?? '').slice(0, MAX_ASK_CHARS), ...(defaultValue === undefined ? {} : { defaultValue: String(defaultValue).slice(0, MAX_ASK_CHARS) }) };

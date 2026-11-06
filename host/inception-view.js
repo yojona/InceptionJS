@@ -102,7 +102,7 @@ const AGENT_EVENTS = ['control', 'agent.action', 'agent.blocked'];
 const WINDOW_EVENTS = ['windows.created', 'windows.closed', 'windows.updated'];
 const WINDOW_DOM_EVENTS = { 'windows.created': 'windowcreated', 'windows.closed': 'windowclosed', 'windows.updated': 'windowupdated' };
 // Engine events a window's display draws.
-const DISPLAY_EVENT_NAMES = new Set(['cursor', 'select.show', 'select.update', 'select.hide']);
+const DISPLAY_EVENT_NAMES = new Set(['cursor', 'select.show', 'select.update', 'select.hide', 'zoom']);
 // Numbers for content engines and history requests, unique in the document
 // (several views may share one profile service).
 let lastEngineNumber = 0;
