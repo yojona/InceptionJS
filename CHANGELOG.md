@@ -7,6 +7,14 @@ break the API).
 
 ## Unreleased
 
+### Added
+
+- Touch and pen input: a tap clicks, two quick taps double-click, one finger scrolls
+  with momentum, two fingers pinch-zoom and a long press opens the context menu. The
+  host page does not scroll or zoom under the view. Tapping a text field does not
+  open the on-screen keyboard yet, and pages see mouse and wheel events, not touch
+  events (#28).
+
 ## 0.1.4 (2026-11-05)
 
 The engine files are the same as 0.1.3's. `@inceptionjs/react` is 0.1.1.
