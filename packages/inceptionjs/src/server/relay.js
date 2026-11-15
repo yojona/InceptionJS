@@ -10,6 +10,7 @@
 //   0x04 CLOSE    reason (u8)
 
 import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
 import { lookup } from 'node:dns/promises';
 import { WebSocketServer } from 'ws';
@@ -70,6 +71,8 @@ const u32 = (value) => {
  *   maxBytes             bytes a session may move in both directions (default 4 GiB)
  *   connectsPerMinute    new streams a session may open per minute (default 600)
  *   connectTimeoutMs     default 10000
+ *   tls                  { cert, key } (PEM) to serve wss:// and https:// itself,
+ *                        without a proxy in front
  *   metrics              serve Prometheus counters at GET /metrics (default false);
  *                        GET /healthz answers {ok: true} (503 while draining)
  *   log                  (level, message) => void; it gets destinations, ports
@@ -97,6 +100,7 @@ export async function startRelay(options = {}) {
     connectsPerMinute = 600,
     connectTimeoutMs = 10_000,
     metrics = false,
+    tls,
     log = (level, message) => console[level === 'warn' ? 'warn' : 'log'](`[relay] ${message}`),
     hooks = {},
   } = options;
@@ -116,7 +120,7 @@ export async function startRelay(options = {}) {
   // Draining (close with graceMs): new sessions are refused and /healthz
   // fails, so a load balancer moves traffic away while open sessions finish.
   let draining = false;
-  const server = http.createServer((req, res) => {
+  const handle = (req, res) => {
     const { pathname } = new URL(req.url, 'http://relay');
     if (req.method === 'GET' && pathname === '/healthz') {
       res.writeHead(draining ? 503 : 200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(draining ? { ok: false, draining: true } : { ok: true }));
@@ -127,7 +131,8 @@ export async function startRelay(options = {}) {
       return;
     }
     res.writeHead(404).end();
-  });
+  };
+  const server = tls ? https.createServer({ cert: tls.cert, key: tls.key }, handle) : http.createServer(handle);
 
   function metricsText() {
     const lines = [
@@ -356,7 +361,7 @@ export async function startRelay(options = {}) {
     server.listen(port, host, resolve);
   });
   const actualPort = server.address().port;
-  const url = `ws://${host}:${actualPort}/`;
+  const url = `${tls ? 'wss' : 'ws'}://${host}:${actualPort}/`;
   log('info', `listening on ${url}${secret ? ' (tokens required)' : ''}${dev ? ` (dev: loopback to ports ${[...policy.devPorts].join(', ') || 'none'})` : ''}`);
   return {
     url,
