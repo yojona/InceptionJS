@@ -25,7 +25,9 @@ function belongsToHost(event) {
 // composed text arrives through composition and input events. `clipboard`:
 // whether the page may receive the host's clipboard on paste. `zoom()`: the
 // page's current zoom factor, which a pinch starts from.
-// Returns a function that removes every listener it added.
+// Returns `detach()`, which removes every listener it added, and
+// `handleEvent(name, data)`, for the engine events input follows
+// ("wheel.done", "editable.focus").
 export function attachInput(element, canvas, textInput, send, { clipboard = true, zoom = () => 1 } = {}) {
   const controller = new AbortController();
   const { signal } = controller;
@@ -40,7 +42,6 @@ export function attachInput(element, canvas, textInput, send, { clipboard = true
   let pressedButton = null;
   canvas.addEventListener('mousedown', (event) => {
     event.preventDefault();
-    textInput.inputMode = '';
     focusInput();
     pressedButton = event.button;
     send('mouse', { type: 'down', ...position(event), button: event.button, clickCount: event.detail || 1, modifiers: modifiersOf(event) });
@@ -64,7 +65,7 @@ export function attachInput(element, canvas, textInput, send, { clipboard = true
     send('wheel', { ...position(event), deltaX: event.deltaX, deltaY: event.deltaY, deltaMode: event.deltaMode, modifiers: modifiersOf(event) });
   }, { passive: false, signal });
 
-  attachTouch(canvas, textInput, send, { position, focusInput, zoom, signal });
+  const touch = attachTouch(canvas, textInput, send, { position, focusInput, zoom, signal });
 
   // While composing, keys belong to the input method; a dead key starts a
   // composition of its own.
@@ -125,7 +126,10 @@ export function attachInput(element, canvas, textInput, send, { clipboard = true
     }
     send('focus', { focused: false });
   }, { signal });
-  return () => controller.abort();
+  return {
+    detach: () => controller.abort(),
+    handleEvent: (name, data) => touch.handleEvent(name, data),
+  };
 }
 
 // How far a finger may move and still tap (CSS pixels), how long it holds for
@@ -138,14 +142,23 @@ const DOUBLE_TAP_SLOP = 25;
 // speed below which it stops.
 const FRICTION = 0.95;
 const MIN_SPEED = 0.02;
+// How long a scroll waits for the engine's "wheel.done" before sending more
+// anyway (the agent may hold human input, or the event may get lost).
+const WHEEL_WAIT_MS = 250;
 
 // Touch and pen input, until the engine takes touch events of its own: a tap
 // clicks, one finger scrolls (with momentum), two fingers pinch-zoom the page
 // and a long press opens the context menu. Canceling pointerdown keeps the
 // browser from also sending the mouse events it makes up after a touch, and
 // touch-action keeps it from scrolling or zooming the host page instead.
-// A tap focuses the view without the on-screen keyboard (inputmode none);
-// the keyboard needs to know that the page focused a text field.
+// The on-screen keyboard follows the engine's "editable.focus": it opens
+// when a tap focuses a text field in the page and closes when it leaves.
+// With the VirtualKeyboard API that is show() and hide(); elsewhere the
+// hidden field switches inputmode and refocuses, which Safari ignores
+// outside the tap itself.
+// Scrolling sends one wheel event at a time: the next one carries the deltas
+// the finger made meanwhile, once the engine reports "wheel.done" (an engine
+// that never does gets one per frame).
 function attachTouch(canvas, textInput, send, { position, focusInput, zoom, signal }) {
   canvas.style.touchAction = 'none';
   const points = new Map();
@@ -153,16 +166,63 @@ function attachTouch(canvas, textInput, send, { position, focusInput, zoom, sign
   let lastTap = null;
   let momentum = 0;
 
+  const keyboard = navigator.virtualKeyboard;
+  let touched = false;
+  let inputMode = '';
+  let keyboardCheck = 0;
+  const setKeyboard = (open) => {
+    if (keyboard) {
+      textInput.virtualKeyboardPolicy = 'manual';
+      textInput.inputMode = inputMode || 'text';
+      if (open) keyboard.show();
+      else keyboard.hide();
+      return;
+    }
+    const mode = open ? inputMode : 'none';
+    if (textInput.inputMode === mode) return;
+    textInput.inputMode = mode;
+    textInput.blur();
+    focusInput();
+  };
+
+  let pending = null;
+  let wheelId = 0;
+  let waiting = 0;
+  let acks = false;
+  let frame = 0;
+  const flushScroll = () => {
+    cancelAnimationFrame(frame);
+    frame = 0;
+    if (!pending || waiting) return;
+    const { at, dx, dy } = pending;
+    pending = null;
+    wheelId++;
+    send('wheel', { ...at, deltaX: dx, deltaY: dy, deltaMode: 0, modifiers: 0, id: wheelId });
+    if (acks) waiting = setTimeout(scrollDone, WHEEL_WAIT_MS);
+  };
+  const scrollDone = () => {
+    clearTimeout(waiting);
+    waiting = 0;
+    flushScroll();
+  };
+  const scroll = (at, dx, dy) => {
+    pending = pending ? { at, dx: pending.dx + dx, dy: pending.dy + dy } : { at, dx, dy };
+    if (acks) flushScroll();
+    else frame ||= requestAnimationFrame(flushScroll);
+  };
+
   const stopMomentum = () => {
     cancelAnimationFrame(momentum);
     momentum = 0;
   };
   const click = (at, button, clickCount) => {
+    clearTimeout(waiting);
+    waiting = 0;
+    flushScroll();
     send('mouse', { type: 'move', ...at, button: 0, pressed: false, modifiers: 0 });
     send('mouse', { type: 'down', ...at, button, clickCount, modifiers: 0 });
     send('mouse', { type: 'up', ...at, button, clickCount, modifiers: 0 });
   };
-  const scroll = (at, dx, dy) => send('wheel', { ...at, deltaX: dx, deltaY: dy, deltaMode: 0, modifiers: 0 });
   const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
   const pair = () => [...points.values()].slice(0, 2);
   const glide = (at, vx, vy) => {
@@ -192,7 +252,11 @@ function attachTouch(canvas, textInput, send, { position, focusInput, zoom, sign
     canvas.setPointerCapture?.(event.pointerId);
     const at = position(event);
     points.set(event.pointerId, at);
-    textInput.inputMode = 'none';
+    if (!touched) {
+      touched = true;
+      if (keyboard) textInput.virtualKeyboardPolicy = 'manual';
+      else textInput.inputMode = 'none';
+    }
     focusInput();
     if (points.size === 1) {
       gesture = { kind: 'press', start: at, last: at, samples: [{ ...at, t: event.timeStamp }] };
@@ -248,6 +312,10 @@ function attachTouch(canvas, textInput, send, { position, focusInput, zoom, sign
       const clickCount = double ? lastTap.count + 1 : 1;
       lastTap = { ...start, t: event.timeStamp, count: clickCount };
       click(start, 0, clickCount);
+      // A tap on the field that already has the focus brings no
+      // "editable.focus": reopen the keyboard the user may have closed.
+      clearTimeout(keyboardCheck);
+      if (inputMode) keyboardCheck = setTimeout(() => setKeyboard(!!inputMode), 150);
     } else if (kind === 'pan' && samples.length > 1) {
       const first = samples[0];
       const last = samples[samples.length - 1];
@@ -257,10 +325,32 @@ function attachTouch(canvas, textInput, send, { position, focusInput, zoom, sign
   };
   canvas.addEventListener('pointerup', release, { signal });
   canvas.addEventListener('pointercancel', release, { signal });
+  // A mouse brings the platform's own keyboard behavior back.
+  canvas.addEventListener('mousedown', () => {
+    touched = false;
+    textInput.virtualKeyboardPolicy = 'auto';
+    textInput.inputMode = '';
+  }, { signal });
   signal.addEventListener('abort', () => {
     stopMomentum();
+    cancelAnimationFrame(frame);
+    clearTimeout(waiting);
+    clearTimeout(keyboardCheck);
     clearTimeout(gesture?.timer);
   });
+
+  return {
+    handleEvent(name, data) {
+      if (name === 'wheel.done') {
+        acks = true;
+        if (data?.id === wheelId) scrollDone();
+      } else if (name === 'editable.focus') {
+        inputMode = typeof data?.inputMode === 'string' && data.inputMode !== 'none' ? data.inputMode : '';
+        clearTimeout(keyboardCheck);
+        if (touched) setKeyboard(!!inputMode);
+      }
+    },
+  };
 }
 
 // The engine copied or cut: mirror it to the system clipboard. Browsers allow
