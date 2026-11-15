@@ -44,6 +44,8 @@ export interface RelayOptions {
   connectTimeoutMs?: number;
   /** Serve Prometheus counters at GET /metrics (default false). GET /healthz always answers. */
   metrics?: boolean;
+  /** Certificate and key (PEM) to serve wss:// and https:// without a proxy in front. */
+  tls?: { cert: string | Buffer; key: string | Buffer };
   /** Receives destinations, ports and sizes, never content. */
   log?: (level: 'info' | 'warn', message: string) => void;
   /** Replace DNS resolution and TCP connection, for tests. */
