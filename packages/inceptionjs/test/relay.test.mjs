@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import https from 'node:https';
+import { readFileSync } from 'node:fs';
 import WebSocket from 'ws';
 import { startRelay } from '../src/server/relay.js';
 import { signRelayToken } from '../src/server/token.js';
@@ -130,6 +132,24 @@ test('stream counters follow streams through relaying and refusal', async () => 
   ws.close();
   await relay.close();
   echo.close();
+});
+
+test('tls serves wss:// and https:// itself', async () => {
+  const cert = readFileSync(new URL('./fixtures/relay-tls.crt', import.meta.url));
+  const key = readFileSync(new URL('./fixtures/relay-tls.key', import.meta.url));
+  const relay = await startRelay({ log: quiet, tls: { cert, key } });
+  assert.match(relay.url, /^wss:\/\/127\.0\.0\.1:\d+\/$/);
+  const status = await new Promise((resolve, reject) => {
+    https.get(`${relay.url.replace('wss://', 'https://')}healthz`, { ca: cert }, (res) => resolve(res.statusCode)).on('error', reject);
+  });
+  assert.equal(status, 200);
+  const opened = await new Promise((resolve) => {
+    const ws = new WebSocket(relay.url, { ca: cert });
+    ws.on('open', () => { ws.close(); resolve(true); });
+    ws.on('error', (error) => resolve(error.message));
+  });
+  assert.equal(opened, true);
+  await relay.close();
 });
 
 test('close({graceMs}) refuses new sessions, fails /healthz and waits for open ones to finish', async () => {
