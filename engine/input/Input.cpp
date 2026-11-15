@@ -3,12 +3,14 @@
 
 #include "CompositionHighlight.h"
 #include "CompositionUnderline.h"
+#include "ContextMenuController.h"
 #include "Editor.h"
 #include "EventHandler.h"
 #include "LocalFrameInlines.h"
 #include "HandleUserInputEventResult.h"
 #include "FocusController.h"
 #include "Document.h"
+#include "DocumentPage.h"
 #include "DocumentView.h"
 #include "HitTestResult.h"
 #include "HTMLAnchorElement.h"
@@ -133,10 +135,22 @@ void dispatchMouse(JSON::Object& args)
     switch (eventType) {
     case PlatformEvent::Type::MousePressed:
         handler.handleMousePressEvent(event);
-        // As on macOS and Linux, the context menu follows the press; a page
-        // that handles "contextmenu" itself keeps the host's menu away.
-        if (button == MouseButton::Right && !handler.sendContextMenuEvent(event))
-            emitContextMenu(*frame, position);
+        // As on macOS and Linux, the context menu follows the press. WebCore
+        // builds its menu in the event's default handler, which a page that
+        // cancels "contextmenu" skips: then the host shows nothing either.
+        // (sendContextMenuEvent's result cannot tell the two apart: building
+        // the menu marks the event handled too.)
+        if (button == MouseButton::Right) {
+            if (RefPtr page = frame->page()) {
+                auto& menus = page->contextMenuController();
+                menus.clearContextMenu();
+                handler.sendContextMenuEvent(event);
+                bool shown = menus.contextMenu();
+                menus.clearContextMenu();
+                if (shown)
+                    emitContextMenu(*frame, position);
+            }
+        }
         break;
     case PlatformEvent::Type::MouseReleased:
         handler.handleMouseReleaseEvent(event);
