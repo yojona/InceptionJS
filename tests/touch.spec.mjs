@@ -13,6 +13,7 @@ test.use({ hasTouch: true });
 const PAGE_HTML = `<title>touch</title>
 <style>body { margin: 0; height: 4000px } button { position: absolute; left: 40px; top: 40px; width: 120px; height: 60px }</style>
 <button>Tap</button>
+<input type="email" style="position: absolute; left: 40px; top: 200px; width: 200px; height: 40px">
 <script>
   window.events = [];
   const button = document.querySelector('button');
@@ -59,6 +60,34 @@ test('one finger scrolls the page, and the host page stays put', async ({ page }
   expect(await evaluate(page, 'events.join()')).toBe('');
 });
 
+test('a fast finger scrolls the whole way in a few wheel events', async ({ page }) => {
+  await evaluate(page, `window.wheels = 0; addEventListener('wheel', () => wheels++); 1`);
+  const finger = await touch(page);
+  await finger.start([200, 500]);
+  // Moves that arrive faster than the engine scrolls, as on a slow phone.
+  const moves = [];
+  for (let y = 490; y >= 290; y -= 10) moves.push(finger.move([200, y]));
+  await Promise.all(moves);
+  await finger.end();
+  await expect.poll(async () => Number(await evaluate(page, 'scrollY'))).toBe(210);
+  expect(Number(await evaluate(page, 'wheels'))).toBeLessThan(10);
+});
+
+test('tapping a text field opens the on-screen keyboard, and tapping away closes it', async ({ page }) => {
+  await page.evaluate(() => {
+    window.keyboard = [];
+    navigator.virtualKeyboard.show = () => keyboard.push('show');
+    navigator.virtualKeyboard.hide = () => keyboard.push('hide');
+  });
+  const box = await view(page).boundingBox();
+  const textInput = () => view(page).evaluate((el) => el.shadowRoot.querySelector('textarea').inputMode);
+  await page.touchscreen.tap(box.x + 100, box.y + 220);
+  await expect.poll(() => page.evaluate(() => keyboard.at(-1))).toBe('show');
+  expect(await textInput()).toBe('email');
+  await page.touchscreen.tap(box.x + 400, box.y + 500);
+  await expect.poll(() => page.evaluate(() => keyboard.at(-1))).toBe('hide');
+});
+
 test('two fingers pinch-zoom the page', async ({ page }) => {
   const zoomed = view(page).evaluate((el) => new Promise((resolve) => el.addEventListener('zoom', (event) => resolve(event.detail.factor), { once: true })));
   const fingers = await touch(page);
@@ -70,9 +99,11 @@ test('two fingers pinch-zoom the page', async ({ page }) => {
 });
 
 test('a long press opens the context menu instead of clicking', async ({ page }) => {
+  const menu = view(page).evaluate((el) => new Promise((resolve) => el.addEventListener('contextmenurequest', (event) => resolve(event.detail), { once: true })));
   const finger = await touch(page);
   await finger.start([100, 70]);
   await page.waitForTimeout(700);
   await finger.end();
   await expect.poll(() => evaluate(page, 'events.join()')).toBe('contextmenu:2');
+  expect(await menu).toMatchObject({ x: 100, y: 70 });
 });
