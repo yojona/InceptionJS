@@ -25,6 +25,7 @@
 #include "view/View.h"
 #include "view/Window.h"
 #include <wtf/MonotonicTime.h>
+#include <wtf/Scope.h>
 
 namespace Inception {
 using namespace WebCore;
@@ -161,10 +162,20 @@ void dispatchMouse(JSON::Object& args)
     }
 }
 
-// {x, y, deltaX, deltaY, deltaMode, modifiers}, deltas as in DOM WheelEvent
-// (positive Y scrolls down).
+// {x, y, deltaX, deltaY, deltaMode, modifiers, id?}, deltas as in DOM
+// WheelEvent (positive Y scrolls down). With an id, "wheel.done" {id} follows
+// once the page has scrolled, so a host can hold the next deltas until then
+// instead of queueing more than the engine keeps up with.
 void dispatchWheel(JSON::Object& args)
 {
+    auto id = args.getInteger("id"_s);
+    auto done = makeScopeExit([&] {
+        if (!id)
+            return;
+        auto data = JSON::Object::create();
+        data->setInteger("id"_s, *id);
+        emitEvent("wheel.done"_s, WTF::move(data));
+    });
     RefPtr frame = mainFrame();
     if (!frame)
         return;
