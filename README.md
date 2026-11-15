@@ -359,7 +359,7 @@ const token = signRelayToken({ secret: process.env.INCEPTION_RELAY_SECRET,
 ```
 
 From the command line: `npx inceptionjs relay --origin https://app.example.com
---secret-env INCEPTION_RELAY_SECRET`. Put it behind a TLS-terminating proxy and run it
+--secret-env INCEPTION_RELAY_SECRET`. Serve it over TLS (see below) and run it
 in its own container or network namespace with no route to your private network.
 Use `--dev` only on a development machine: it allows loopback to your dev ports.
 
@@ -372,6 +372,30 @@ SIGINT the relay drains: it keeps listening but refuses new sessions with 503 an
 fails `/healthz`, so a load balancer moves traffic away, and gives open sessions
 `--drain-seconds` (default 30) to finish; `relay.close({ graceMs })` does the same
 from code.
+
+### Deploying the relay
+
+The relay is one Node.js process with no state, so any number of them can sit behind
+a load balancer; each WebSocket stays on the relay it opened on.
+
+- **Container.** `deploy/relay/Dockerfile` builds an image from the npm package:
+  `docker build -t inceptionjs-relay deploy/relay` (`--build-arg VERSION=...` pins
+  a release), then
+  `docker run -p 5001:5001 -e INCEPTION_RELAY_SECRET=... inceptionjs-relay --origin
+  https://app.example.com`. Arguments after the image name go to `inceptionjs relay`.
+  Give `docker stop` more time than `--drain-seconds` (`--time 35`).
+- **TLS.** Pages served over HTTPS need `wss://`. Either end TLS at your proxy or load
+  balancer (forwarding WebSocket upgrades), or let the relay serve it:
+  `--tls-cert cert.pem --tls-key key.pem` (`tls: { cert, key }` from code). The
+  relay reads the files at start; restart it, or drain and replace it, to renew them.
+- **Network.** Give it a network with no route to your private services, and expose
+  only its port. Keep `/metrics` internal. The relay's addresses are what sites see,
+  so datacenter addresses can meet more CAPTCHAs.
+- **Health and logs.** Point liveness and readiness probes at `GET /healthz` (503
+  while draining), scrape `/metrics` with `--metrics`, and collect `--log json`.
+- **Tokens.** Every relay behind one hostname needs the same
+  `INCEPTION_RELAY_SECRET`. A new secret refuses tokens signed with the old one, so
+  switch the relays and the token signer together.
 
 ### Vite
 
@@ -416,6 +440,8 @@ engine files under `public/__inception/engine/` or point `engineUrl` at a CDN.
 npx inceptionjs init [--engine <dir>]      set up a Vite or Next.js project
 npx inceptionjs check <url> [--relay <ws>] explain what a deployment is missing
 npx inceptionjs relay [--port N] [--dev] [--origin URL] [--secret-env NAME]
+                      [--metrics] [--log json] [--drain-seconds N]
+                      [--tls-cert FILE --tls-key FILE]
 ```
 
 ## Windows and isolation modes
@@ -595,6 +621,7 @@ patches/webkit/       the WebKit patch series
 build/                pinned, scripted build of dependencies, WebKit and the engine
 tests/                browser acceptance suite (Playwright)
 examples/             basic, debug and a React + Vite app
+deploy/relay/         the relay's container image
 ```
 
 ## Contributing, security, license
