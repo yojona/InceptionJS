@@ -17,6 +17,7 @@ const HELP = `Usage: inceptionjs <command>
   relay [--port 5001] [--host 127.0.0.1] [--dev] [--dev-ports 5173,3000]
         [--origin https://app.example.com] [--secret-env INCEPTION_RELAY_SECRET]
         [--metrics] [--log text|json] [--drain-seconds 30]
+        [--tls-cert cert.pem --tls-key key.pem]
                                       Run a relay (GET /healthz; --metrics adds
                                       Prometheus counters at GET /metrics; a stop
                                       signal drains open sessions first)
@@ -189,8 +190,11 @@ async function relay(argv) {
       metrics: { type: 'boolean', default: false },
       log: { type: 'string', default: 'text' },
       'drain-seconds': { type: 'string', default: '30' },
+      'tls-cert': { type: 'string' },
+      'tls-key': { type: 'string' },
     },
   });
+  if (!values['tls-cert'] !== !values['tls-key']) fail('[relay] --tls-cert and --tls-key go together');
   // --log json: one JSON object per line, for log collectors.
   const log = values.log === 'json'
     ? (level, message) => process.stdout.write(`${JSON.stringify({ time: new Date().toISOString(), level, message })}\n`)
@@ -207,6 +211,7 @@ async function relay(argv) {
     origins: values.origin,
     secret,
     metrics: values.metrics,
+    ...(values['tls-cert'] ? { tls: { cert: readFileSync(values['tls-cert']), key: readFileSync(values['tls-key']) } } : {}),
     ...(log ? { log } : {}),
   }).catch((error) => {
     if (log) {
