@@ -82,6 +82,7 @@ private:
     String m_cursor;
     bool m_audible { false };
     String m_sensitiveField;
+    String m_inputMode;
     CompletionHandler<void(WebCore::ExceptionOr<void>)> m_willEnterFullscreen;
     CompletionHandler<bool(bool)> m_didEnterFullscreen;
     bool m_hostFullscreen { false };

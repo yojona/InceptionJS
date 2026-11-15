@@ -19,6 +19,7 @@
 #include "FrameLoader.h"
 #include "FrameTreeSyncData.h"
 #include "HTMLInputElement.h"
+#include "HTMLTextAreaElement.h"
 #include "HTMLNames.h"
 #include "SecurityOrigin.h"
 #include "HTMLFrameOwnerElement.h"
@@ -452,10 +453,53 @@ static ASCIILiteral sensitiveFieldKind(const Element* element)
     return ""_s;
 }
 
+// The keyboard a focused element wants, as an inputmode value; "" when it
+// takes no text.
+static String editableInputMode(const Element* element)
+{
+    if (!element)
+        return emptyString();
+    if (RefPtr input = dynamicDowncast<HTMLInputElement>(element)) {
+        if (!input->isTextField() || !input->isInnerTextElementEditable())
+            return emptyString();
+    } else if (RefPtr textArea = dynamicDowncast<HTMLTextAreaElement>(element)) {
+        if (!textArea->isInnerTextElementEditable())
+            return emptyString();
+    } else if (!element->hasEditableStyle())
+        return emptyString();
+    auto mode = element->attributeWithoutSynchronization(HTMLNames::inputmodeAttr).convertToASCIILowercase();
+    if (mode == "none"_s || mode == "text"_s || mode == "decimal"_s || mode == "numeric"_s || mode == "tel"_s || mode == "search"_s || mode == "email"_s || mode == "url"_s)
+        return mode;
+    if (RefPtr input = dynamicDowncast<HTMLInputElement>(element)) {
+        if (input->isEmailField())
+            return "email"_s;
+        if (input->isTelephoneField())
+            return "tel"_s;
+        if (input->isURLField())
+            return "url"_s;
+        if (input->isSearchField())
+            return "search"_s;
+        if (input->isNumberField())
+            return "decimal"_s;
+    }
+    return "text"_s;
+}
+
 // "field.focus" {kind: "password"|"payment"|"", origin}: sent when the kind
 // changes, including back to "" when such a field loses focus.
+// "editable.focus" {inputMode}: sent when the focused element starts or stops
+// taking text, or wants another keyboard ("" when it takes none), so a host
+// on a touch screen opens and closes its on-screen keyboard.
 void ChromeClientImpl::focusedElementChanged(Element* element, LocalFrame* frame, FocusOptions, BroadcastFocusedElement)
 {
+    String inputMode = editableInputMode(element);
+    if (inputMode != m_inputMode) {
+        m_inputMode = inputMode;
+        auto data = JSON::Object::create();
+        data->setString("inputMode"_s, inputMode);
+        WindowScope scope(m_view);
+        emitEvent("editable.focus"_s, WTF::move(data));
+    }
     String kind = sensitiveFieldKind(element);
     if (kind == m_sensitiveField)
         return;
