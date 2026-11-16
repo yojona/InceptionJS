@@ -7,13 +7,38 @@ break the API).
 
 ## Unreleased
 
+## 0.1.5 (2026-11-15)
+
+New engine files. `@inceptionjs/react` stays 0.1.1.
+
 ### Added
 
 - Touch and pen input: a tap clicks, two quick taps double-click, one finger scrolls
   with momentum, two fingers pinch-zoom and a long press opens the context menu. The
-  host page does not scroll or zoom under the view. Tapping a text field does not
-  open the on-screen keyboard yet, and pages see mouse and wheel events, not touch
-  events (#28).
+  host page does not scroll or zoom under the view. Tapping a text field opens the
+  on-screen keyboard with the keyboard the field asks for (`inputmode`, or email,
+  tel, url, number); Safari opens it only within the tap. Pages see mouse and wheel
+  events, not touch events (#28).
+- Relay: `tls: { cert, key }` and `--tls-cert`/`--tls-key` serve `wss://` without a
+  proxy; a container image (`deploy/relay/Dockerfile`), and a deployment section in
+  the README (#34).
+- `view.debugFrames()` reports frame timings; the `perf.configure` command turns the
+  painting shortcuts below off to compare.
+
+### Changed
+
+- The engine repaints only what changed since the last frame, instead of the whole
+  view; a scroll moves the last frame's pixels and repaints what scrolled in. On a
+  page of cards throttled like a phone, the slowest frames while scrolling went from
+  72 ms to 2 ms (p95) (#66).
+- A wheel event paints its frame at once rather than at the host's next animation
+  frame, and touch scrolling waits for the engine (`wheel.done`) instead of queueing
+  wheel events a slow device cannot keep up with.
+
+### Fixed
+
+- A right-click or long press reaches the host as `contextmenurequest`; it never did
+  (#62).
 
 ## 0.1.4 (2026-11-05)
 
