@@ -175,16 +175,25 @@ try {
     if (sections.has('scroll')) {
       await loadIn(page, PAGES.wikipedia).catch(() => {});
       await wait(1500);
-      const box = await page.locator('#view').boundingBox();
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       const before = await page.evaluate(() => window.__frames.length);
       const started = await page.evaluate(() => performance.now());
       // About five seconds of wheel input at display rate, down then up, so
-      // the frame rate measures the engine and not the input cadence.
-      for (let i = 0; i < 300; i++) {
-        await page.mouse.wheel(0, i < 150 ? 40 : -40);
-        await wait(16);
-      }
+      // the frame rate measures the engine and not the input cadence. The
+      // events are made in the page, one per animation frame: driving them
+      // from here waits a round trip each and caps the rate near 20 a second.
+      await page.evaluate(() => new Promise((resolve) => {
+        const view = document.getElementById('view');
+        const canvas = view.shadowRoot.querySelector('canvas');
+        const rect = canvas.getBoundingClientRect();
+        let sent = 0;
+        const step = () => {
+          canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: sent < 150 ? 40 : -40, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2, bubbles: true, cancelable: true }));
+          if (++sent < 300) requestAnimationFrame(step);
+          else resolve();
+        };
+        requestAnimationFrame(step);
+      }));
+      await wait(200);
       const frames = await page.evaluate(([from, since]) => window.__frames.slice(from).filter((t) => t >= since), [before, started]);
       const intervals = frames.slice(1).map((t, i) => t - frames[i]);
       const seconds = (frames.at(-1) - frames[0]) / 1000;
