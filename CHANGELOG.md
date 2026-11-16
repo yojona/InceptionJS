@@ -7,6 +7,22 @@ break the API).
 
 ## Unreleased
 
+## 0.1.6 (2026-11-15)
+
+New engine files. `@inceptionjs/react` stays 0.1.1.
+
+### Added
+
+- A loading indicator until a view's first frame ("Starting the engine...", then
+  "Loading..."), instead of a blank canvas; restyle or hide it with
+  `inception-view::part(loading)` (#68).
+
+### Changed
+
+- Mouse, key and IME input paint their frame at once, as wheel events do since 0.1.5,
+  instead of at the host's next animation frame: up to one frame less latency when
+  typing and clicking (#68).
+
 ## 0.1.5 (2026-11-15)
 
 New engine files. `@inceptionjs/react` stays 0.1.1.
