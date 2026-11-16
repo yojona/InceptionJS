@@ -239,10 +239,16 @@ void HostMediaPlayer::paint(GraphicsContext& context, const FloatRect& rect)
     if (context.paintingDisabled() || rect.isEmpty())
         return;
     context.clearRect(rect);
+    // The margins painted beyond the viewport (overscan) are the host's to
+    // move for a moment: a video keeps the place it has in the viewport.
+    if (View::isPaintingOverscan())
+        return;
     auto* window = Window::byID(m_window);
     float scale = window ? window->deviceScaleFactor() : 1;
     auto deviceRect = context.getCTM().mapRect(rect);
     deviceRect.scale(1 / scale);
+    if (window)
+        deviceRect.move(0, -window->overscan());
     m_paintedRect = deviceRect;
 }
 

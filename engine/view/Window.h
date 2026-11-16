@@ -27,6 +27,11 @@ public:
     WebCore::IntSize cssSize() const { return m_cssSize; }
     float deviceScaleFactor() const { return m_deviceScaleFactor; }
     void setSize(WebCore::IntSize cssSize, float deviceScaleFactor);
+    // CSS pixels painted beyond the viewport above and below ("overscan"), so
+    // the host can move the last frame with a finger before the next one
+    // arrives. 0 (the default) paints the viewport only.
+    int overscan() const { return m_overscan; }
+    void setOverscan(int);
     bool isVisible() const { return m_visible; }
     void setVisible(bool);
     void setFocused(bool);
@@ -46,6 +51,7 @@ private:
     unsigned m_id;
     WebCore::IntSize m_cssSize;
     float m_deviceScaleFactor { 1 };
+    int m_overscan { 0 };
     bool m_visible { false };
     View* m_active { nullptr };
 };

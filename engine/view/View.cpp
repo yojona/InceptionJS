@@ -41,6 +41,7 @@
 #include <cmath>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/RunLoop.h>
+#include <wtf/SetForScope.h>
 #include <wtf/text/MakeString.h>
 
 extern "C" {
@@ -510,6 +511,12 @@ void View::slowScrolled(const IntRect& rect)
     setNeedsPaint(rect);
 }
 
+bool& View::isPaintingOverscanFlag()
+{
+    static bool painting = false;
+    return painting;
+}
+
 void View::frameForInput()
 {
     // At most one frame per display refresh: the host's tick still comes,
@@ -556,7 +563,11 @@ void View::frame()
     if (m_paintedFrames++ < 3)
         report("debug"_s, makeString("frame "_s, m_paintedFrames, ' ', m_cssSize.width(), 'x', m_cssSize.height(), " @"_s, m_deviceScaleFactor));
 
-    auto pixelSize = expandedIntSize(FloatSize(m_cssSize) * m_deviceScaleFactor);
+    // The target holds the viewport and, with overscan, that many CSS pixels
+    // of the page above and below it; rects below are in its CSS pixels.
+    int overscan = m_window->overscan();
+    IntSize targetSize { m_cssSize.width(), m_cssSize.height() + 2 * overscan };
+    auto pixelSize = expandedIntSize(FloatSize(targetSize) * m_deviceScaleFactor);
     auto& performance = framePerformance();
     // What changed, in device pixels, rounded out a pixel more so that
     // antialiased edges of a fractional scale are repainted too. Past a few
@@ -566,6 +577,20 @@ void View::frame()
         auto rects = m_damage.rects();
         if (rects.size() > 8)
             rects = { m_damage.bounds() };
+        // A scroll of the whole viewport moves the margins too, and uncovers
+        // a strip at the target's edge as well as at the viewport's.
+        bool mainScroll = m_scroll && m_scroll->first.y() == 0 && m_scroll->first.height() == m_cssSize.height();
+        for (auto& rect : rects)
+            rect.move(0, overscan);
+        if (overscan && mainScroll) {
+            auto& [scrolledRect, offset] = *m_scroll;
+            if (offset.height() > 0)
+                rects.append({ scrolledRect.x(), 0, scrolledRect.width(), offset.height() });
+            else if (offset.height() < 0)
+                rects.append({ scrolledRect.x(), targetSize.height() + offset.height(), scrolledRect.width(), -offset.height() });
+            if (offset.width())
+                rects.append({ offset.width() > 0 ? scrolledRect.x() : scrolledRect.maxX() + offset.width(), 0, std::abs(offset.width()), targetSize.height() });
+        }
         Renderer::Damage region;
         for (auto& rect : rects) {
             FloatRect scaled(rect);
@@ -581,6 +606,10 @@ void View::frame()
     std::optional<Renderer::Scroll> scroll;
     if (damage && m_scroll) {
         IntRect rect = m_scroll->first;
+        if (rect.y() == 0 && rect.height() == m_cssSize.height())
+            rect.setHeight(targetSize.height());
+        else
+            rect.move(0, overscan);
         rect.scale(m_deviceScaleFactor);
         auto offset = m_scroll->second;
         offset.scale(m_deviceScaleFactor);
@@ -590,16 +619,38 @@ void View::frame()
     m_damage = { };
     m_scroll = std::nullopt;
 
+    auto scrollPosition = frameView->scrollPosition();
+    Renderer::FrameInfo info { scrollPosition.x(), scrollPosition.y(), overscan };
     double painted = 0;
     Region repainted;
-    Renderer::singleton().paintFrame(m_window->id(), pixelSize, damage, scroll, [&](GraphicsContext& context, const IntRect& region) {
+    Renderer::singleton().paintFrame(m_window->id(), pixelSize, damage, scroll, info, [&](GraphicsContext& context, const IntRect& region) {
         painted += static_cast<double>(region.area().value()) / std::max(1u, pixelSize.area().value());
         context.scale(m_deviceScaleFactor);
         FloatRect css(region);
         css.scale(1 / m_deviceScaleFactor);
-        auto cssRect = intersection(enclosingIntRect(css), IntRect({ }, m_cssSize));
-        repainted.unite(Region(cssRect));
-        frameView->paint(context, cssRect);
+        auto cssRect = intersection(enclosingIntRect(css), IntRect({ }, targetSize));
+        // The viewport, as the page shows it (scrollbars and fixed elements
+        // included).
+        auto viewport = intersection(cssRect, { 0, overscan, m_cssSize.width(), m_cssSize.height() });
+        if (!viewport.isEmpty()) {
+            viewport.move(0, -overscan);
+            repainted.unite(Region(viewport));
+            GraphicsContextStateSaver saver(context);
+            context.translate(0, overscan);
+            frameView->paint(context, viewport);
+        }
+        // The margins: the page's content just above and below the viewport.
+        for (IntRect margin : { IntRect { 0, 0, m_cssSize.width(), overscan }, IntRect { 0, overscan + m_cssSize.height(), m_cssSize.width(), overscan } }) {
+            margin.intersect(cssRect);
+            if (margin.isEmpty())
+                continue;
+            margin.move(scrollPosition.x(), scrollPosition.y() - overscan);
+            GraphicsContextStateSaver saver(context);
+            SetForScope paintingOverscan(isPaintingOverscanFlag(), true);
+            context.translate(-scrollPosition.x(), overscan - scrollPosition.y());
+            context.clip(margin);
+            frameView->paintContents(context, margin);
+        }
     });
     // Videos outside what this frame painted kept their place.
     Media::endFrame(m_window->id(), repainted);

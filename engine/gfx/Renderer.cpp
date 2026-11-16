@@ -28,8 +28,8 @@ extern "C" {
 int inception_gfx_create_context(int width, int height, int requestedPageContexts);
 int inception_gfx_take_context_state();
 void inception_gfx_resize(int width, int height);
-void inception_gfx_present(unsigned window);
-void inception_gfx_present_pixels(unsigned window, const uint8_t*, int width, int height);
+void inception_gfx_present(unsigned window, int scrollX, int scrollY, int overscan);
+void inception_gfx_present_pixels(unsigned window, const uint8_t*, int width, int height, int scrollX, int scrollY, int overscan);
 }
 
 namespace Inception {
@@ -111,15 +111,15 @@ static void paintRegion(SkCanvas& canvas, RenderingMode mode, IntSize size, cons
         paintRect(rect);
 }
 
-void Renderer::paintFrame(unsigned window, IntSize pixelSize, std::optional<Damage> damage, std::optional<Scroll> scroll, const PaintFunction& paint)
+void Renderer::paintFrame(unsigned window, IntSize pixelSize, std::optional<Damage> damage, std::optional<Scroll> scroll, const FrameInfo& info, const PaintFunction& paint)
 {
     if (pixelSize.isEmpty())
         return;
     auto& surface = *m_surfaces.ensure(static_cast<unsigned>(window), [] { return std::make_unique<Surface>(); }).iterator->value;
     if (m_mode == Mode::GPU)
-        paintGPU(window, surface, pixelSize, damage, scroll, paint);
+        paintGPU(window, surface, pixelSize, damage, scroll, info, paint);
     else
-        paintCPU(window, surface, pixelSize, damage, scroll, paint);
+        paintCPU(window, surface, pixelSize, damage, scroll, info, paint);
 }
 
 void Renderer::releaseSurface(unsigned window)
@@ -147,7 +147,7 @@ void Renderer::rebuildGPU()
         report("error"_s, "Skia could not use the restored WebGL context"_s);
 }
 
-void Renderer::paintGPU(unsigned window, Surface& windowSurface, IntSize size, std::optional<Damage> damage, std::optional<Scroll> scroll, const PaintFunction& paint)
+void Renderer::paintGPU(unsigned window, Surface& windowSurface, IntSize size, std::optional<Damage> damage, std::optional<Scroll> scroll, const FrameInfo& frame, const PaintFunction& paint)
 {
     switch (inception_gfx_take_context_state()) {
     case 1:
@@ -218,10 +218,10 @@ void Renderer::paintGPU(unsigned window, Surface& windowSurface, IntSize size, s
     glDisable(GL_SCISSOR_TEST);
     glBlitFramebuffer(0, 0, size.width(), size.height(), 0, 0, size.width(), size.height(), GL_COLOR_BUFFER_BIT, GL_NEAREST);
     grContext->resetContext();
-    inception_gfx_present(window);
+    inception_gfx_present(window, frame.scrollX, frame.scrollY, frame.overscan);
 }
 
-void Renderer::paintCPU(unsigned window, Surface& windowSurface, IntSize size, std::optional<Damage> damage, std::optional<Scroll> scroll, const PaintFunction& paint)
+void Renderer::paintCPU(unsigned window, Surface& windowSurface, IntSize size, std::optional<Damage> damage, std::optional<Scroll> scroll, const FrameInfo& frame, const PaintFunction& paint)
 {
     auto info = SkImageInfo::Make(size.width(), size.height(), kRGBA_8888_SkColorType, kPremul_SkAlphaType, SkColorSpace::MakeSRGB());
     auto& pixels = windowSurface.pixels;
@@ -238,7 +238,7 @@ void Renderer::paintCPU(unsigned window, Surface& windowSurface, IntSize size, s
     if (damage && scroll && !shiftPixels(*surface, *scroll))
         damage = std::nullopt;
     paintRegion(*surface->getCanvas(), RenderingMode::Unaccelerated, size, damage, paint);
-    inception_gfx_present_pixels(window, pixels.span().data(), size.width(), size.height());
+    inception_gfx_present_pixels(window, pixels.span().data(), size.width(), size.height(), frame.scrollX, frame.scrollY, frame.overscan);
 }
 
 } // namespace Inception

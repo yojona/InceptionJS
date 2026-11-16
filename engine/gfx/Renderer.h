@@ -54,7 +54,14 @@ public:
         WebCore::IntSize offset;
     };
     using Damage = Vector<WebCore::IntRect>;
-    void paintFrame(unsigned window, WebCore::IntSize pixelSize, std::optional<Damage>, std::optional<Scroll>, const PaintFunction& paint);
+    // Told to the host with the frame: the page's scroll position when it was
+    // painted, and the CSS pixels painted beyond the viewport above and below.
+    struct FrameInfo {
+        int scrollX { 0 };
+        int scrollY { 0 };
+        int overscan { 0 };
+    };
+    void paintFrame(unsigned window, WebCore::IntSize pixelSize, std::optional<Damage>, std::optional<Scroll>, const FrameInfo&, const PaintFunction& paint);
 
     // Frees what a closed or hidden window painted into.
     void releaseSurface(unsigned window);
@@ -70,8 +77,8 @@ private:
 
     bool initializeGPU(WebCore::IntSize);
     void rebuildGPU();
-    void paintGPU(unsigned window, Surface&, WebCore::IntSize, std::optional<Damage>, std::optional<Scroll>, const PaintFunction&);
-    void paintCPU(unsigned window, Surface&, WebCore::IntSize, std::optional<Damage>, std::optional<Scroll>, const PaintFunction&);
+    void paintGPU(unsigned window, Surface&, WebCore::IntSize, std::optional<Damage>, std::optional<Scroll>, const FrameInfo&, const PaintFunction&);
+    void paintCPU(unsigned window, Surface&, WebCore::IntSize, std::optional<Damage>, std::optional<Scroll>, const FrameInfo&, const PaintFunction&);
 
     Mode m_mode { Mode::CPU };
     int m_requestedPageContexts { 0 };

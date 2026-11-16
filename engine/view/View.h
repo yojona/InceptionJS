@@ -90,12 +90,15 @@ public:
     // "perf.configure" {paintOnInput, damage}: both on by default; off brings
     // back painting only at the host's frame, and repainting everything.
     static void configurePerformance(JSON::Object&);
+    // While a frame paints the margins beyond the viewport (Window::overscan).
+    static bool isPaintingOverscan() { return isPaintingOverscanFlag(); }
     // "debug.frames": timings of the frames painted since the last call.
     static Ref<JSON::Object> takeFrameStats();
 
     void setVisible(bool);
 
 private:
+    static bool& isPaintingOverscanFlag();
     View(Window&, WebCore::IntSize, float);
     ~View();
 
