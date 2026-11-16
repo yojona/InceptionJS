@@ -1,6 +1,8 @@
 #pragma once
 
+#include "IntRect.h"
 #include "IntSize.h"
+#include <optional>
 #include <wtf/Function.h>
 #include <wtf/HashMap.h>
 #include <wtf/Vector.h>
@@ -37,9 +39,14 @@ public:
     Mode initialize(WebCore::IntSize pixelSize, bool preferGPU, int pageContexts = 0);
     Mode mode() const { return m_mode; }
 
-    // Paints one frame of `window` at `pixelSize` and presents it: `paint`
-    // receives a context in device pixels with the transparent clear done.
-    void paintFrame(unsigned window, WebCore::IntSize pixelSize, const Function<void(WebCore::GraphicsContext&)>& paint);
+    // Paints one frame of `window` at `pixelSize` and presents it. `damage`
+    // (device pixels) limits the paint to what changed since the last frame,
+    // which the window's target still holds; empty presents it unchanged, and
+    // none repaints everything. A new or resized target is always repainted
+    // whole. `paint` receives a context in device pixels, clipped to the
+    // region it is given, with the transparent clear done there.
+    using PaintFunction = Function<void(WebCore::GraphicsContext&, const WebCore::IntRect& region)>;
+    void paintFrame(unsigned window, WebCore::IntSize pixelSize, std::optional<WebCore::IntRect> damage, const PaintFunction& paint);
 
     // Frees what a closed or hidden window painted into.
     void releaseSurface(unsigned window);
@@ -49,12 +56,14 @@ private:
     struct Surface {
         sk_sp<SkSurface> target;
         Vector<uint8_t> pixels;
+        // What `pixels` hold a frame of; another size repaints whole.
+        WebCore::IntSize pixelsSize;
     };
 
     bool initializeGPU(WebCore::IntSize);
     void rebuildGPU();
-    void paintGPU(unsigned window, Surface&, WebCore::IntSize, const Function<void(WebCore::GraphicsContext&)>&);
-    void paintCPU(unsigned window, Surface&, WebCore::IntSize, const Function<void(WebCore::GraphicsContext&)>&);
+    void paintGPU(unsigned window, Surface&, WebCore::IntSize, std::optional<WebCore::IntRect> damage, const PaintFunction&);
+    void paintCPU(unsigned window, Surface&, WebCore::IntSize, std::optional<WebCore::IntRect> damage, const PaintFunction&);
 
     Mode m_mode { Mode::CPU };
     int m_requestedPageContexts { 0 };

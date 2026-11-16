@@ -263,19 +263,30 @@ FloatRect ChromeClientImpl::pageRect() const
     return windowRect();
 }
 
+// Rects are in root view coordinates: CSS pixels of the viewport. WebCore
+// asks for the window to be updated (invalidateRootView) apart from what it
+// marks changed; only the latter is repainted.
 void ChromeClientImpl::invalidateRootView(const IntRect&)
 {
-    m_view.setNeedsPaint();
+    m_view.setNeedsPaint(IntRect());
 }
 
-void ChromeClientImpl::invalidateContentsAndRootView(const IntRect&)
+void ChromeClientImpl::invalidateContentsAndRootView(const IntRect& rect)
 {
-    m_view.setNeedsPaint();
+    m_view.setNeedsPaint(rect);
 }
 
-void ChromeClientImpl::invalidateContentsForSlowScroll(const IntRect&)
+void ChromeClientImpl::invalidateContentsForSlowScroll(const IntRect& rect)
 {
-    m_view.setNeedsPaint();
+    m_view.setNeedsPaint(rect);
+}
+
+// A frame scrolled by `scrollDelta` and WebCore would have the window's
+// pixels moved (blit scrolling): until the engine moves them, the scrolled
+// area is repainted.
+void ChromeClientImpl::scroll(const IntSize&, const IntRect& rectToScroll, const IntRect& clipRect)
+{
+    m_view.setNeedsPaint(intersection(rectToScroll, clipRect));
 }
 
 bool ChromeClientImpl::scheduleRenderingUpdate()
