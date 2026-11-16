@@ -31,9 +31,13 @@ fonts=/usr/share/fonts/truetype/dejavu
 cp "$fonts"/*.ttf "$FS/usr/share/fonts/"
 # Emoji and Chinese, Japanese and Korean text; only the regular CJK weight,
 # which the font engine emboldens when a page asks for bold.
+# CJK: not in the file system image. The engine's fourth file, which the host
+# loads when a page needs it (or at startup, or never: see fonts.cjk).
 cjk=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
 [ -f "$cjk" ] || fail "missing $cjk (the build image installs it)"
-cp "$cjk" "$FS/usr/share/fonts/"
+rm -rf "$WORK/lazy"
+mkdir -p "$WORK/lazy"
+cp "$cjk" "$WORK/lazy/inception-engine-cjk.ttc"
 # Emoji: the COLRv1 (vector) build of Noto Color Emoji, pinned.
 mkdir -p "$ARCHIVES"
 cp "$(fetch_pinned noto-emoji)" "$FS/usr/share/fonts/NotoColorEmoji.ttf"

@@ -47,5 +47,5 @@ logged "engine-build-$variant" ninja -C "$BUILD" -j"$JOBS" -k 0 "${targets[@]}"
 echo "built in $(( $(date +%s) - started )) s"
 
 shopt -s nullglob
-for f in "$BUILD"/bin/inception-engine.*; do cp -f "$f" "$OUT/"; done
+for f in "$BUILD"/bin/inception-engine.* "$WORK"/lazy/*; do cp -f "$f" "$OUT/"; done
 ls -la "$OUT"
