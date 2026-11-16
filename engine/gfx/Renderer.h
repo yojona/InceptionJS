@@ -45,8 +45,15 @@ public:
     // none repaints everything. A new or resized target is always repainted
     // whole. `paint` receives a context in device pixels, clipped to the
     // region it is given, with the transparent clear done there.
+    // `scroll` first moves the pixels of a rect by an offset (a page that
+    // scrolled), so that `damage` need only hold what scrolled in; where they
+    // cannot be moved, everything is repainted.
     using PaintFunction = Function<void(WebCore::GraphicsContext&, const WebCore::IntRect& region)>;
-    void paintFrame(unsigned window, WebCore::IntSize pixelSize, std::optional<WebCore::IntRect> damage, const PaintFunction& paint);
+    struct Scroll {
+        WebCore::IntRect rect;
+        WebCore::IntSize offset;
+    };
+    void paintFrame(unsigned window, WebCore::IntSize pixelSize, std::optional<WebCore::IntRect> damage, std::optional<Scroll>, const PaintFunction& paint);
 
     // Frees what a closed or hidden window painted into.
     void releaseSurface(unsigned window);
@@ -62,8 +69,8 @@ private:
 
     bool initializeGPU(WebCore::IntSize);
     void rebuildGPU();
-    void paintGPU(unsigned window, Surface&, WebCore::IntSize, std::optional<WebCore::IntRect> damage, const PaintFunction&);
-    void paintCPU(unsigned window, Surface&, WebCore::IntSize, std::optional<WebCore::IntRect> damage, const PaintFunction&);
+    void paintGPU(unsigned window, Surface&, WebCore::IntSize, std::optional<WebCore::IntRect> damage, std::optional<Scroll>, const PaintFunction&);
+    void paintCPU(unsigned window, Surface&, WebCore::IntSize, std::optional<WebCore::IntRect> damage, std::optional<Scroll>, const PaintFunction&);
 
     Mode m_mode { Mode::CPU };
     int m_requestedPageContexts { 0 };

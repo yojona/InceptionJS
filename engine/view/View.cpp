@@ -38,6 +38,7 @@
 #include <emscripten/em_macros.h>
 #include <pal/SessionID.h>
 #include <algorithm>
+#include <cmath>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/RunLoop.h>
 #include <wtf/text/MakeString.h>
@@ -437,6 +438,7 @@ void View::setNeedsPaint()
 {
     m_needsPaint = true;
     m_fullDamage = true;
+    m_scroll = std::nullopt;
     if (isActive())
         requestFrame();
 }
@@ -445,6 +447,41 @@ void View::setNeedsPaint(const IntRect& rect)
 {
     m_needsPaint = true;
     m_damage.unite(intersection(rect, IntRect({ }, m_cssSize)));
+    if (isActive())
+        requestFrame();
+}
+
+void View::scrolled(const IntSize& offset, const IntRect& scrolledRect)
+{
+    auto rect = intersection(scrolledRect, IntRect({ }, m_cssSize));
+    // Moved pixels must land on whole device pixels, and one rect at a time.
+    float scale = m_deviceScaleFactor;
+    bool movable = framePerformance().damage && !m_fullDamage && scale == std::round(scale)
+        && std::abs(offset.width()) < rect.width() && std::abs(offset.height()) < rect.height()
+        && (!m_scroll || m_scroll->first == rect);
+    if (!movable) {
+        setNeedsPaint(rect);
+        if (m_scroll)
+            setNeedsPaint(m_scroll->first);
+        return;
+    }
+    // What was already to be repainted inside the rect moved with it.
+    auto inside = intersection(m_damage, rect);
+    if (!inside.isEmpty()) {
+        inside.move(offset);
+        m_damage.unite(intersection(inside, rect));
+    }
+    // The strips the content left uncovered.
+    if (offset.height() > 0)
+        m_damage.unite({ rect.x(), rect.y(), rect.width(), offset.height() });
+    else if (offset.height() < 0)
+        m_damage.unite({ rect.x(), rect.maxY() + offset.height(), rect.width(), -offset.height() });
+    if (offset.width() > 0)
+        m_damage.unite({ rect.x(), rect.y(), offset.width(), rect.height() });
+    else if (offset.width() < 0)
+        m_damage.unite({ rect.maxX() + offset.width(), rect.y(), -offset.width(), rect.height() });
+    m_scroll = { rect, m_scroll ? m_scroll->second + offset : offset };
+    m_needsPaint = true;
     if (isActive())
         requestFrame();
 }
@@ -503,12 +540,21 @@ void View::frame()
         }
         damage = region;
     }
+    std::optional<Renderer::Scroll> scroll;
+    if (damage && m_scroll) {
+        IntRect rect = m_scroll->first;
+        rect.scale(m_deviceScaleFactor);
+        auto offset = m_scroll->second;
+        offset.scale(m_deviceScaleFactor);
+        scroll = Renderer::Scroll { rect, offset };
+    }
     m_fullDamage = false;
     m_damage = { };
+    m_scroll = std::nullopt;
 
     double painted = 0;
     std::optional<FloatRect> repainted;
-    Renderer::singleton().paintFrame(m_window->id(), pixelSize, damage, [&](GraphicsContext& context, const IntRect& region) {
+    Renderer::singleton().paintFrame(m_window->id(), pixelSize, damage, scroll, [&](GraphicsContext& context, const IntRect& region) {
         painted = static_cast<double>(region.area().value()) / std::max(1u, pixelSize.area().value());
         context.scale(m_deviceScaleFactor);
         FloatRect css(region);

@@ -75,6 +75,9 @@ public:
     // Repaints `rect` (CSS pixels of the viewport) at the next frame; an empty
     // rect presents the last frame again without painting.
     void setNeedsPaint(const WebCore::IntRect&);
+    // The pixels of `rect` (CSS pixels) moved by `offset`: a scroll. The last
+    // frame's pixels are moved along and only what scrolled in is repainted.
+    void scrolled(const WebCore::IntSize& offset, const WebCore::IntRect&);
     void requestFrame();
     void frame();
     // After input: paints now, when a frame is due, instead of at the host's
@@ -102,6 +105,8 @@ private:
     // What changed since the last frame, in CSS pixels, unless all of it did.
     bool m_fullDamage { true };
     WebCore::IntRect m_damage;
+    // A scroll since the last frame whose pixels the next frame moves.
+    std::optional<std::pair<WebCore::IntRect, WebCore::IntSize>> m_scroll;
     MonotonicTime m_lastPaint;
     unsigned m_paintedFrames { 0 };
     String m_userAgent;
