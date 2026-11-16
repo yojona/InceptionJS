@@ -39,6 +39,15 @@ export interface InceptionConfig {
    * where the browser does not tell.
    */
   maxMemoryMB?: number | 'auto';
+  /**
+   * When engines get the CJK font they do not bundle (inception-engine-cjk.ttc, about 11 MB):
+   * 'auto' (default) in the background, or on demand when the person saves data (Save-Data)
+   * or the connection is slow; 'background' after the first frame; 'on-demand' when a page
+   * first needs it; 'startup' at once; 'off' never (those characters show as boxes). An
+   * explicit value is followed as given. `url`: where the font file is, if not next to the
+   * engine files.
+   */
+  fonts?: { cjk?: 'auto' | 'background' | 'on-demand' | 'startup' | 'off'; url?: string };
   /** Offer the agent namespace (view.agent) on every view: true, or its options. Off by default. */
   agent?: boolean | AgentOptions;
   modules?: Partial<Record<'geolocation' | 'notifications', ModuleSetting>>;
