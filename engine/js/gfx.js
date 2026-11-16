@@ -22,12 +22,59 @@ addToLibrary({
     postMessage({ inception: JSON.stringify({ event: 'console', data: { level, message: `[engine] ${message}`, source: 'engine', line: 0, column: 0 } }) });
   },
 
-  inception_gfx_create_context__deps: ['$GL', '$inceptionGfx', '$inceptionReport', '$inceptionPageContextCap', 'inception_gfx_request_frame'],
+  // Whether a frame the engine presents arrives whole. It writes the canvas
+  // with a blit, and WebKit has handed out blank bitmaps after the first for
+  // a canvas that only a blit wrote since; the engine clears a pixel first
+  // (Renderer::paintGPU), which this tries on a small canvas of its own,
+  // before the engine's context exists so it counts against no cap.
+  $inceptionGfxFramesArrive: () => {
+    try {
+      const canvas = new OffscreenCanvas(4, 4);
+      const gl = canvas.getContext('webgl2', { antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false });
+      if (!gl) return true;
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, 4, 4);
+      const framebuffer = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+      let whole = true;
+      for (let frame = 0; frame < 2; frame++) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+        gl.clearColor(0, 1, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+        gl.enable(gl.SCISSOR_TEST);
+        gl.scissor(0, 0, 1, 1);
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.disable(gl.SCISSOR_TEST);
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, framebuffer);
+        gl.blitFramebuffer(0, 0, 4, 4, 0, 0, 4, 4, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+        const bitmap = canvas.transferToImageBitmap();
+        if (frame === 1) {
+          const check = new OffscreenCanvas(4, 4).getContext('2d');
+          check.drawImage(bitmap, 0, 0);
+          whole = check.getImageData(2, 2, 1, 1).data[1] > 0;
+        }
+        bitmap.close();
+      }
+      gl.getExtension('WEBGL_lose_context')?.loseContext();
+      return whole;
+    } catch (e) {
+      return true;
+    }
+  },
+
+  inception_gfx_create_context__deps: ['$GL', '$inceptionGfx', '$inceptionReport', '$inceptionPageContextCap', '$inceptionGfxFramesArrive', 'inception_gfx_request_frame'],
   inception_gfx_create_context: (width, height, requestedPageContexts) => {
     if (typeof OffscreenCanvas === 'undefined') {
       inceptionReport('warn', 'no OffscreenCanvas in the engine worker; painting on the CPU');
       return 0;
     }
+    inceptionGfx.copyFrames = !inceptionGfxFramesArrive();
+    if (inceptionGfx.copyFrames)
+      inceptionReport('warn', 'presented frames arrive blank in this browser; copying each one');
     const canvas = new OffscreenCanvas(width, height);
     let handle = 0;
     try {
@@ -99,15 +146,12 @@ addToLibrary({
     if (canvas.height !== height) canvas.height = height;
   },
 
-  // WebKit returns a blank bitmap from transferToImageBitmap() on a WebGL
-  // canvas that no page compositing step has displayed, which is every frame
-  // in a worker. Drawing the canvas into a 2D one and transferring that gives
-  // the frame reliably; other engines keep the copy-free path.
+  // A browser whose presented frames arrive blank ($inceptionGfxFramesArrive)
+  // gets each frame drawn into a 2D canvas and that one transferred instead:
+  // a full copy per frame.
   $inceptionGfxBitmap__deps: ['$inceptionGfx'],
   $inceptionGfxBitmap: () => {
     const source = inceptionGfx.canvas;
-    if (inceptionGfx.copyFrames === undefined)
-      inceptionGfx.copyFrames = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg/.test(navigator.userAgent);
     if (!inceptionGfx.copyFrames) return source.transferToImageBitmap();
     const copy = inceptionGfx.copy ??= new OffscreenCanvas(source.width, source.height);
     if (copy.width !== source.width) copy.width = source.width;
