@@ -201,6 +201,9 @@ void dispatchWheel(JSON::Object& args)
         modifiers.contains(PlatformEvent::Modifier::ShiftKey), modifiers.contains(PlatformEvent::Modifier::ControlKey),
         modifiers.contains(PlatformEvent::Modifier::AltKey), modifiers.contains(PlatformEvent::Modifier::MetaKey));
     frame->eventHandler().handleWheelEvent(event, { WheelEventProcessingSteps::SynchronousScrolling, WheelEventProcessingSteps::BlockingDOMEventDispatch });
+    // The scroll shows now, and "wheel.done" follows the frame that shows it.
+    if (auto* view = View::singleton())
+        view->frameForInput();
 }
 
 // WebCore's own key handling (moving focus with Tab, scrolling a page with
