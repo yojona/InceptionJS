@@ -74,3 +74,62 @@ test('a finger scroll ends lined up: the right scroll position, the canvas back 
   await page.waitForTimeout(1500);
   expect(await view(page).evaluate((el) => el.shadowRoot.querySelector('canvas').style.transform)).toBe('');
 });
+
+test('the margins hold the page above and below the viewport', async ({ page }) => {
+  await evaluate(page, 'scrollTo(0, 600); 1');
+  await page.waitForTimeout(500);
+  const alpha = await view(page).evaluate((el, overscan) => {
+    const canvas = el.shadowRoot.querySelector('canvas');
+    const scale = canvas.width / el.clientWidth;
+    const copy = new OffscreenCanvas(canvas.width, canvas.height).getContext('2d');
+    copy.drawImage(canvas, 0, 0);
+    const row = (y) => copy.getImageData(0, Math.round(y * scale), canvas.width, 1).data;
+    const opaque = (data) => { let n = 0; for (let i = 3; i < data.length; i += 4) if (data[i] > 0) n++; return n / (data.length / 4); };
+    return { top: opaque(row(overscan / 2)), bottom: opaque(row(overscan * 1.5 + el.clientHeight)) };
+  }, OVERSCAN);
+  expect(alpha.top).toBeGreaterThan(0.9);
+  expect(alpha.bottom).toBeGreaterThan(0.9);
+});
+
+test('with a slow engine, the last frame follows the finger and ends back in place', async ({ page }) => {
+  // The input module alone, with an engine that handles each wheel event
+  // after 50 ms and shows it 30 ms later.
+  const result = await page.evaluate(async () => {
+    const { attachInput } = await import('/host/input.js');
+    const box = document.createElement('div');
+    Object.assign(box.style, { position: 'fixed', left: '0', top: '0', width: '400px', height: '400px', overflow: 'hidden' });
+    const canvas = document.createElement('canvas');
+    Object.assign(canvas.style, { position: 'absolute', left: '0', top: '0', width: '100%', height: '100%' });
+    const text = document.createElement('textarea');
+    box.append(canvas, text); document.body.append(box);
+    let scroll = 0; const log = [];
+    let input;
+    // Engine: handles each wheel after 50 ms, paints its frame 30 ms later.
+    const send = (command, args) => {
+      if (command !== 'wheel') return;
+      setTimeout(() => {
+        scroll = Math.max(0, scroll + args.deltaY);
+        input.handleEvent('wheel.done', { id: args.id, scrollY: scroll });
+        const painted = scroll;
+        setTimeout(() => input.handleEvent('frame', { scrollY: painted, overscan: 100 }), 30);
+      }, 50);
+    };
+    input = attachInput(box, canvas, text, send);
+    input.handleEvent('frame', { scrollY: 0, overscan: 100 });
+    input.handleEvent('wheel.done', { id: -1 });  // the engine acknowledges wheels
+    const fire = (type, y) => canvas.dispatchEvent(new PointerEvent(type, { pointerId: 1, pointerType: 'touch', clientX: 100, clientY: y, bubbles: true }));
+    fire('pointerdown', 300);
+    for (let y = 290; y >= 100; y -= 10) {
+      fire('pointermove', y);
+      await new Promise((r) => setTimeout(r, 16));
+      log.push(canvas.style.transform.replace(/[^-0-9.]/g, '') || '0');
+    }
+    fire('pointerup', 100);
+    await new Promise((r) => setTimeout(r, 1500));
+    return { log: log.join(' '), end: canvas.style.transform || 'none', top: canvas.style.top, scroll };
+  });
+  const shifts = result.log.split(' ').map(Number);
+  expect(Math.min(...shifts)).toBeLessThan(-20);
+  expect(Math.max(...shifts)).toBeLessThanOrEqual(0);
+  expect(result.end).toBe('none');
+});
