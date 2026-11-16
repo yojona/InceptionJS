@@ -91,7 +91,7 @@ export class ProfileService extends EventTarget {
 
   async #launch(fresh) {
     const options = this.#options;
-    const runtime = new EngineRuntime({ engineUrl: options.engineUrl, relayUrl: options.relayUrl, maxMemoryMB: options.maxMemoryMB, role: 'profile' });
+    const runtime = new EngineRuntime({ engineUrl: options.engineUrl, relayUrl: options.relayUrl, maxMemoryMB: options.maxMemoryMB, role: 'profile', fonts: options.fonts });
     this.#runtime = runtime;
     const ready = new Promise((resolve, reject) => {
       runtime.addEventListener('ready', (e) => resolve(e.detail), { once: true });
