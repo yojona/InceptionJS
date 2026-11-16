@@ -187,8 +187,11 @@ browser on a server.
 - **Touch is translated, not passed through.** A tap clicks, one finger scrolls (with
   momentum), two fingers pinch-zoom the page and a long press opens the context menu.
   Pages that listen for `touchstart` or pointer events of type `touch` (maps, games)
-  see mouse and wheel events instead. Tapping a text field does not open the
-  on-screen keyboard yet.
+  see mouse and wheel events instead. Tapping a text field opens the on-screen
+  keyboard (in Safari only within the tap itself). On slow devices, `overscan="256"`
+  on the view (experimental) has the engine paint that many pixels beyond the
+  viewport, so a finger's scroll moves the last frame at once while the next one
+  is painted.
 - **Planned, not built:** a Chrome DevTools Protocol adapter, snapshot enrichers and
   the `agent` and `vision` snapshot modes (only `accessibility` ships), and localized UI.
 
