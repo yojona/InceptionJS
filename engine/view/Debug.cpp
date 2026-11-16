@@ -77,6 +77,12 @@ void registerDebugCommands()
 
     // {}: answers with a "debug.heap" event: JS heap and wasm memory sizes,
     // in bytes.
+    registerCommand("perf.configure"_s, [](JSON::Object& args) {
+        View::configurePerformance(args);
+    });
+    registerCommand("debug.frames"_s, [](JSON::Object&) {
+        emitEvent("debug.frames"_s, View::takeFrameStats());
+    });
     registerCommand("debug.heap"_s, [](JSON::Object&) {
         auto& vm = commonVM();
         JSC::JSLockHolder lock(vm);
