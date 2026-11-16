@@ -791,7 +791,7 @@ export class InceptionView extends HTMLElement {
       this.#main.display = this.#display;
       // The first frame takes the loading indicator away.
       const sink = this.#display.sink;
-      this.#main.detachSink = primary.runtime.attachDisplay(1, { ...sink, present: (bitmap) => { this.#hideLoading(); sink.present(bitmap); } });
+      this.#main.detachSink = primary.runtime.attachDisplay(1, { ...sink, present: (bitmap, info) => { this.#hideLoading(); sink.present(bitmap, info); } });
     }
     this.#server = this.#createServer();
     const [serverSide, clientSide] = createInPagePair();

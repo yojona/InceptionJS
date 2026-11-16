@@ -27,13 +27,18 @@ function belongsToHost(event) {
 // page's current zoom factor, which a pinch starts from.
 // Returns `detach()`, which removes every listener it added, and
 // `handleEvent(name, data)`, for the engine events input follows
-// ("wheel.done", "editable.focus").
+// ("wheel.done", "editable.focus") and the frames shown ("frame", {scrollY,
+// overscan}).
 export function attachInput(element, canvas, textInput, send, { clipboard = true, zoom = () => 1 } = {}) {
   const controller = new AbortController();
   const { signal } = controller;
+  // With overscan the canvas reaches `overscan` CSS pixels beyond the view
+  // above and below, and a finger's scroll moves it by `shift`: positions
+  // are of the viewport all the same.
+  const layout = { overscan: 0, shift: 0 };
   const position = (event) => {
     const rect = canvas.getBoundingClientRect();
-    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top - layout.overscan + layout.shift };
   };
   const focusInput = () => textInput.focus({ preventScroll: true });
   element.focusInput = focusInput;
@@ -65,7 +70,7 @@ export function attachInput(element, canvas, textInput, send, { clipboard = true
     send('wheel', { ...position(event), deltaX: event.deltaX, deltaY: event.deltaY, deltaMode: event.deltaMode, modifiers: modifiersOf(event) });
   }, { passive: false, signal });
 
-  const touch = attachTouch(canvas, textInput, send, { position, focusInput, zoom, signal });
+  const touch = attachTouch(canvas, textInput, send, { position, layout, focusInput, zoom, signal });
 
   // While composing, keys belong to the input method; a dead key starts a
   // composition of its own.
@@ -159,7 +164,9 @@ const WHEEL_WAIT_MS = 250;
 // Scrolling sends one wheel event at a time: the next one carries the deltas
 // the finger made meanwhile, once the engine reports "wheel.done" (an engine
 // that never does gets one per frame).
-function attachTouch(canvas, textInput, send, { position, focusInput, zoom, signal }) {
+// With overscan, the last frame moves with the finger until the engine's
+// next one shows the scroll.
+function attachTouch(canvas, textInput, send, { position, layout, focusInput, zoom, signal }) {
   canvas.style.touchAction = 'none';
   const points = new Map();
   let gesture = null;
@@ -190,6 +197,25 @@ function attachTouch(canvas, textInput, send, { position, focusInput, zoom, sign
   let waiting = 0;
   let acks = false;
   let frame = 0;
+  // Lining the last frame up with the finger: the scroll position the shown
+  // frame was painted at, where the page was after the last wheel event the
+  // engine handled, and the vertical deltas of the one it is handling. The
+  // deltas sent or held since count only once a wheel event moved the page
+  // itself, not a scroller inside it, nor a page at its end.
+  let painted = 0;
+  let scrolled = null;
+  let follows = false;
+  let inFlight = 0;
+  const lineUp = () => {
+    if (gesture?.kind === 'pinch') return;
+    let shift = 0;
+    if (layout.overscan && scrolled !== null) {
+      const ahead = follows ? inFlight + (pending?.dy ?? 0) : 0;
+      shift = Math.max(-layout.overscan, Math.min(layout.overscan, scrolled + ahead - painted));
+    }
+    layout.shift = -shift;
+    canvas.style.transform = shift ? `translateY(${-shift}px)` : '';
+  };
   const flushScroll = () => {
     cancelAnimationFrame(frame);
     frame = 0;
@@ -198,7 +224,10 @@ function attachTouch(canvas, textInput, send, { position, focusInput, zoom, sign
     pending = null;
     wheelId++;
     send('wheel', { ...at, deltaX: dx, deltaY: dy, deltaMode: 0, modifiers: 0, id: wheelId });
-    if (acks) waiting = setTimeout(scrollDone, WHEEL_WAIT_MS);
+    if (acks) {
+      inFlight = dy;
+      waiting = setTimeout(scrollDone, WHEEL_WAIT_MS);
+    }
   };
   const scrollDone = () => {
     clearTimeout(waiting);
@@ -209,6 +238,7 @@ function attachTouch(canvas, textInput, send, { position, focusInput, zoom, sign
     pending = pending ? { at, dx: pending.dx + dx, dy: pending.dy + dy } : { at, dx, dy };
     if (acks) flushScroll();
     else frame ||= requestAnimationFrame(flushScroll);
+    lineUp();
   };
 
   const stopMomentum = () => {
@@ -259,6 +289,8 @@ function attachTouch(canvas, textInput, send, { position, focusInput, zoom, sign
     }
     focusInput();
     if (points.size === 1) {
+      scrolled = painted;
+      follows = false;
       gesture = { kind: 'press', start: at, last: at, samples: [{ ...at, t: event.timeStamp }] };
       gesture.timer = setTimeout(() => {
         if (gesture?.kind !== 'press') return;
@@ -268,8 +300,9 @@ function attachTouch(canvas, textInput, send, { position, focusInput, zoom, sign
     } else if (points.size === 2) {
       clearTimeout(gesture?.timer);
       const [a, b] = pair();
+      layout.shift = 0;
       gesture = { kind: 'pinch', distance: distance(a, b) || 1, zoom: zoom(), scale: 1 };
-      canvas.style.transformOrigin = `${(a.x + b.x) / 2}px ${(a.y + b.y) / 2}px`;
+      canvas.style.transformOrigin = `${(a.x + b.x) / 2}px ${(a.y + b.y) / 2 + layout.overscan}px`;
     }
   }, { signal });
 
@@ -343,7 +376,25 @@ function attachTouch(canvas, textInput, send, { position, focusInput, zoom, sign
     handleEvent(name, data) {
       if (name === 'wheel.done') {
         acks = true;
-        if (data?.id === wheelId) scrollDone();
+        if (data?.id !== wheelId) return;
+        if (Number.isFinite(data.scrollY)) {
+          if (scrolled !== null) follows = inFlight !== 0 && Math.sign(data.scrollY - scrolled) === Math.sign(inFlight);
+          scrolled = data.scrollY;
+        }
+        inFlight = 0;
+        scrollDone();
+        lineUp();
+      } else if (name === 'frame') {
+        const overscan = Math.max(0, Number(data?.overscan) || 0);
+        if (overscan !== layout.overscan) {
+          layout.overscan = overscan;
+          canvas.style.top = overscan ? `${-overscan}px` : '';
+          canvas.style.height = overscan ? `calc(100% + ${2 * overscan}px)` : '';
+        }
+        painted = Number(data?.scrollY) || 0;
+        // Between gestures the page scrolls by itself too (script, a wheel).
+        if (scrolled === null || (!points.size && !momentum && !pending && !inFlight)) scrolled = painted;
+        lineUp();
       } else if (name === 'editable.focus') {
         inputMode = typeof data?.inputMode === 'string' && data.inputMode !== 'none' ? data.inputMode : '';
         clearTimeout(keyboardCheck);
