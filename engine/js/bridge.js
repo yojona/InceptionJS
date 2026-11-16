@@ -33,6 +33,20 @@ addToLibrary({
       _free(data);
       _free(name);
     });
+    // A font the engine does not bundle, which the host loaded after
+    // "font.missing" (or at startup): engine/view/Fonts.cpp.
+    self.addEventListener('message', (e) => {
+      const font = e.data?.inceptionFont;
+      if (!font || !(font.bytes instanceof ArrayBuffer)) return;
+      const bytes = new Uint8Array(font.bytes);
+      const set = stringToNewUTF8(String(font.set));
+      const data = _malloc(Math.max(bytes.length, 1));
+      HEAPU8.set(bytes, data);
+      Module._inception_font_add(set, data, bytes.length);
+      _free(data);
+      _free(set);
+      _inception_loop_schedule(0);
+    });
     self.addEventListener('message', (e) => {
       const json = e.data?.inception;
       if (typeof json !== 'string') return;
