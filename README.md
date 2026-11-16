@@ -301,8 +301,9 @@ loads use less than the same pages in a native Chrome tab.
 
 ## Quick start
 
-All setups need the engine files (`inception-engine.js`, `.wasm`, `.data`) and a
-relay. Download the engine files from the
+All setups need the engine files (`inception-engine.js`, `.wasm`, `.data`, and
+`inception-engine-cjk.ttc`, the CJK font, loaded only when wanted: see `fonts` in
+`Inception.configure`) and a relay. Download the engine files from the
 [latest release](https://github.com/yojona/InceptionJS/releases/latest) (or build them from
 this repository, see [LGPL.md](LGPL.md)) and put them in a folder, here
 `./inception-engine`.
@@ -638,6 +639,21 @@ deploy/relay/         the relay's container image
   contain WebKit, which is LGPL: see [LGPL.md](LGPL.md). Third-party components are
   listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); the name is covered by
   [TRADEMARKS.md](TRADEMARKS.md).
+
+### Attribution
+
+Shipping InceptionJS in your product asks for credit in your notices, not in your
+interface:
+
+- Include the text of [NOTICE](NOTICE) and the [Apache License](LICENSE) where your
+  product lists third-party software (an "Open source licenses" page or file, your
+  documentation, or an about screen). No "Powered by" badge is required.
+- If you serve the engine files, also say that they contain WebKit under the LGPL,
+  link to the source of the release you serve (its tag in this repository), and ship
+  or link its `licenses.txt`. A modified engine needs your own source; see
+  [LGPL.md](LGPL.md).
+- Do not use the InceptionJS name for a modified version or to suggest endorsement
+  ([TRADEMARKS.md](TRADEMARKS.md)).
 
 ## Author and contributors
 
