@@ -282,7 +282,7 @@ runs; treat them as the order of magnitude, not as a benchmark suite.
 | Wikipedia, navigation to load event | 1.4 s | 0.44 s | 0.38 s | see note |
 | YouTube home, same | 2.5 s | 1.7 s | 2.1 s | 1.2 s |
 | BBC News, same | 2.1 s | 1.4 s | 1.3 s | 1.4 s |
-| Scrolling a long article | 21 fps | 60 fps (cap) | 120 fps (cap) | 60 fps (cap) |
+| Scrolling a long article | 60 fps (cap) | 60 fps (cap) | 120 fps (cap) | 60 fps (cap) |
 | JavaScript and DOM kernels, geometric mean (lower is better) | 195 ms | 28 ms | 30 ms | 25 ms |
 
 Note: Safari's Wikipedia run was an unexplained outlier of the automation session and
@@ -290,7 +290,9 @@ is left out. Native scrolling is bound by the display refresh rate, so those fig
 are a floor.
 
 In short: pages load in roughly 1.3 to 3 times the time of a native browser, scrolling
-is below 25 fps in this setup, and JavaScript-heavy code runs about 7 times slower.
+keeps up with the display here, and JavaScript-heavy code runs about 7 times slower.
+(An earlier figure of 21 fps measured the benchmark's own wheel cadence, about one
+event per 50 ms, rather than the engine.)
 The engine costs about 880 MB of memory before it loads a page; the pages it then
 loads use less than the same pages in a native Chrome tab.
 
