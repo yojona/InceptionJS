@@ -71,15 +71,27 @@ bool Renderer::initializeGPU(IntSize pixelSize)
     return true;
 }
 
-void Renderer::paintFrame(unsigned window, IntSize pixelSize, const Function<void(GraphicsContext&)>& paint)
+// Clears and paints `region` of `canvas` only; the rest keeps the last frame.
+static void paintRegion(SkCanvas& canvas, RenderingMode mode, const IntRect& region, const Renderer::PaintFunction& paint)
+{
+    if (region.isEmpty())
+        return;
+    SkAutoCanvasRestore restoreCanvas(&canvas, true);
+    canvas.clipIRect(SkIRect::MakeXYWH(region.x(), region.y(), region.width(), region.height()));
+    canvas.clear(SK_ColorTRANSPARENT);
+    GraphicsContextSkia context(canvas, mode, RenderingPurpose::Unspecified);
+    paint(context, region);
+}
+
+void Renderer::paintFrame(unsigned window, IntSize pixelSize, std::optional<IntRect> damage, const PaintFunction& paint)
 {
     if (pixelSize.isEmpty())
         return;
     auto& surface = *m_surfaces.ensure(static_cast<unsigned>(window), [] { return std::make_unique<Surface>(); }).iterator->value;
     if (m_mode == Mode::GPU)
-        paintGPU(window, surface, pixelSize, paint);
+        paintGPU(window, surface, pixelSize, damage, paint);
     else
-        paintCPU(window, surface, pixelSize, paint);
+        paintCPU(window, surface, pixelSize, damage, paint);
 }
 
 void Renderer::releaseSurface(unsigned window)
@@ -107,7 +119,7 @@ void Renderer::rebuildGPU()
         report("error"_s, "Skia could not use the restored WebGL context"_s);
 }
 
-void Renderer::paintGPU(unsigned window, Surface& windowSurface, IntSize size, const Function<void(GraphicsContext&)>& paint)
+void Renderer::paintGPU(unsigned window, Surface& windowSurface, IntSize size, std::optional<IntRect> damage, const PaintFunction& paint)
 {
     switch (inception_gfx_take_context_state()) {
     case 1:
@@ -127,6 +139,7 @@ void Renderer::paintGPU(unsigned window, Surface& windowSurface, IntSize size, c
     // needs no flip.
     auto& renderTarget = windowSurface.target;
     if (!renderTarget || renderTarget->width() != size.width() || renderTarget->height() != size.height()) {
+        damage = std::nullopt;
         auto info = SkImageInfo::Make(size.width(), size.height(), kRGBA_8888_SkColorType, kPremul_SkAlphaType, SkColorSpace::MakeSRGB());
         auto properties = FontRenderOptions::singleton().createSurfaceProps();
         renderTarget = SkSurfaces::RenderTarget(grContext, skgpu::Budgeted::kNo, info, 0, kBottomLeft_GrSurfaceOrigin, &properties);
@@ -144,15 +157,9 @@ void Renderer::paintGPU(unsigned window, Surface& windowSurface, IntSize size, c
     }
     auto* surface = renderTarget.get();
 
-    auto* canvas = surface->getCanvas();
     // The surface, and so its canvas and matrix, lives across frames: each
-    // frame's transforms must not carry into the next.
-    SkAutoCanvasRestore restoreCanvas(canvas, true);
-    canvas->clear(SK_ColorTRANSPARENT);
-    {
-        GraphicsContextSkia context(*canvas, RenderingMode::Accelerated, RenderingPurpose::Unspecified);
-        paint(context);
-    }
+    // frame's transforms and clip end with it (paintRegion restores them).
+    paintRegion(*surface->getCanvas(), RenderingMode::Accelerated, damage.value_or(IntRect({ }, size)), paint);
     // Painting a WebGL canvas reads its pixels in that page context's own
     // host context; Skia's must be current again for the flush.
     if (!display.skiaGLContext()->makeContextCurrent())
@@ -176,22 +183,21 @@ void Renderer::paintGPU(unsigned window, Surface& windowSurface, IntSize size, c
     inception_gfx_present(window);
 }
 
-void Renderer::paintCPU(unsigned window, Surface& windowSurface, IntSize size, const Function<void(GraphicsContext&)>& paint)
+void Renderer::paintCPU(unsigned window, Surface& windowSurface, IntSize size, std::optional<IntRect> damage, const PaintFunction& paint)
 {
     auto info = SkImageInfo::Make(size.width(), size.height(), kRGBA_8888_SkColorType, kPremul_SkAlphaType, SkColorSpace::MakeSRGB());
     auto& pixels = windowSurface.pixels;
+    if (windowSurface.pixelsSize != size) {
+        damage = std::nullopt;
+        windowSurface.pixelsSize = size;
+    }
     pixels.resize(info.computeMinByteSize());
     auto properties = FontRenderOptions::singleton().createSurfaceProps();
     auto surface = SkSurfaces::WrapPixels(info, pixels.mutableSpan().data(), info.minRowBytes(), &properties);
     if (!surface)
         return;
 
-    auto* canvas = surface->getCanvas();
-    canvas->clear(SK_ColorTRANSPARENT);
-    {
-        GraphicsContextSkia context(*canvas, RenderingMode::Unaccelerated, RenderingPurpose::Unspecified);
-        paint(context);
-    }
+    paintRegion(*surface->getCanvas(), RenderingMode::Unaccelerated, damage.value_or(IntRect({ }, size)), paint);
     inception_gfx_present_pixels(window, pixels.span().data(), size.width(), size.height());
 }
 

@@ -1,6 +1,9 @@
 #pragma once
 
+#include "IntRect.h"
 #include "IntSize.h"
+#include <wtf/JSONValues.h>
+#include <wtf/MonotonicTime.h>
 #include <wtf/RefPtr.h>
 #include <wtf/URL.h>
 #include <wtf/Vector.h>
@@ -67,9 +70,22 @@ public:
     void setUserAgent(const String& userAgent) { m_userAgent = userAgent; }
     const String& userAgent() const { return m_userAgent; }
 
+    // Repaints everything at the next frame.
     void setNeedsPaint();
+    // Repaints `rect` (CSS pixels of the viewport) at the next frame; an empty
+    // rect presents the last frame again without painting.
+    void setNeedsPaint(const WebCore::IntRect&);
     void requestFrame();
     void frame();
+    // After input: paints now, when a frame is due, instead of at the host's
+    // next animation frame, so the page follows the finger a frame sooner.
+    void frameForInput();
+
+    // "perf.configure" {paintOnInput, damage}: both on by default; off brings
+    // back painting only at the host's frame, and repainting everything.
+    static void configurePerformance(JSON::Object&);
+    // "debug.frames": timings of the frames painted since the last call.
+    static Ref<JSON::Object> takeFrameStats();
 
     void setVisible(bool);
 
@@ -83,6 +99,10 @@ private:
     WebCore::IntSize m_cssSize;
     float m_deviceScaleFactor { 1 };
     bool m_needsPaint { true };
+    // What changed since the last frame, in CSS pixels, unless all of it did.
+    bool m_fullDamage { true };
+    WebCore::IntRect m_damage;
+    MonotonicTime m_lastPaint;
     unsigned m_paintedFrames { 0 };
     String m_userAgent;
 };

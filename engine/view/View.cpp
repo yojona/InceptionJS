@@ -7,6 +7,7 @@
 #include "DatabaseProvider.h"
 #include "DocumentView.h"
 #include "EmptyClients.h"
+#include "FloatRect.h"
 #include "FloatSize.h"
 #include "FrameLoadRequest.h"
 #include "FrameLoader.h"
@@ -36,6 +37,7 @@
 #include "view/Preferences.h"
 #include <emscripten/em_macros.h>
 #include <pal/SessionID.h>
+#include <algorithm>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/RunLoop.h>
 #include <wtf/text/MakeString.h>
@@ -374,11 +376,86 @@ void View::resize(IntSize cssSize, float deviceScaleFactor)
     setNeedsPaint();
 }
 
+// Painting behavior ("perf.configure") and the timings "debug.frames" reports.
+struct FramePerformance {
+    bool paintOnInput { true };
+    bool damage { true };
+    // Milliseconds per painted frame: rendering update (style, layout, page
+    // animation frames), then paint and present; and the share of the
+    // viewport repainted.
+    Vector<double> update;
+    Vector<double> paint;
+    Vector<double> area;
+};
+
+static FramePerformance& framePerformance()
+{
+    static NeverDestroyed<FramePerformance> performance;
+    return performance;
+}
+
+void View::configurePerformance(JSON::Object& args)
+{
+    auto& performance = framePerformance();
+    performance.paintOnInput = args.getBoolean("paintOnInput"_s).value_or(performance.paintOnInput);
+    performance.damage = args.getBoolean("damage"_s).value_or(performance.damage);
+    for (auto* view : all())
+        view->setNeedsPaint();
+}
+
+static Ref<JSON::Object> summary(Vector<double>& values)
+{
+    auto result = JSON::Object::create();
+    if (values.isEmpty())
+        return result;
+    std::sort(values.begin(), values.end());
+    double total = 0;
+    for (double value : values)
+        total += value;
+    result->setDouble("avg"_s, total / values.size());
+    result->setDouble("p50"_s, values[values.size() / 2]);
+    result->setDouble("p95"_s, values[std::min(values.size() - 1, values.size() * 95 / 100)]);
+    result->setDouble("max"_s, values.last());
+    values.clear();
+    return result;
+}
+
+Ref<JSON::Object> View::takeFrameStats()
+{
+    auto& performance = framePerformance();
+    auto result = JSON::Object::create();
+    result->setInteger("frames"_s, static_cast<int>(performance.paint.size()));
+    result->setBoolean("paintOnInput"_s, performance.paintOnInput);
+    result->setBoolean("damage"_s, performance.damage);
+    result->setObject("update"_s, summary(performance.update));
+    result->setObject("paint"_s, summary(performance.paint));
+    result->setObject("area"_s, summary(performance.area));
+    return result;
+}
+
 void View::setNeedsPaint()
 {
     m_needsPaint = true;
+    m_fullDamage = true;
     if (isActive())
         requestFrame();
+}
+
+void View::setNeedsPaint(const IntRect& rect)
+{
+    m_needsPaint = true;
+    m_damage.unite(intersection(rect, IntRect({ }, m_cssSize)));
+    if (isActive())
+        requestFrame();
+}
+
+void View::frameForInput()
+{
+    // At most one frame per display refresh: the host's tick still comes,
+    // and finds nothing left to paint.
+    if (!framePerformance().paintOnInput || !m_needsPaint || MonotonicTime::now() - m_lastPaint < 12_ms)
+        return;
+    frame();
 }
 
 void View::requestFrame()
@@ -392,12 +469,15 @@ void View::frame()
     if (!isActive() || !m_window->isVisible())
         return;
     WindowScope scope(*this);
+    auto start = MonotonicTime::now();
     m_page->updateRendering();
     m_page->finalizeRenderingUpdate({ });
 
     if (!m_needsPaint)
         return;
     m_needsPaint = false;
+    auto painting = MonotonicTime::now();
+    m_lastPaint = painting;
 
     RefPtr frame = mainFrame();
     RefPtr frameView = frame ? frame->view() : nullptr;
@@ -407,11 +487,46 @@ void View::frame()
     if (m_paintedFrames++ < 3)
         report("debug"_s, makeString("frame "_s, m_paintedFrames, ' ', m_cssSize.width(), 'x', m_cssSize.height(), " @"_s, m_deviceScaleFactor));
 
-    Renderer::singleton().paintFrame(m_window->id(), expandedIntSize(FloatSize(m_cssSize) * m_deviceScaleFactor), [&](GraphicsContext& context) {
+    auto pixelSize = expandedIntSize(FloatSize(m_cssSize) * m_deviceScaleFactor);
+    auto& performance = framePerformance();
+    // What changed, in device pixels, rounded out a pixel more so that
+    // antialiased edges of a fractional scale are repainted too.
+    std::optional<IntRect> damage;
+    if (performance.damage && !m_fullDamage) {
+        IntRect region;
+        if (!m_damage.isEmpty()) {
+            FloatRect scaled(m_damage);
+            scaled.scale(m_deviceScaleFactor);
+            region = enclosingIntRect(scaled);
+            region.inflate(1);
+            region.intersect(IntRect({ }, pixelSize));
+        }
+        damage = region;
+    }
+    m_fullDamage = false;
+    m_damage = { };
+
+    double painted = 0;
+    std::optional<FloatRect> repainted;
+    Renderer::singleton().paintFrame(m_window->id(), pixelSize, damage, [&](GraphicsContext& context, const IntRect& region) {
+        painted = static_cast<double>(region.area().value()) / std::max(1u, pixelSize.area().value());
         context.scale(m_deviceScaleFactor);
-        frameView->paint(context, IntRect({ }, m_cssSize));
+        FloatRect css(region);
+        css.scale(1 / m_deviceScaleFactor);
+        if (damage)
+            repainted = css;
+        frameView->paint(context, intersection(enclosingIntRect(css), IntRect({ }, m_cssSize)));
     });
-    Media::endFrame(m_window->id());
+    // A frame that only presented painted no video either.
+    Media::endFrame(m_window->id(), damage ? repainted.value_or(FloatRect()) : std::optional<FloatRect>());
+
+    auto end = MonotonicTime::now();
+    // The last 600 frames at most, for "debug.frames".
+    if (performance.paint.size() < 600) {
+        performance.update.append((painting - start).milliseconds());
+        performance.paint.append((end - painting).milliseconds());
+        performance.area.append(painted);
+    }
 }
 
 } // namespace Inception

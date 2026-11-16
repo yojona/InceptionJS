@@ -1,5 +1,7 @@
 #pragma once
 
+#include "FloatRect.h"
+#include <optional>
 #include <wtf/JSONValues.h>
 #include <wtf/text/WTFString.h>
 
@@ -21,7 +23,9 @@ void setCapabilities(JSON::Object&);
 bool hostSupports(const WebCore::ContentType&, bool mediaSource);
 
 // Called after each painted frame: tells the host where each video is now.
-void endFrame(unsigned window);
+// `repainted` (CSS pixels) is the part of the view the frame painted, all of
+// it when absent: a video outside it was not painted and has not moved.
+void endFrame(unsigned window, std::optional<WebCore::FloatRect> repainted = std::nullopt);
 
 unsigned nextPlayerID();
 

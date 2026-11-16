@@ -45,6 +45,7 @@ public:
     // view; nullopt when it was not painted.
     std::optional<WebCore::FloatRect> takePaintedRect();
     void reportLayoutIfChanged(std::optional<WebCore::FloatRect>);
+    std::optional<WebCore::FloatRect> reportedRect() const { return m_reportedRect; }
 
 private:
     explicit HostMediaPlayer(WebCore::MediaPlayer&);
