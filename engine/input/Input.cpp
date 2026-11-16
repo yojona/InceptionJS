@@ -163,7 +163,7 @@ void dispatchMouse(JSON::Object& args)
 }
 
 // {x, y, deltaX, deltaY, deltaMode, modifiers, id?}, deltas as in DOM
-// WheelEvent (positive Y scrolls down). With an id, "wheel.done" {id} follows
+// WheelEvent (positive Y scrolls down). With an id, "wheel.done" {id, scrollX, scrollY} follows
 // once the page has scrolled, so a host can hold the next deltas until then
 // instead of queueing more than the engine keeps up with.
 void dispatchWheel(JSON::Object& args)
@@ -174,6 +174,15 @@ void dispatchWheel(JSON::Object& args)
             return;
         auto data = JSON::Object::create();
         data->setInteger("id"_s, *id);
+        // Where the page is now: a host moving the last frame along with a
+        // finger learns whether the page scrolled, or stopped at its end, or
+        // left the deltas to a scroller inside it.
+        if (RefPtr frame = mainFrame()) {
+            if (RefPtr view = frame->view()) {
+                data->setInteger("scrollX"_s, view->scrollPosition().x());
+                data->setInteger("scrollY"_s, view->scrollPosition().y());
+            }
+        }
         emitEvent("wheel.done"_s, WTF::move(data));
     });
     RefPtr frame = mainFrame();
