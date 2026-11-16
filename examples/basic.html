@@ -48,6 +48,7 @@
     // ?isolation=window: a profile service and an engine per window;
     // ?isolation=site: an engine per site, windows move between them.
     isolation: params.get('isolation') ?? 'shared',
+    ...(params.has('fonts-cjk') ? { fonts: { cjk: params.get('fonts-cjk') } } : {}),
     // ?engines=n: how many engines before new windows share one.
     ...(params.has('engines') ? { engines: { max: Number(params.get('engines')) } } : {}),
     // A second tab on the same profile attaches to the first; ?attach=off
