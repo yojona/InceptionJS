@@ -1,0 +1,62 @@
+Emoji presentation picks a color font in any font family.
+
+WebCore takes a character's glyph from the primary font's glyph page without
+looking at its emoji presentation, skips outline glyphs for emoji presentation
+only in generic families, and its fontconfig fallback for emoji (the und-Zsye
+locale) does not ask for color. The engine bundles DejaVu, which has outline
+glyphs for some smileys, so they painted in monochrome where other browsers
+show color emoji. An emoji presentation character with an outline glyph now
+goes on to a color font, in any family, and the emoji fallback asks fontconfig
+for color.
+
+diff --git a/Source/WebCore/platform/graphics/FontCascadeFonts.cpp b/Source/WebCore/platform/graphics/FontCascadeFonts.cpp
+index 1ce372e..2d7e4c9 100644
+--- a/Source/WebCore/platform/graphics/FontCascadeFonts.cpp
++++ b/Source/WebCore/platform/graphics/FontCascadeFonts.cpp
+@@ -441,6 +441,13 @@ GlyphData FontCascadeFonts::glyphDataForVariant(char32_t character, const FontCa
+             if (resolvedEmojiPolicy == ResolvedEmojiPolicy::RequireEmoji && data.colorGlyphType == ColorGlyphType::Outline)
+                 continue;
+         }
++#if PLATFORM(EMSCRIPTEN)
++        // An emoji with emoji presentation goes to a color font whichever
++        // family the page names, as in other browsers: the bundled text fonts
++        // (DejaVu) have outline glyphs for some of them.
++        else if (resolvedEmojiPolicy == ResolvedEmojiPolicy::RequireEmoji && data.colorGlyphType == ColorGlyphType::Outline)
++            continue;
++#endif
+ #endif
+ 
+         if (data.font->isInterstitial()) {
+@@ -546,6 +553,15 @@ GlyphData FontCascadeFonts::glyphDataForCharacter(char32_t c, const FontCascadeD
+     }).iterator->value;
+ 
+     GlyphData glyphData = cacheEntry.glyphDataForCharacter(c);
++#if PLATFORM(EMSCRIPTEN)
++    // The page holds the primary font's glyphs: an emoji presentation
++    // character it has an outline glyph for still goes to a color font.
++    if (glyphData.isValid() && resolvedEmojiPolicy == ResolvedEmojiPolicy::RequireEmoji && glyphData.colorGlyphType == ColorGlyphType::Outline) {
++        glyphData = glyphDataForVariant(c, description, fontSelector, variant, resolvedEmojiPolicy);
++        cacheEntry.setGlyphDataForCharacter(c, glyphData);
++        return glyphData;
++    }
++#endif
+     if (!glyphData.isValid()) {
+         // No glyph, resolve per-character.
+         ASSERT(variant == NormalVariant);
+diff --git a/Source/WebCore/platform/graphics/skia/SkiaSystemFallbackFontCache.cpp b/Source/WebCore/platform/graphics/skia/SkiaSystemFallbackFontCache.cpp
+index 8e046f6..215531d 100644
+--- a/Source/WebCore/platform/graphics/skia/SkiaSystemFallbackFontCache.cpp
++++ b/Source/WebCore/platform/graphics/skia/SkiaSystemFallbackFontCache.cpp
+@@ -101,6 +101,12 @@ private:
+             }
+ 
+             FcPatternAddBool(pattern, FC_SCALABLE, FcTrue);
++#if PLATFORM(EMSCRIPTEN)
++            // Emoji presentation asks for a color font, which fontconfig then
++            // sorts before fonts with outline glyphs for the same characters.
++            if (locale == "und-Zsye"_s)
++                FcPatternAddBool(pattern, FC_COLOR, FcTrue);
++#endif
+ 
+             FcConfigSubstitute(nullptr, pattern, FcMatchPattern);
+             FcDefaultSubstitute(pattern);
