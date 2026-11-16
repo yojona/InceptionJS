@@ -277,13 +277,24 @@ static void handleFocus(JSON::Object& args)
     setWindowFocus(args.getBoolean("focused"_s).value_or(false));
 }
 
+// What input changed shows at once, not at the host's next animation frame:
+// a typed letter, a hover, a pressed button (see View::frameForInput).
+static CommandHandler paintingAfter(void (*handler)(JSON::Object&))
+{
+    return [handler](JSON::Object& args) {
+        handler(args);
+        if (auto* view = View::singleton())
+            view->frameForInput();
+    };
+}
+
 void registerInputCommands()
 {
     // Text from the host's input method: dead keys, accents, IME. "ime.set"
     // {text, selectionStart, selectionEnd} shows a composition in progress,
     // "ime.commit" {text} ends it with its final text (or inserts text when
     // nothing was being composed), "ime.cancel" drops it.
-    registerCommand("ime.set"_s, [](JSON::Object& args) {
+    registerCommand("ime.set"_s, paintingAfter([](JSON::Object& args) {
         RefPtr frame = focusedFrame();
         if (!frame)
             return;
@@ -292,11 +303,11 @@ void registerInputCommands()
         unsigned end = args.getInteger("selectionEnd"_s).value_or(start);
         Vector<CompositionUnderline> underlines { CompositionUnderline { 0, text.length(), CompositionUnderlineColor::TextColor, Color::black, false } };
         frame->editor().setComposition(text, underlines, { }, { }, start, end);
-    });
-    registerCommand("ime.commit"_s, [](JSON::Object& args) {
+    }));
+    registerCommand("ime.commit"_s, paintingAfter([](JSON::Object& args) {
         if (RefPtr frame = focusedFrame())
             frame->editor().confirmComposition(args.getString("text"_s));
-    });
+    }));
     registerCommand("ime.cancel"_s, [](JSON::Object&) {
         if (RefPtr frame = focusedFrame())
             frame->editor().cancelComposition();
@@ -309,9 +320,9 @@ void registerInputCommands()
             frame->editor().command(args.getString("command"_s)).execute();
     });
 
-    registerCommand("mouse"_s, dispatchMouse);
+    registerCommand("mouse"_s, paintingAfter(dispatchMouse));
     registerCommand("wheel"_s, dispatchWheel);
-    registerCommand("key"_s, dispatchKey);
+    registerCommand("key"_s, paintingAfter(dispatchKey));
     registerCommand("focus"_s, handleFocus);
     // {window}: the host moved focus to this window.
     registerCommand("window.focus"_s, [](JSON::Object&) {
