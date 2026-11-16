@@ -209,7 +209,7 @@ browser test suite or verified on real sites; **Partial** has a limit noted.
 | WebGL 1 | Works | Many contexts per page, with a shared budget |
 | WebGL 2 | Works | Runs on the host GPU |
 | WebGPU | No | Disabled in the build |
-| System fonts, emoji, CJK | Works | Bundled fallback fonts, including color emoji |
+| System fonts, emoji, CJK | Works | Bundled fallback fonts and color emoji; the CJK font loads as [`fonts.cjk`](#fonts) says |
 | WOFF2 web fonts | No | Disabled in the build; other formats load |
 
 **Media**
@@ -448,6 +448,57 @@ npx inceptionjs check <url> [--relay <ws>] explain what a deployment is missing
 npx inceptionjs relay [--port N] [--dev] [--origin URL] [--secret-env NAME]
                       [--metrics] [--log json] [--drain-seconds N]
                       [--tls-cert FILE --tls-key FILE]
+```
+
+### Options
+
+`Inception.configure(options)` sets them for every view; call it before the first view
+starts. Only `engineUrl` and `relayUrl` are required.
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `engineUrl` | (required) | URL of `inception-engine.js`; the `.wasm`, `.data` and `-cjk.ttc` files sit next to it |
+| `relayUrl` | (required) | The relay (`ws://` or `wss://`), with `?token=` when the relay requires one |
+| `binaryenUrl` | next to the host modules | binaryen's `index.js`, loaded the first time a page uses WebAssembly |
+| `fonts` | `{ cjk: 'auto' }` | When engines get the CJK font they do not bundle; see [Fonts](#fonts) |
+| `isolation` | `'shared'` | `'shared'`, `'window'` or `'site'`; see [Isolation modes](#isolation-modes) |
+| `engines` | follows the device's memory | `{ max }`: engines a view runs before new windows share one (`'window'`, `'site'`) |
+| `maxMemoryMB` | `2048` | How far an engine's memory may grow (512 to 4096); `'auto'` sizes it from the device |
+| `policy` | safe defaults | What pages may do to the person's browser; see [Safe defaults](#safe-defaults) |
+| `storage` | `{ profile: 'default' }` | `profile`, `fresh` (start empty), `ephemeral` (memory only, `'window'` isolation) |
+| `userAgent` | the engine's | User-Agent for every view |
+| `userStyles` | none | CSS every page gets, in a cascade layer so the page's own styles win |
+| `webglContexts` | derived from the browser | How many WebGL contexts pages may hold |
+| `modules` | none | What pages get for geolocation and notifications |
+| `agent` | off | `true` or options: offer the agent namespace on every view; see [Agents](#agents) |
+| `attach` | `true` | A view whose profile another tab holds shows a window of it instead of failing |
+| `brokerUrl` | next to the host modules | Where the site serves `host/broker.js` |
+| `debug` | `false` | Enable `debugEvaluate`, `debugCommand`, `debugHeap` and `debugFrames` (development only) |
+
+#### Fonts
+
+The engine bundles DejaVu (Latin, Greek, Cyrillic and more) and color emoji. The CJK
+font (Chinese, Japanese and Korean, `inception-engine-cjk.ttc`, about 11 MB with
+Brotli) is a separate file, loaded as `fonts.cjk` says:
+
+| `fonts.cjk` | When the font loads | Use it when |
+| --- | --- | --- |
+| `'auto'` (default) | In the background after the first frame; on demand instead when the person asks to save data (`Save-Data`) or the connection is 2G or 3G | Most sites |
+| `'background'` | In the background after the first frame, always | CJK text must never wait, whatever the connection |
+| `'on-demand'` | The first time a page shows a CJK character; until it arrives (a second or more) those characters show as boxes | Your audience rarely reads CJK and data matters |
+| `'startup'` | As soon as the engine starts, before the first page loads | A site mostly in Chinese, Japanese or Korean |
+| `'off'` | Never; CJK characters show as boxes | You do not ship the file |
+
+An explicit value is followed as given; only `'auto'` adapts. The font is fetched once
+per page load and revalidated with the server, so a returning visitor's browser cache
+usually answers it. `fonts.url` serves it from somewhere else (a CDN):
+
+```js
+Inception.configure({
+  engineUrl: '/inception-engine/inception-engine.js',
+  relayUrl: 'wss://relay.example.com/?token=...',
+  fonts: { cjk: 'auto', url: 'https://cdn.example.com/inception/' },
+});
 ```
 
 ## Windows and isolation modes
