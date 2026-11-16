@@ -244,6 +244,12 @@ export class InceptionView extends HTMLElement {
       textarea { position: absolute; left: 0; top: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; resize: none; pointer-events: none; }
       .message { position: absolute; inset: 0; z-index: 4; display: flex; align-items: center; justify-content: center; padding: 24px;
         text-align: center; font: 500 14px/1.5 system-ui, sans-serif; color: #333; background: #f6f6f7; }
+      .loading { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; gap: 12px; align-items: center; justify-content: center;
+        font: 500 13px/1.4 system-ui, sans-serif; color: #8a8a93; pointer-events: none; }
+      .loading::before { content: ''; width: 22px; height: 22px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent;
+        animation: inception-spin 0.8s linear infinite; }
+      @keyframes inception-spin { to { transform: rotate(1turn); } }
+      @media (prefers-reduced-motion: reduce) { .loading::before { animation-duration: 2.4s; } }
       ${PROVENANCE_STYLE}
     </style><div class="media" part="media"></div><canvas part="screen"></canvas><textarea aria-label="Web content" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>`;
     this.#canvas = shadow.querySelector('canvas');
@@ -370,6 +376,7 @@ export class InceptionView extends HTMLElement {
   get closed() { return this.#closed; }
 
   #teardown() {
+    this.#hideLoading();
     this.#standby?.abort();
     this.#connection?.close('the view closed');
     this.#connection = null;
@@ -748,6 +755,7 @@ export class InceptionView extends HTMLElement {
   // This document holds the profile. `url`: where window 1 starts (the one it
   // had, for a view that took the profile over from its host).
   async #startHost(profile, { lock, url = this.getAttribute('src') ?? '' }) {
+    if (!this.#headless()) this.#showLoading('Starting the engine...');
     const fresh = this.hasAttribute('fresh-profile') || config.storage?.fresh === true;
     const isolation = this.#isolation();
     // Before the engine starts, so another document can tell this one accepts
@@ -781,7 +789,9 @@ export class InceptionView extends HTMLElement {
     this.#display = new Display({ element: this, shadow: this.#shadow, canvas: this.#canvas, textInput: this.#textInput, send: (command, args) => this.#main.channel.send(command, args) });
     if (!headless) {
       this.#main.display = this.#display;
-      this.#main.detachSink = primary.runtime.attachDisplay(1, this.#display.sink);
+      // The first frame takes the loading indicator away.
+      const sink = this.#display.sink;
+      this.#main.detachSink = primary.runtime.attachDisplay(1, { ...sink, present: (bitmap) => { this.#hideLoading(); sink.present(bitmap); } });
     }
     this.#server = this.#createServer();
     const [serverSide, clientSide] = createInPagePair();
@@ -825,6 +835,7 @@ export class InceptionView extends HTMLElement {
       await this.#client.hello(this.#capabilities());
     });
     this.#tabs.started(ready.tab ?? 1);
+    if (this.#loadingBox) this.#loadingBox.textContent = 'Loading...';
     this.#main.size = { width, height };
     if (gpu === 'on' && ready.renderer !== 'gpu') throw new Error('gpu="on" but WebGL2 is unavailable in the engine worker');
     this.dataset.renderer = ready.renderer;
@@ -1534,9 +1545,29 @@ export class InceptionView extends HTMLElement {
     this.#shadow.querySelector('.message:not(.tamper)')?.remove();
   }
 
+  // Until the first frame: the engine downloads, starts and loads the page,
+  // which can take seconds, and the view says so instead of staying blank.
+  // Embedders style or hide it with ::part(loading).
+  #loadingBox = null;
+  #showLoading(text) {
+    if (!this.#loadingBox) {
+      this.#loadingBox = document.createElement('div');
+      this.#loadingBox.className = 'loading';
+      this.#loadingBox.setAttribute('part', 'loading');
+      this.#loadingBox.setAttribute('role', 'status');
+      this.#shadow.append(this.#loadingBox);
+    }
+    this.#loadingBox.textContent = text;
+  }
+  #hideLoading() {
+    this.#loadingBox?.remove();
+    this.#loadingBox = null;
+  }
+
   // Why the view cannot start, shown in the view itself so it never just stays
   // blank (e.g. the profile is open in another tab).
   #showMessage(text) {
+    this.#hideLoading();
     let box = this.#shadow.querySelector('.message');
     if (!box) {
       box = document.createElement('div');
