@@ -31,10 +31,12 @@ fonts=/usr/share/fonts/truetype/dejavu
 cp "$fonts"/*.ttf "$FS/usr/share/fonts/"
 # Emoji and Chinese, Japanese and Korean text; only the regular CJK weight,
 # which the font engine emboldens when a page asks for bold.
-for font in /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc; do
-  [ -f "$font" ] || fail "missing $font (the build image installs it)"
-  cp "$font" "$FS/usr/share/fonts/"
-done
+cjk=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+[ -f "$cjk" ] || fail "missing $cjk (the build image installs it)"
+cp "$cjk" "$FS/usr/share/fonts/"
+# Emoji: the COLRv1 (vector) build of Noto Color Emoji, pinned.
+mkdir -p "$ARCHIVES"
+cp "$(fetch_pinned noto-emoji)" "$FS/usr/share/fonts/NotoColorEmoji.ttf"
 
 resources="$WORK/webkit/Source/WebCore/Resources"
 [ -d "$resources" ] || fail "no WebKit checkout at $WORK/webkit; run build/webkit.sh first"

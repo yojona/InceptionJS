@@ -53,3 +53,8 @@ curl_SHA256=955f6e729ad6b3566260e8fef68620e76ba3c31acf0a18524416a185acf77992
 
 fontconfig_URL=https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.15.0.tar.xz
 fontconfig_SHA256=63a0658d0e06e0fa886106452b58ef04f21f58202ea02a94c39de0d3335d7c0e
+
+# Color emoji as vectors (COLRv1): the same Noto designs as the bitmap font,
+# a quarter of its size compressed, sharp at any size.
+noto_emoji_URL=https://raw.githubusercontent.com/googlefonts/noto-emoji/1ffdd21391dd1f25c081fa93a9dea0c7c029442b/2D/fonts/Noto-COLRv1.ttf
+noto_emoji_SHA256=b8e25ea68db82f9e4d0aee921f4420be2be39887bd5c893a2ad98710531f9d0c
