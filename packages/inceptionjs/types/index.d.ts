@@ -307,6 +307,9 @@ export interface ContextMenuDetail {
   editable?: boolean;
 }
 
+/** avg, median, 95th percentile and maximum; empty when no frame was painted. */
+export interface FrameTiming { avg?: number; p50?: number; p95?: number; max?: number }
+
 export interface InceptionViewEventMap {
   navigate: CustomEvent<{ url: string }>;
   /** The page's title; '' when it has none (show its address instead, as browsers do). */
@@ -452,6 +455,8 @@ export declare class InceptionView extends HTMLElement {
   debugEvaluate(source: string, options?: { window?: number }): Promise<unknown>;
   /** JS heap size and capacity, and wasm memory, in bytes. */
   debugHeap(): Promise<{ heapSize: number; heapCapacity: number; memory: number }>;
+  /** Timings (ms) of the frames painted since the last call; `area` is the share of the view repainted. */
+  debugFrames(): Promise<{ frames: number; paintOnInput: boolean; damage: boolean; update: FrameTiming; paint: FrameTiming; area: FrameTiming }>;
   /** Sends a raw engine command; `args.window` picks the window, and so the engine, it goes to. */
   debugCommand(command: string, args?: Record<string, unknown>): Promise<void>;
   /** The engines of this view with the windows each runs, and their memory in bytes (`site` is set with isolation 'site'). */

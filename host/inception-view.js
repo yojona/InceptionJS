@@ -507,6 +507,18 @@ export class InceptionView extends HTMLElement {
     return reply;
   }
 
+  // Timings of the frames painted since the last call, in milliseconds:
+  // {frames, update, paint, area} with {avg, p50, p95, max} each (`area`: the
+  // share of the view repainted). "perf.configure" ({paintOnInput, damage})
+  // through debugCommand turns the painting shortcuts off to compare.
+  async debugFrames() {
+    this.#requireDebug();
+    await this.ready;
+    const reply = new Promise((resolve) => this.#runtime.addEventListener('debug.frames', (e) => resolve(e.detail), { once: true }));
+    this.#runtime.send('debug.frames');
+    return reply;
+  }
+
   // `args.window` picks the window, and so the engine, it goes to.
   async debugCommand(command, args = {}) {
     this.#requireDebug();
