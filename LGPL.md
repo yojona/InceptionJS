@@ -2,7 +2,7 @@
 
 InceptionJS is licensed under the Apache License 2.0 (see [LICENSE](LICENSE)). The
 **engine** files it loads (`inception-engine.js`, `inception-engine.wasm`,
-`inception-engine.data`) are different: they are one WebAssembly program that
+`inception-engine.data`; `inception-engine-cjk.ttc` is a font, see below) are different: they are one WebAssembly program that
 statically links **WebKit** (WebCore and JavaScriptCore) with our embedder and a set of
 libraries. WebKit is not ours. Its files are licensed one by one, mostly under the GNU
 Lesser General Public License (LGPL 2 and 2.1, "or later" where the file says so) and
@@ -22,7 +22,11 @@ This is a plain description, not legal advice.
 | Emscripten runtime | Pinned in `build/pins.sh` (`EMSDK_VERSION`) | MIT and others, see THIRD_PARTY_NOTICES.md |
 
 The engine is rebuilt from these inputs plus the fonts and the certificate bundle that
-the Debian image in `build/Dockerfile` provides. The host, the npm packages and the relay (`host/`, `packages/`) are separate
+the Debian image in `build/Dockerfile` provides (the color emoji font is pinned in
+`build/pins.sh` instead). `inception-engine-cjk.ttc` is Noto Sans CJK, unmodified,
+under the SIL Open Font License; it is a font the engine loads, not part of the
+combined work. Each release carries `licenses.txt` with the license texts of all of
+it (`build/licenses.sh`). The host, the npm packages and the relay (`host/`, `packages/`) are separate
 programs that talk to the engine over a message channel; they are not part of the
 combined work.
 
@@ -65,12 +69,15 @@ docker run --rm -v "$PWD":/work/inceptionjs inceptionjs-build bash build/all.sh
 3. `build/webkit.sh`: fetches WebKit at the pinned commit (sparse: `Source` and
    `Tools/Scripts`) and applies `patches/webkit/*.patch` in order.
 4. `build/fs.sh`: stages the file system image (fonts, ICU data, fontconfig files,
-   certificate bundle, WebKit resources) that becomes `inception-engine.data`. It
-   reads fonts and the certificate bundle from the Debian image defined in
-   `build/Dockerfile`.
+   certificate bundle, WebKit resources) that becomes `inception-engine.data`, and
+   puts the CJK font aside as `inception-engine-cjk.ttc`. It reads fonts and the
+   certificate bundle from the Debian image defined in `build/Dockerfile`.
 5. `build/engine.sh`: configures and builds WebKit plus `engine/` into one module.
+6. `build/licenses.sh`: writes `licenses.txt` from the license files of the sources
+   above.
 
-The output is `.work/out/engine/` with `inception-engine.js`, `.wasm` and `.data`.
+The output is `.work/out/engine/` with `inception-engine.js`, `.wasm`, `.data`,
+`inception-engine-cjk.ttc` and `licenses.txt`.
 `build/remote.sh` runs the same thing on a rented Hetzner Cloud server and always
 deletes the server afterwards, if you prefer that.
 
@@ -83,7 +90,7 @@ deletes the server afterwards, if you prefer that.
   applied in order), then run `build/engine.sh`. A changed series is re-applied to a
   clean checkout, then the build is incremental through the compiler cache. The link
   flags are in `engine/embedder.cmake` and `build/engine.sh`.
-- Use the result: serve the three files from any directory and point `engineUrl` at
+- Use the result: serve the engine files from any directory and point `engineUrl` at
   `inception-engine.js`. For local testing, `ENGINE_DIR=.work/out/engine npm run serve`
   serves them to the example pages and the test suite.
 

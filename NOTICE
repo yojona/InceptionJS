@@ -1,8 +1,8 @@
 InceptionJS
 Copyright 2026 The InceptionJS Authors
 
-This product includes software developed by the InceptionJS project
-(https://github.com/yojona/InceptionJS). The people who made it are listed in
+This product includes InceptionJS (https://github.com/yojona/InceptionJS),
+licensed under the Apache License 2.0. The people who made it are listed in
 the AUTHORS file.
 
 The engine files built from this repository contain WebKit (WebCore and
