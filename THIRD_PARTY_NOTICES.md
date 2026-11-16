@@ -113,7 +113,7 @@ library code (MIT).
 | fontconfig configuration | fontconfig install | fontconfig license |
 | ICU data `icudt77l.dat` | ICU 77.1 | Unicode License v3 |
 | DejaVu fonts | Debian `fonts-dejavu-core`, `fonts-dejavu-extra` | Bitstream Vera license with public-domain changes; the fonts may not be sold by themselves and modified versions may not use the "Bitstream Vera" or "DejaVu" names |
-| Noto Color Emoji | Debian `fonts-noto-color-emoji` | SIL Open Font License 1.1 (check the package's `copyright` file for the version you build) |
+| Noto Color Emoji (COLRv1) | googlefonts/noto-emoji, `2D/fonts/Noto-COLRv1.ttf` pinned in `build/pins.sh` | SIL Open Font License 1.1 |
 | Noto Sans CJK Regular | Debian `fonts-noto-cjk` | SIL Open Font License 1.1 |
 | Certificate bundle `cacert.pem` | Debian `ca-certificates` (Mozilla roots) | MPL-2.0 for the certificate data |
 | WebKit built-in resources | WebKit checkout (`Source/WebCore/Resources`, `Composite.wav`) | per the WebKit files above |

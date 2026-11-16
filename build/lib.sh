@@ -77,6 +77,21 @@ unpack_pinned() {
   printf '%s\n' "$dir"
 }
 
+# Downloads and verifies a pinned single file (not an archive). Prints its path.
+fetch_pinned() {
+  local name="$1"
+  local key="${name//-/_}"
+  local url_var="${key}_URL" sum_var="${key}_SHA256"
+  local url="${!url_var}" want="${!sum_var}"
+  local file="$ARCHIVES/$name.${url##*.}"
+  if [ ! -f "$file" ] || [ "$(sha256_of "$file")" != "$want" ]; then
+    curl -fsSL --retry 3 -o "$file.part" "$url" || fail "download failed: $url"
+    mv "$file.part" "$file"
+  fi
+  [ "$(sha256_of "$file")" = "$want" ] || fail "checksum mismatch for $name ($url)"
+  printf '%s\n' "$file"
+}
+
 # True when a dependency already installed its marker file into the sysroot.
 installed() { [ -e "$SYSROOT/$1" ]; }
 
