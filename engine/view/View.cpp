@@ -387,6 +387,9 @@ struct FramePerformance {
     Vector<double> update;
     Vector<double> paint;
     Vector<double> area;
+    // Scrolls whose pixels were moved, and those repainted instead.
+    unsigned movedScrolls { 0 };
+    unsigned repaintedScrolls { 0 };
 };
 
 static FramePerformance& framePerformance()
@@ -431,6 +434,17 @@ Ref<JSON::Object> View::takeFrameStats()
     result->setObject("update"_s, summary(performance.update));
     result->setObject("paint"_s, summary(performance.paint));
     result->setObject("area"_s, summary(performance.area));
+    result->setInteger("movedScrolls"_s, std::exchange(performance.movedScrolls, 0));
+    result->setInteger("repaintedScrolls"_s, std::exchange(performance.repaintedScrolls, 0));
+    // Why WebCore would not report scrolls to be moved (slow scrolling).
+    if (auto* view = singleton()) {
+        if (RefPtr frame = view->mainFrame()) {
+            if (RefPtr frameView = frame->view()) {
+                result->setBoolean("canBlitOnScroll"_s, frameView->canBlitOnScroll());
+                result->setBoolean("hasSlowRepaintObjects"_s, frameView->hasSlowRepaintObjects());
+            }
+        }
+    }
     return result;
 }
 
@@ -460,6 +474,7 @@ void View::scrolled(const IntSize& offset, const IntRect& scrolledRect)
         && std::abs(offset.width()) < rect.width() && std::abs(offset.height()) < rect.height()
         && (!m_scroll || m_scroll->first == rect);
     if (!movable) {
+        framePerformance().repaintedScrolls++;
         setNeedsPaint(rect);
         if (m_scroll)
             setNeedsPaint(m_scroll->first);
@@ -480,10 +495,17 @@ void View::scrolled(const IntSize& offset, const IntRect& scrolledRect)
         m_damage.unite({ rect.x(), rect.y(), offset.width(), rect.height() });
     else if (offset.width() < 0)
         m_damage.unite({ rect.maxX() + offset.width(), rect.y(), -offset.width(), rect.height() });
+    framePerformance().movedScrolls++;
     m_scroll = { rect, m_scroll ? m_scroll->second + offset : offset };
     m_needsPaint = true;
     if (isActive())
         requestFrame();
+}
+
+void View::slowScrolled(const IntRect& rect)
+{
+    framePerformance().repaintedScrolls++;
+    setNeedsPaint(rect);
 }
 
 void View::frameForInput()
@@ -507,6 +529,14 @@ void View::frame()
         return;
     WindowScope scope(*this);
     auto start = MonotonicTime::now();
+    // WebCore moves a scroll's pixels only over opaque content, which it
+    // learns from painting a root background; a page without one never
+    // counts, though the base background is painted under it. Nothing shows
+    // through the main frame here: its pixels can always move.
+    if (RefPtr frame = mainFrame()) {
+        if (RefPtr frameView = frame->view(); frameView && !frameView->isTransparent())
+            frameView->setContentIsOpaque(true);
+    }
     m_page->updateRendering();
     m_page->finalizeRenderingUpdate({ });
 
