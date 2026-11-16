@@ -56,6 +56,12 @@ export const Inception = {
   // document that holds the profile accepts such views (host/attach.js). false
   // restores the error. brokerUrl: where the site serves host/broker.js, if not
   // next to the host modules (documents of one site must agree on it).
+  // fonts: {cjk, url}, when engines get the CJK font they do not bundle
+  // (inception-engine-cjk.ttc, about 11 MB): 'auto' (default) in the
+  // background, or on demand when the person saves data or the connection is
+  // slow; 'background' after the first frame, 'on-demand' when a page first
+  // needs it, 'startup' at once, 'off' never. `url` is where the font file
+  // is, if not next to the engine files.
   configure(options) {
     const { wispUrl, ...rest } = options;
     // wispUrl: the earlier name of relayUrl, still accepted.
@@ -771,7 +777,7 @@ export class InceptionView extends HTMLElement {
         lock.release();
         lock = null;
       }
-      this.#service = ProfileService.acquire({ engineUrl: config.engineUrl, relayUrl: config.relayUrl, profile, fresh, ephemeral: config.storage?.ephemeral === true, preferences: this.#preferences.resolved(), debug: this.#debugEnabled(), maxMemoryMB: config.maxMemoryMB, lock });
+      this.#service = ProfileService.acquire({ engineUrl: config.engineUrl, relayUrl: config.relayUrl, profile, fresh, ephemeral: config.storage?.ephemeral === true, preferences: this.#preferences.resolved(), debug: this.#debugEnabled(), maxMemoryMB: config.maxMemoryMB, fonts: config.fonts, lock });
       await this.#service.start();
       this.#watchService(this.#service);
     } else {
@@ -936,7 +942,7 @@ export class InceptionView extends HTMLElement {
   // objects that serve it.
   #createSlot({ primary, site }) {
     const window = this.#isolation() !== 'shared';
-    const runtime = new EngineRuntime({ engineUrl: config.engineUrl, relayUrl: config.relayUrl, maxMemoryMB: config.maxMemoryMB, role: window ? 'content' : 'standalone' });
+    const runtime = new EngineRuntime({ engineUrl: config.engineUrl, relayUrl: config.relayUrl, maxMemoryMB: config.maxMemoryMB, role: window ? 'content' : 'standalone', fonts: config.fonts });
     const slot = new EngineSlot({ runtime, primary, allocate: (local) => (window ? (primary && local === 1 ? 1 : this.#nextWindow++) : local) });
     // isolation 'site': the site the engine is locked to ('' for none).
     slot.site = site;

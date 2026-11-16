@@ -156,6 +156,37 @@ export function loadEngine(engineUrl) {
   return Promise.all([entry.module, entry.data]).then(([module, data]) => ({ module, data }));
 }
 
+// Fonts the engine does not bundle (engine/view/Fonts.cpp): the file each
+// set is, next to the engine files unless `fonts.url` names another place.
+// Fetched once per document, revalidated with the server, and handed to
+// every engine that asks.
+const LAZY_FONTS = { cjk: 'inception-engine-cjk.ttc' };
+const FONT_MODES = new Set(['auto', 'on-demand', 'background', 'startup', 'off']);
+
+// 'auto': in the background, unless the person asked to save data or the
+// connection is slow; then only when a page needs the font.
+function resolveFontMode(mode) {
+  if (mode !== 'auto') return mode;
+  const connection = globalThis.navigator?.connection;
+  const saving = connection?.saveData === true || /(^|-)(2g|3g)$/.test(connection?.effectiveType ?? '');
+  return saving ? 'on-demand' : 'background';
+}
+const lazyFonts = new Map();
+
+function lazyFont(url) {
+  let bytes = lazyFonts.get(url);
+  if (!bytes) {
+    bytes = fetch(url, { cache: 'no-cache' }).then((response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.arrayBuffer();
+    });
+    // A failed load is tried again by the next engine that asks.
+    bytes.catch(() => lazyFonts.delete(url));
+    lazyFonts.set(url, bytes);
+  }
+  return bytes;
+}
+
 // The imports a content engine must never reach: the origin-private file
 // system and the relay's sockets (see engine/js/guard.js, which does the same
 // in the engine's own threads).
@@ -180,16 +211,23 @@ export class EngineRuntime extends EventTarget {
   #maxMemoryMB;
   #shareCode;
   #role;
+  #fonts;
+  #fontsAsked = new Set();
 
   // `canvas`, when given, shows window 1. `shareCode` (default true): start
   // from the document's one compiled module (loadEngine) instead of letting
   // the engine fetch and compile its own.
   // `role`: 'content' locks the engine out of files and the network in
   // every thread, whatever its own code tries; 'profile' or 'standalone'
-  // (default) leave them.
-  constructor({ engineUrl, relayUrl, canvas, maxMemoryMB, shareCode = true, role = 'standalone' }) {
+  // (default) leave them. `fonts`: {cjk, url}, when the engine gets the
+  // fonts it does not bundle: 'auto' (default: 'background', or 'on-demand'
+  // when saving data or on a slow connection), 'on-demand' when a page first
+  // needs one, 'background' after the first frame, 'startup' as soon as it
+  // runs, 'off' never (those characters show as boxes).
+  constructor({ engineUrl, relayUrl, canvas, maxMemoryMB, shareCode = true, role = 'standalone', fonts = {} }) {
     super();
     this.engineUrl = engineUrl;
+    this.#fonts = { cjk: resolveFontMode(FONT_MODES.has(fonts?.cjk) ? fonts.cjk : 'auto'), url: typeof fonts?.url === 'string' && fonts.url ? fonts.url : null };
     this.#maxMemoryMB = maxMemoryMB;
     this.#shareCode = shareCode;
     this.#role = role;
@@ -373,7 +411,9 @@ export class EngineRuntime extends EventTarget {
       this.#worker = worker;
       this.features = Array.isArray(payload.features) ? payload.features.filter((f) => typeof f === 'string') : [];
       for (const [message, transfer] of this.#pending.splice(0)) worker.postMessage(message, transfer);
+      if (this.#fonts.cjk === 'startup') this.#sendFont('cjk');
     }
+    if (event === 'font.missing' && this.#fonts[payload.set] && this.#fonts[payload.set] !== 'off') this.#sendFont(payload.set);
     // One handler failing on a malformed payload must not keep the rest from the event.
     try {
       this.onEngineEvent?.(event, payload);
@@ -444,6 +484,20 @@ export class EngineRuntime extends EventTarget {
 
   #presentBitmap(window, bitmap, info) {
     this.#frames.present(window, bitmap, info);
+    if (this.#fonts.cjk === 'background') this.#sendFont('cjk');
+  }
+
+  // A font set the engine does not bundle, loaded once per engine.
+  #sendFont(set) {
+    if (this.#fontsAsked.has(set) || !LAZY_FONTS[set]) return;
+    this.#fontsAsked.add(set);
+    const url = new URL(LAZY_FONTS[set], this.#fonts.url ? new URL(this.#fonts.url, globalThis.location?.href) : this.engineUrl).href;
+    lazyFont(url).then((bytes) => {
+      const copy = bytes.slice(0);
+      this.#worker?.postMessage({ inceptionFont: { set, bytes: copy } }, [copy]);
+    }, (error) => {
+      console.warn(`[host] could not load the ${set} font from ${url}: ${error.message}; those characters show as boxes`);
+    });
   }
 
   // CPU fallback frames arrive as RGBA bytes. They go through an ImageBitmap so
