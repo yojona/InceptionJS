@@ -1,0 +1,34 @@
+Tell the embedder which characters need a fallback font.
+
+The engine bundles some fonts lazily (CJK). FontCache asks for a system
+fallback font when no font in the cascade has a character; the embedder now
+hears about that character, loads a font that covers it if it has one, and
+invalidates the font caches so the text is shaped again.
+
+diff --git a/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp b/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
+index ad30902..070aaf9 100644
+--- a/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
++++ b/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
+@@ -51,6 +51,12 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+ #endif
+ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
+ 
++#if PLATFORM(EMSCRIPTEN)
++// The embedder learns which characters no bundled font has, and can load a
++// font that has them (fonts it does not bundle at startup).
++extern "C" void inception_font_fallback(char32_t);
++#endif
++
+ namespace WebCore {
+ 
+ void FontCache::platformInit()
+@@ -130,6 +136,9 @@ RefPtr<Font> FontCache::systemFallbackForCharacterCluster(const FontDescription&
+     ++codePointsIterator;
+     if (isDefaultIgnorableCodePoint(baseCharacter) || isPrivateUseAreaCharacter(baseCharacter))
+         return nullptr;
++#if PLATFORM(EMSCRIPTEN)
++    inception_font_fallback(baseCharacter);
++#endif
+ 
+     bool isEmoji = (codePointsIterator != codePoints.end() && *codePointsIterator == emojiVariationSelector) || preferColoredFont == PreferColoredFont::Yes;
+ 
