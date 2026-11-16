@@ -176,17 +176,17 @@ static void registerEngines(MediaEngineRegistrar registrar)
     registrar(makeUnique<HostMediaEngineFactory>());
 }
 
-void endFrame(unsigned window, std::optional<FloatRect> repainted)
+void endFrame(unsigned window, const Region& repainted)
 {
     // The window's players painted this frame report their box; its other
     // players are hidden, unless the frame left their box alone. Other
     // windows' players are not this frame's.
-    HostMediaPlayer::forEach([window, repainted](HostMediaPlayer& player) {
+    HostMediaPlayer::forEach([window, &repainted](HostMediaPlayer& player) {
         if (player.window() != window)
             return;
         auto painted = player.takePaintedRect();
         auto reported = player.reportedRect();
-        if (!painted && repainted && reported && !repainted->intersects(*reported))
+        if (!painted && reported && !repainted.intersects(Region(enclosingIntRect(*reported))))
             return;
         player.reportLayoutIfChanged(painted);
     });

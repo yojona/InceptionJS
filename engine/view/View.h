@@ -1,6 +1,7 @@
 #pragma once
 
 #include "IntRect.h"
+#include "Region.h"
 #include "IntSize.h"
 #include <wtf/JSONValues.h>
 #include <wtf/MonotonicTime.h>
@@ -106,7 +107,7 @@ private:
     bool m_needsPaint { true };
     // What changed since the last frame, in CSS pixels, unless all of it did.
     bool m_fullDamage { true };
-    WebCore::IntRect m_damage;
+    WebCore::Region m_damage;
     // A scroll since the last frame whose pixels the next frame moves.
     std::optional<std::pair<WebCore::IntRect, WebCore::IntSize>> m_scroll;
     MonotonicTime m_lastPaint;

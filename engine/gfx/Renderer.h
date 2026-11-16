@@ -40,11 +40,11 @@ public:
     Mode mode() const { return m_mode; }
 
     // Paints one frame of `window` at `pixelSize` and presents it. `damage`
-    // (device pixels) limits the paint to what changed since the last frame,
+    // (rects in device pixels) limits the paint to what changed since the last frame,
     // which the window's target still holds; empty presents it unchanged, and
     // none repaints everything. A new or resized target is always repainted
-    // whole. `paint` receives a context in device pixels, clipped to the
-    // region it is given, with the transparent clear done there.
+    // whole. `paint` is called once per rect, with a context in device pixels
+    // clipped to it and the transparent clear done there.
     // `scroll` first moves the pixels of a rect by an offset (a page that
     // scrolled), so that `damage` need only hold what scrolled in; where they
     // cannot be moved, everything is repainted.
@@ -53,7 +53,8 @@ public:
         WebCore::IntRect rect;
         WebCore::IntSize offset;
     };
-    void paintFrame(unsigned window, WebCore::IntSize pixelSize, std::optional<WebCore::IntRect> damage, std::optional<Scroll>, const PaintFunction& paint);
+    using Damage = Vector<WebCore::IntRect>;
+    void paintFrame(unsigned window, WebCore::IntSize pixelSize, std::optional<Damage>, std::optional<Scroll>, const PaintFunction& paint);
 
     // Frees what a closed or hidden window painted into.
     void releaseSurface(unsigned window);
@@ -69,8 +70,8 @@ private:
 
     bool initializeGPU(WebCore::IntSize);
     void rebuildGPU();
-    void paintGPU(unsigned window, Surface&, WebCore::IntSize, std::optional<WebCore::IntRect> damage, std::optional<Scroll>, const PaintFunction&);
-    void paintCPU(unsigned window, Surface&, WebCore::IntSize, std::optional<WebCore::IntRect> damage, std::optional<Scroll>, const PaintFunction&);
+    void paintGPU(unsigned window, Surface&, WebCore::IntSize, std::optional<Damage>, std::optional<Scroll>, const PaintFunction&);
+    void paintCPU(unsigned window, Surface&, WebCore::IntSize, std::optional<Damage>, std::optional<Scroll>, const PaintFunction&);
 
     Mode m_mode { Mode::CPU };
     int m_requestedPageContexts { 0 };
