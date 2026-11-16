@@ -23,6 +23,7 @@ const TYPES = {
   '.mjs': 'text/javascript; charset=utf-8',
   '.wasm': 'application/wasm',
   '.data': 'application/octet-stream',
+  '.ttc': 'font/collection',
   '.json': 'application/json',
 };
 
@@ -61,7 +62,7 @@ function serveFrom(root, prefix, only = null) {
 
 /**
  * Options:
- *   engineDir    directory with inception-engine.{js,wasm,data}
+ *   engineDir    directory with inception-engine.{js,wasm,data} (and -cjk.ttc)
  *                (default: $INCEPTION_ENGINE_DIR or ./inception-engine)
  *   engineUrl    use engine files hosted elsewhere instead of engineDir
  *   relay        true to start a development relay, or the URL of a running one

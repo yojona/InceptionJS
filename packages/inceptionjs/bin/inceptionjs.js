@@ -67,7 +67,7 @@ function initVite(cwd, engine) {
   }
   console.log(`
 Next steps:
-  1. Put the engine files (inception-engine.js, .wasm, .data) in ${engineDir}
+  1. Put the engine files (inception-engine.js, .wasm, .data, -cjk.ttc) in ${engineDir}
   2. In your page:
        import config from 'virtual:inceptionjs/config';
        import { Inception } from 'inceptionjs';
@@ -146,6 +146,14 @@ async function check(argv) {
     } catch (error) {
       report(false, `${path}: ${error.message}`);
     }
+  }
+  // Optional: without it, Chinese, Japanese and Korean text shows as boxes.
+  const cjkUrl = engineUrl.href.replace(/\.js$/, '-cjk.ttc');
+  try {
+    const r = await fetch(cjkUrl, { method: 'HEAD' });
+    advise(r.ok, `${cjkUrl} (${r.status})`, 'Host inception-engine-cjk.ttc next to the engine files (or set fonts.url), or CJK text shows as boxes.');
+  } catch (error) {
+    advise(false, `${cjkUrl}: ${error.message}`, 'Host inception-engine-cjk.ttc next to the engine files (or set fonts.url), or CJK text shows as boxes.');
   }
 
   if (values.relay) {
