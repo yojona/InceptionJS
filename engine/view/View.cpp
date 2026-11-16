@@ -460,7 +460,7 @@ void View::setNeedsPaint()
 void View::setNeedsPaint(const IntRect& rect)
 {
     m_needsPaint = true;
-    m_damage.unite(intersection(rect, IntRect({ }, m_cssSize)));
+    m_damage.unite(Region(intersection(rect, IntRect({ }, m_cssSize))));
     if (isActive())
         requestFrame();
 }
@@ -481,20 +481,22 @@ void View::scrolled(const IntSize& offset, const IntRect& scrolledRect)
         return;
     }
     // What was already to be repainted inside the rect moved with it.
-    auto inside = intersection(m_damage, rect);
+    Region inside = m_damage;
+    inside.intersect(Region(rect));
     if (!inside.isEmpty()) {
-        inside.move(offset);
-        m_damage.unite(intersection(inside, rect));
+        inside.translate(offset);
+        inside.intersect(Region(rect));
+        m_damage.unite(inside);
     }
     // The strips the content left uncovered.
     if (offset.height() > 0)
-        m_damage.unite({ rect.x(), rect.y(), rect.width(), offset.height() });
+        m_damage.unite(Region({ rect.x(), rect.y(), rect.width(), offset.height() }));
     else if (offset.height() < 0)
-        m_damage.unite({ rect.x(), rect.maxY() + offset.height(), rect.width(), -offset.height() });
+        m_damage.unite(Region({ rect.x(), rect.maxY() + offset.height(), rect.width(), -offset.height() }));
     if (offset.width() > 0)
-        m_damage.unite({ rect.x(), rect.y(), offset.width(), rect.height() });
+        m_damage.unite(Region({ rect.x(), rect.y(), offset.width(), rect.height() }));
     else if (offset.width() < 0)
-        m_damage.unite({ rect.maxX() + offset.width(), rect.y(), -offset.width(), rect.height() });
+        m_damage.unite(Region({ rect.maxX() + offset.width(), rect.y(), -offset.width(), rect.height() }));
     framePerformance().movedScrolls++;
     m_scroll = { rect, m_scroll ? m_scroll->second + offset : offset };
     m_needsPaint = true;
@@ -557,18 +559,24 @@ void View::frame()
     auto pixelSize = expandedIntSize(FloatSize(m_cssSize) * m_deviceScaleFactor);
     auto& performance = framePerformance();
     // What changed, in device pixels, rounded out a pixel more so that
-    // antialiased edges of a fractional scale are repainted too.
-    std::optional<IntRect> damage;
+    // antialiased edges of a fractional scale are repainted too. Past a few
+    // rects, their bounds paint faster than each of them.
+    std::optional<Renderer::Damage> damage;
     if (performance.damage && !m_fullDamage) {
-        IntRect region;
-        if (!m_damage.isEmpty()) {
-            FloatRect scaled(m_damage);
+        auto rects = m_damage.rects();
+        if (rects.size() > 8)
+            rects = { m_damage.bounds() };
+        Renderer::Damage region;
+        for (auto& rect : rects) {
+            FloatRect scaled(rect);
             scaled.scale(m_deviceScaleFactor);
-            region = enclosingIntRect(scaled);
-            region.inflate(1);
-            region.intersect(IntRect({ }, pixelSize));
+            auto device = enclosingIntRect(scaled);
+            device.inflate(1);
+            device.intersect(IntRect({ }, pixelSize));
+            if (!device.isEmpty())
+                region.append(device);
         }
-        damage = region;
+        damage = WTF::move(region);
     }
     std::optional<Renderer::Scroll> scroll;
     if (damage && m_scroll) {
@@ -583,18 +591,18 @@ void View::frame()
     m_scroll = std::nullopt;
 
     double painted = 0;
-    std::optional<FloatRect> repainted;
+    Region repainted;
     Renderer::singleton().paintFrame(m_window->id(), pixelSize, damage, scroll, [&](GraphicsContext& context, const IntRect& region) {
-        painted = static_cast<double>(region.area().value()) / std::max(1u, pixelSize.area().value());
+        painted += static_cast<double>(region.area().value()) / std::max(1u, pixelSize.area().value());
         context.scale(m_deviceScaleFactor);
         FloatRect css(region);
         css.scale(1 / m_deviceScaleFactor);
-        if (damage)
-            repainted = css;
-        frameView->paint(context, intersection(enclosingIntRect(css), IntRect({ }, m_cssSize)));
+        auto cssRect = intersection(enclosingIntRect(css), IntRect({ }, m_cssSize));
+        repainted.unite(Region(cssRect));
+        frameView->paint(context, cssRect);
     });
-    // A frame that only presented painted no video either.
-    Media::endFrame(m_window->id(), damage ? repainted.value_or(FloatRect()) : std::optional<FloatRect>());
+    // Videos outside what this frame painted kept their place.
+    Media::endFrame(m_window->id(), repainted);
 
     auto end = MonotonicTime::now();
     // The last 600 frames at most, for "debug.frames".
