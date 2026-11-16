@@ -78,6 +78,8 @@ public:
     // The pixels of `rect` (CSS pixels) moved by `offset`: a scroll. The last
     // frame's pixels are moved along and only what scrolled in is repainted.
     void scrolled(const WebCore::IntSize& offset, const WebCore::IntRect&);
+    // A scroll WebCore repaints rather than moves (slow scrolling).
+    void slowScrolled(const WebCore::IntRect&);
     void requestFrame();
     void frame();
     // After input: paints now, when a frame is due, instead of at the host's

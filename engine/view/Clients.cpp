@@ -278,7 +278,7 @@ void ChromeClientImpl::invalidateContentsAndRootView(const IntRect& rect)
 
 void ChromeClientImpl::invalidateContentsForSlowScroll(const IntRect& rect)
 {
-    m_view.setNeedsPaint(rect);
+    m_view.slowScrolled(rect);
 }
 
 // A frame scrolled: WebCore has the window's pixels moved by `scrollDelta`
