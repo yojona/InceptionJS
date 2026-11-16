@@ -205,6 +205,14 @@ void Renderer::paintGPU(unsigned window, Surface& windowSurface, IntSize size, s
     inception_gfx_resize(size.width(), size.height());
     glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer.fFBOID);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    // WebKit hands out a blank bitmap for a drawing buffer that only a blit
+    // wrote since the last one: clearing one pixel, which the blit then
+    // covers, counts as drawing (js/gfx.js checks it works, and copies each
+    // frame where it does not).
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, 1, 1);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
     // The blit obeys the scissor test, and Skia leaves it set to whatever it
     // drew last; without this only that region reaches the canvas.
     glDisable(GL_SCISSOR_TEST);
