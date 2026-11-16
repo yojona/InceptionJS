@@ -281,12 +281,11 @@ void ChromeClientImpl::invalidateContentsForSlowScroll(const IntRect& rect)
     m_view.setNeedsPaint(rect);
 }
 
-// A frame scrolled by `scrollDelta` and WebCore would have the window's
-// pixels moved (blit scrolling): until the engine moves them, the scrolled
-// area is repainted.
-void ChromeClientImpl::scroll(const IntSize&, const IntRect& rectToScroll, const IntRect& clipRect)
+// A frame scrolled: WebCore has the window's pixels moved by `scrollDelta`
+// (blit scrolling) and marks what must be repainted around fixed elements.
+void ChromeClientImpl::scroll(const IntSize& scrollDelta, const IntRect& rectToScroll, const IntRect& clipRect)
 {
-    m_view.setNeedsPaint(intersection(rectToScroll, clipRect));
+    m_view.scrolled(scrollDelta, intersection(rectToScroll, clipRect));
 }
 
 bool ChromeClientImpl::scheduleRenderingUpdate()

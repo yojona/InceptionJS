@@ -15,6 +15,8 @@
 WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
 #include <skia/core/SkCanvas.h>
 #include <skia/core/SkColorSpace.h>
+#include <skia/core/SkImage.h>
+#include <skia/core/SkPaint.h>
 #include <skia/core/SkSurface.h>
 #include <skia/gpu/ganesh/GrBackendSurface.h>
 #include <skia/gpu/ganesh/GrDirectContext.h>
@@ -71,6 +73,23 @@ bool Renderer::initializeGPU(IntSize pixelSize)
     return true;
 }
 
+// Moves the pixels of `scroll.rect` by its offset, within the rect: a copy of
+// the region drawn back over it. False when the copy cannot be made.
+static bool shiftPixels(SkSurface& surface, const Renderer::Scroll& scroll)
+{
+    auto& rect = scroll.rect;
+    auto image = surface.makeImageSnapshot(SkIRect::MakeXYWH(rect.x(), rect.y(), rect.width(), rect.height()));
+    if (!image)
+        return false;
+    auto* canvas = surface.getCanvas();
+    SkAutoCanvasRestore restoreCanvas(canvas, true);
+    canvas->clipIRect(SkIRect::MakeXYWH(rect.x(), rect.y(), rect.width(), rect.height()));
+    SkPaint paint;
+    paint.setBlendMode(SkBlendMode::kSrc);
+    canvas->drawImage(image, rect.x() + scroll.offset.width(), rect.y() + scroll.offset.height(), SkSamplingOptions(), &paint);
+    return true;
+}
+
 // Clears and paints `region` of `canvas` only; the rest keeps the last frame.
 static void paintRegion(SkCanvas& canvas, RenderingMode mode, const IntRect& region, const Renderer::PaintFunction& paint)
 {
@@ -83,15 +102,15 @@ static void paintRegion(SkCanvas& canvas, RenderingMode mode, const IntRect& reg
     paint(context, region);
 }
 
-void Renderer::paintFrame(unsigned window, IntSize pixelSize, std::optional<IntRect> damage, const PaintFunction& paint)
+void Renderer::paintFrame(unsigned window, IntSize pixelSize, std::optional<IntRect> damage, std::optional<Scroll> scroll, const PaintFunction& paint)
 {
     if (pixelSize.isEmpty())
         return;
     auto& surface = *m_surfaces.ensure(static_cast<unsigned>(window), [] { return std::make_unique<Surface>(); }).iterator->value;
     if (m_mode == Mode::GPU)
-        paintGPU(window, surface, pixelSize, damage, paint);
+        paintGPU(window, surface, pixelSize, damage, scroll, paint);
     else
-        paintCPU(window, surface, pixelSize, damage, paint);
+        paintCPU(window, surface, pixelSize, damage, scroll, paint);
 }
 
 void Renderer::releaseSurface(unsigned window)
@@ -119,7 +138,7 @@ void Renderer::rebuildGPU()
         report("error"_s, "Skia could not use the restored WebGL context"_s);
 }
 
-void Renderer::paintGPU(unsigned window, Surface& windowSurface, IntSize size, std::optional<IntRect> damage, const PaintFunction& paint)
+void Renderer::paintGPU(unsigned window, Surface& windowSurface, IntSize size, std::optional<IntRect> damage, std::optional<Scroll> scroll, const PaintFunction& paint)
 {
     switch (inception_gfx_take_context_state()) {
     case 1:
@@ -157,6 +176,8 @@ void Renderer::paintGPU(unsigned window, Surface& windowSurface, IntSize size, s
     }
     auto* surface = renderTarget.get();
 
+    if (damage && scroll && !shiftPixels(*surface, *scroll))
+        damage = std::nullopt;
     // The surface, and so its canvas and matrix, lives across frames: each
     // frame's transforms and clip end with it (paintRegion restores them).
     paintRegion(*surface->getCanvas(), RenderingMode::Accelerated, damage.value_or(IntRect({ }, size)), paint);
@@ -183,7 +204,7 @@ void Renderer::paintGPU(unsigned window, Surface& windowSurface, IntSize size, s
     inception_gfx_present(window);
 }
 
-void Renderer::paintCPU(unsigned window, Surface& windowSurface, IntSize size, std::optional<IntRect> damage, const PaintFunction& paint)
+void Renderer::paintCPU(unsigned window, Surface& windowSurface, IntSize size, std::optional<IntRect> damage, std::optional<Scroll> scroll, const PaintFunction& paint)
 {
     auto info = SkImageInfo::Make(size.width(), size.height(), kRGBA_8888_SkColorType, kPremul_SkAlphaType, SkColorSpace::MakeSRGB());
     auto& pixels = windowSurface.pixels;
@@ -197,6 +218,8 @@ void Renderer::paintCPU(unsigned window, Surface& windowSurface, IntSize size, s
     if (!surface)
         return;
 
+    if (damage && scroll && !shiftPixels(*surface, *scroll))
+        damage = std::nullopt;
     paintRegion(*surface->getCanvas(), RenderingMode::Unaccelerated, damage.value_or(IntRect({ }, size)), paint);
     inception_gfx_present_pixels(window, pixels.span().data(), size.width(), size.height());
 }
