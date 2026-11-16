@@ -61,6 +61,7 @@
   if (params.get('profile')) view.setAttribute('profile', params.get('profile'));
   // ?headless: window 1 is not shown here (it can be exported).
   if (params.has('headless')) view.setAttribute('headless', '');
+  if (params.get('overscan')) view.setAttribute('overscan', params.get('overscan'));
   // ?agent=1 offers the agent namespace (view.agent) to scripts and clients.
   if (params.get('agent')) view.setAttribute('agent', '');
   const address = document.getElementById('address');

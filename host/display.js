@@ -161,7 +161,9 @@ export class Display {
     this.#canvas = canvas;
     this.#textInput = textInput;
     this.#send = send;
-    this.sink = canvasSink(canvas);
+    // Input lines the frame up with the page (overscan, a finger's scroll).
+    const frames = canvasSink(canvas);
+    this.sink = { canvas, present: (bitmap, info) => { frames.present(bitmap); this.#input?.handleEvent('frame', info ?? {}); } };
     this.#selectMenu = new SelectMenu(shadow, send);
   }
 
@@ -175,6 +177,10 @@ export class Display {
   // `input`: the sender input goes through (the agent's watch wraps it).
   start({ input = this.#send, clipboard = true } = {}) {
     this.#input = attachInput(this.#element, this.#canvas, this.#textInput, input, { clipboard, zoom: () => this.#zoom });
+    // overscan="256": the engine paints that many CSS pixels of the page
+    // above and below the viewport, which a finger's scroll shows at once.
+    const overscan = Math.round(Number(this.#element.getAttribute('overscan')) || 0);
+    if (overscan > 0) this.#send('overscan', { pixels: Math.min(overscan, 2048) });
     this.#resizeObserver = new ResizeObserver(() => this.#send('resize', { ...this.cssSize(), deviceScaleFactor: devicePixelRatio }));
     this.#resizeObserver.observe(this.#element);
   }
@@ -501,7 +507,7 @@ export function createDisplay(canvas, port, { clipboard = true, element = canvas
       if (name === 'clipboard.write' && isObject(data.items) && mayWriteClipboard()) writeClipboard(Object.fromEntries(Object.entries(data.items).filter(([, value]) => typeof value === 'string')));
       if (name === 'fullscreen') setFullscreen(!!data.active);
       if (name === 'zoom' && data.factor > 0) zoom = Number(data.factor);
-      if (name === 'wheel.done' && Number.isInteger(data.id)) input.handleEvent(name, { id: data.id });
+      if (name === 'wheel.done' && Number.isInteger(data.id)) input.handleEvent(name, { id: data.id, ...(Number.isFinite(data.scrollY) ? { scrollY: data.scrollY } : {}) });
       if (name === 'editable.focus') input.handleEvent(name, { inputMode: String(data.inputMode ?? '').slice(0, 16) });
     } else if (message.type === 'ask' && Number.isInteger(message.id) && isObject(message.question)) {
       const { question: kind, message: text, defaultValue } = message.question;

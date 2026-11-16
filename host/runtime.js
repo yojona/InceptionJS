@@ -51,6 +51,14 @@ export function frameWindow(value) {
   return Number.isInteger(value) && value > 0 ? value : 1;
 }
 
+// What the engine says about a frame: the page's scroll position when it
+// was painted, and the CSS pixels painted beyond the viewport above and
+// below (overscan).
+function frameInfo(data) {
+  const number = (value) => (Number.isFinite(value) ? value : 0);
+  return { scrollX: number(data.scrollX), scrollY: number(data.scrollY), overscan: Math.max(0, number(data.overscan)) };
+}
+
 // A sink that draws frames into a canvas with a bitmaprenderer context.
 export function canvasSink(canvas) {
   let context = null;
@@ -82,14 +90,14 @@ export class FrameRouter {
     return this.#sinks.get(window) ?? null;
   }
 
-  present(window, bitmap) {
+  present(window, bitmap, info) {
     if (!bitmap || typeof bitmap !== 'object' || typeof bitmap.close !== 'function') return false;
     const sink = this.#sinks.get(frameWindow(window));
     if (!sink) {
       bitmap.close();
       return false;
     }
-    sink.present(bitmap);
+    sink.present(bitmap, info);
     return true;
   }
 }
@@ -342,10 +350,10 @@ export class EngineRuntime extends EventTarget {
       if (document.visibilityState === 'hidden' && !this.#frames.sinkOf(window)?.canvas) return afterFrameInBackground(tick);
       return requestAnimationFrame(tick);
     }
-    if (data.inceptionFrame) return this.#presentBitmap(frameWindow(data.window), data.inceptionFrame);
+    if (data.inceptionFrame) return this.#presentBitmap(frameWindow(data.window), data.inceptionFrame, frameInfo(data));
     if (data.inceptionMediaAppend) return this.onMediaAppend?.(data.inceptionMediaAppend);
     if (data.inceptionWasm) return this.#translateWasm(data.inceptionWasm);
-    if (data.inceptionPixels) return this.#presentPixels(frameWindow(data.window), data.inceptionPixels);
+    if (data.inceptionPixels) return this.#presentPixels(frameWindow(data.window), data.inceptionPixels, frameInfo(data));
     if (data.inceptionCrash) return this.#crashed(data.inceptionCrash);
     if (data.inceptionAsk) return this.#answer(data.inceptionAsk);
     if (data.inceptionAudioDecode) return this.onAudioDecode?.(data.inceptionAudioDecode);
@@ -434,15 +442,15 @@ export class EngineRuntime extends EventTarget {
     this.#worker?.postMessage({ inceptionFile: { name, bytes } }, [bytes]);
   }
 
-  #presentBitmap(window, bitmap) {
-    this.#frames.present(window, bitmap);
+  #presentBitmap(window, bitmap, info) {
+    this.#frames.present(window, bitmap, info);
   }
 
   // CPU fallback frames arrive as RGBA bytes. They go through an ImageBitmap so
   // both paths share the display's bitmaprenderer context.
-  async #presentPixels(window, { width, height, buffer }) {
+  async #presentPixels(window, { width, height, buffer }, info) {
     if (!this.#frames.sinkOf(window)) return;
     const image = new ImageData(new Uint8ClampedArray(buffer), width, height);
-    this.#presentBitmap(window, await createImageBitmap(image, { premultiplyAlpha: 'premultiply' }));
+    this.#presentBitmap(window, await createImageBitmap(image, { premultiplyAlpha: 'premultiply' }), info);
   }
 }
