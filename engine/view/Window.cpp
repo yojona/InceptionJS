@@ -2,6 +2,7 @@
 #include "view/Window.h"
 
 #include "FocusController.h"
+#include <algorithm>
 #include "Page.h"
 #include "agent/Agent.h"
 #include "bridge/Bridge.h"
@@ -74,6 +75,16 @@ void Window::setSize(IntSize cssSize, float deviceScaleFactor)
 {
     m_cssSize = cssSize;
     m_deviceScaleFactor = deviceScaleFactor;
+}
+
+void Window::setOverscan(int overscan)
+{
+    overscan = std::clamp(overscan, 0, 2048);
+    if (overscan == m_overscan)
+        return;
+    m_overscan = overscan;
+    if (m_active)
+        m_active->setNeedsPaint();
 }
 
 void Window::setVisible(bool visible)

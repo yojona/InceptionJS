@@ -310,6 +310,12 @@ static void registerCommands()
         view->load(WTF::move(request));
     });
 
+    // {pixels}: see Window::overscan.
+    registerCommand("overscan"_s, [](JSON::Object& args) {
+        if (auto* view = View::singleton())
+            view->window().setOverscan(args.getInteger("pixels"_s).value_or(0));
+    });
+
     registerCommand("resize"_s, [](JSON::Object& args) {
         if (auto* view = View::singleton())
             view->resize(sizeFrom(args), args.getDouble("deviceScaleFactor"_s).value_or(view->deviceScaleFactor()));

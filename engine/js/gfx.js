@@ -163,10 +163,12 @@ addToLibrary({
   },
 
   inception_gfx_present__deps: ['$inceptionGfx', '$inceptionGfxBitmap', '$inceptionReport'],
-  inception_gfx_present: (window) => {
+  // `scrollY` and `overscan` (CSS pixels painted beyond the viewport above and
+  // below) let the host line the frame up with where the page scrolled since.
+  inception_gfx_present: (window, scrollX, scrollY, overscan) => {
     try {
       const bitmap = inceptionGfxBitmap();
-      postMessage({ inceptionFrame: bitmap, window }, [bitmap]);
+      postMessage({ inceptionFrame: bitmap, window, scrollX, scrollY, overscan }, [bitmap]);
     } catch (e) {
       inceptionReport('error', `present failed: ${e}`);
     }
@@ -174,9 +176,9 @@ addToLibrary({
 
   // CPU fallback: the pixels live in shared memory, which cannot be transferred,
   // so they are copied once into a buffer the host receives without another copy.
-  inception_gfx_present_pixels: (window, pixels, width, height) => {
+  inception_gfx_present_pixels: (window, pixels, width, height, scrollX, scrollY, overscan) => {
     const bytes = HEAPU8.slice(pixels, pixels + width * height * 4);
-    postMessage({ inceptionPixels: { width, height, buffer: bytes.buffer }, window }, [bytes.buffer]);
+    postMessage({ inceptionPixels: { width, height, buffer: bytes.buffer }, window, scrollX, scrollY, overscan }, [bytes.buffer]);
   },
 
   // Frames are paced by the host page's requestAnimationFrame: the engine asks
