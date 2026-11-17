@@ -36,6 +36,7 @@
 import { ProtocolClient, ProtocolError, createPostMessageTransport } from './protocol.js';
 import { createDisplay } from './display.js';
 import { clientLockName, heldLocks, hostLockName, tryLock, whenFree } from './profile-lock.js';
+import { deviceScale } from './scale.js';
 
 export const ATTACH_VERSION = 1;
 
@@ -735,7 +736,7 @@ export class ProfileConnection extends EventTarget {
 
   // Opens a window on the host. Resolves with the RemoteWindow once it is
   // open. `key` names it across a failover (default: a counter).
-  async open({ width = 800, height = 600, deviceScaleFactor = devicePixelRatio, url = '', frames = 'auto', key = `w${this.#nextKey++}` } = {}) {
+  async open({ width = 800, height = 600, deviceScaleFactor = deviceScale(), url = '', frames = 'auto', key = `w${this.#nextKey++}` } = {}) {
     if (this.state === 'closed') throw new Error('the connection is closed');
     const options = { width, height, deviceScaleFactor, url, frames };
     const remote = new RemoteWindow(this, key, options);
