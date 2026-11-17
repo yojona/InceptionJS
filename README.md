@@ -464,6 +464,7 @@ starts. Only `engineUrl` and `relayUrl` are required.
 | `isolation` | `'shared'` | `'shared'`, `'window'` or `'site'`; see [Isolation modes](#isolation-modes) |
 | `engines` | follows the device's memory | `{ max }`: engines a view runs before new windows share one (`'window'`, `'site'`) |
 | `maxMemoryMB` | `2048` | How far an engine's memory may grow (512 to 4096); `'auto'` sizes it from the device |
+| `deviceScale` | `'integer'` | The scale engines paint at: on 2x screens and up the device's ratio rounded (a phone at 3.25 paints at 3), so scrolls move pixels instead of repainting; `'native'` for the exact ratio, or a number |
 | `policy` | safe defaults | What pages may do to the person's browser; see [Safe defaults](#safe-defaults) |
 | `storage` | `{ profile: 'default' }` | `profile`, `fresh` (start empty), `ephemeral` (memory only, `'window'` isolation) |
 | `userAgent` | the engine's | User-Agent for every view |
