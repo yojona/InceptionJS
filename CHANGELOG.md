@@ -7,6 +7,38 @@ break the API).
 
 ## Unreleased
 
+## 0.1.7 (2026-11-16)
+
+New engine files, now four: `inception-engine-cjk.ttc` (the CJK font) joins
+`.js`, `.wasm` and `.data`. Releases also carry `licenses.txt`. `@inceptionjs/react`
+stays 0.1.1.
+
+### Added
+
+- `fonts.cjk`: the CJK font is a separate file the host loads when wanted. `'auto'`
+  (default) loads it in the background after the first frame, or on demand when the
+  person saves data or the connection is slow; `'background'`, `'on-demand'`,
+  `'startup'` and `'off'` do exactly that. `fonts.url` serves it from elsewhere (#74).
+- `overscan="N"` on a view (experimental, off by default): the engine paints N pixels
+  beyond the viewport so a finger's scroll moves the last frame at once (#72).
+- `licenses.txt` with every engine component's license text, attached to each release,
+  including the earlier ones (#74).
+- README: an options table for `Inception.configure`, and an Attribution section.
+
+### Changed
+
+- The first visit downloads about 28 MB instead of 46: color emoji are the COLRv1
+  (vector) build of Noto Color Emoji, 2.5 MB instead of 10 (#73), and the CJK font
+  left the data file (#74).
+- Frames reach Safari and every iOS browser without a full copy each (#70).
+- The scroll benchmark measures the engine, not its own input cadence; scrolling keeps
+  up with the display (#71).
+
+### Fixed
+
+- Emoji such as 😀 paint in color with `sans-serif` and other families, instead of
+  DejaVu's monochrome glyphs (#74).
+
 ## 0.1.6 (2026-11-15)
 
 New engine files. `@inceptionjs/react` stays 0.1.1.
