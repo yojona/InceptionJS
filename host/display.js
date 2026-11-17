@@ -57,6 +57,7 @@ import { canvasSink } from './runtime.js';
 import { MediaHost } from './media.js';
 import { EncryptedMedia } from './eme.js';
 import { PcmPlayer, PcmTap } from './pcm.js';
+import { deviceScale } from './scale.js';
 
 export const DISPLAY_INPUT_COMMANDS = new Set(['mouse', 'wheel', 'key', 'ime.set', 'ime.commit', 'ime.cancel', 'focus', 'edit', 'clipboard.set', 'select.choose', 'file.chosen']);
 // Events a display needs to draw its part.
@@ -181,7 +182,7 @@ export class Display {
     // above and below the viewport, which a finger's scroll shows at once.
     const overscan = Math.round(Number(this.#element.getAttribute('overscan')) || 0);
     if (overscan > 0) this.#send('overscan', { pixels: Math.min(overscan, 2048) });
-    this.#resizeObserver = new ResizeObserver(() => this.#send('resize', { ...this.cssSize(), deviceScaleFactor: devicePixelRatio }));
+    this.#resizeObserver = new ResizeObserver(() => this.#send('resize', { ...this.cssSize(), deviceScaleFactor: deviceScale() }));
     this.#resizeObserver.observe(this.#element);
   }
 
@@ -440,7 +441,7 @@ export function createDisplay(canvas, port, { clipboard = true, element = canvas
   const sendSize = () => {
     const { width, height } = cssSizeOf(canvas);
     layerFollows?.();
-    port.postMessage({ type: 'resize', width, height, deviceScaleFactor: devicePixelRatio });
+    port.postMessage({ type: 'resize', width, height, deviceScaleFactor: deviceScale() });
   };
   const resizeObserver = new ResizeObserver(sendSize);
   resizeObserver.observe(canvas);

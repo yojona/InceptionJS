@@ -19,6 +19,7 @@ import { Display, serveDisplay } from './display.js';
 import { ATTACH_DISPLAY, HostWindow, InceptionWindow } from './window.js';
 import { AttachHost, AttachUnavailableError, DOM_EVENT_NAMES, ProfileConnection, VIEW_EVENTS, hostPresent } from './attach.js';
 import { profileLockName, tryLock, waitLock } from './profile-lock.js';
+import { deviceScale, setDeviceScale } from './scale.js';
 
 export { AttachUnavailableError, connectProfile } from './attach.js';
 
@@ -62,10 +63,14 @@ export const Inception = {
   // slow; 'background' after the first frame, 'on-demand' when a page first
   // needs it, 'startup' at once, 'off' never. `url` is where the font file
   // is, if not next to the engine files.
+  // deviceScale: the scale engines paint at, 'integer' (default: the device's
+  // ratio rounded on 2x screens and up, so scrolls move pixels), 'native' (the
+  // exact ratio) or a number.
   configure(options) {
     const { wispUrl, ...rest } = options;
     // wispUrl: the earlier name of relayUrl, still accepted.
     Object.assign(config, wispUrl !== undefined && rest.relayUrl === undefined ? { relayUrl: wispUrl } : {}, rest);
+    if ('deviceScale' in rest) setDeviceScale(rest.deviceScale);
   },
   // Starts downloading and compiling the engine (and its module script)
   // before any view needs it, so the first view starts sooner. Views started
@@ -584,7 +589,7 @@ export class InceptionView extends HTMLElement {
   // it: <inception-window> here, or exportWindow() for another document.
   // `hosts` ({allow?, block?}, isolation 'window'): where its pages may go,
   // instead of policy.hosts.
-  async openWindow({ width = 800, height = 600, url = '', deviceScaleFactor = devicePixelRatio, hosts } = {}) {
+  async openWindow({ width = 800, height = 600, url = '', deviceScaleFactor = deviceScale(), hosts } = {}) {
     await this.ready;
     this.#requireHost('openWindow()');
     const { window } = await this.#client.request('windows.create', { width, height, url, deviceScaleFactor, ...(hosts ? { hosts } : {}) });
@@ -837,7 +842,7 @@ export class InceptionView extends HTMLElement {
 
     const { width, height } = this.#cssSize();
     const gpu = this.getAttribute('gpu') ?? 'auto';
-    const ready = await this.#startSlot(primary, { width, height, deviceScaleFactor: devicePixelRatio, url, gpu }, async () => {
+    const ready = await this.#startSlot(primary, { width, height, deviceScaleFactor: deviceScale(), url, gpu }, async () => {
       await this.#client.hello(this.#capabilities());
     });
     this.#tabs.started(ready.tab ?? 1);
@@ -871,7 +876,7 @@ export class InceptionView extends HTMLElement {
     const connection = await new ProfileConnection(profile).connect({ brokerUrl: config.brokerUrl });
     this.#connection = connection;
     const { width, height } = this.#cssSize();
-    const remote = await connection.open({ width, height, deviceScaleFactor: devicePixelRatio, url: this.getAttribute('src') ?? '' });
+    const remote = await connection.open({ width, height, deviceScaleFactor: deviceScale(), url: this.getAttribute('src') ?? '' });
     this.#remote = remote;
     this.#client = { request: (method, params) => remote.request(method, params) };
     this.#watchRemote(remote, connection);
@@ -1263,7 +1268,7 @@ export class InceptionView extends HTMLElement {
     const site = await this.#siteOf(nav.url);
     const old = record.slot;
     const isMain = record === this.#main;
-    const size = record.channel.lastSize ?? (isMain ? { ...this.#cssSize(), deviceScaleFactor: devicePixelRatio } : { ...(record.size ?? { width: 800, height: 600 }), deviceScaleFactor: devicePixelRatio });
+    const size = record.channel.lastSize ?? (isMain ? { ...this.#cssSize(), deviceScaleFactor: deviceScale() } : { ...(record.size ?? { width: 800, height: 600 }), deviceScaleFactor: deviceScale() });
     const history = record.history;
     if (history) {
       // A new navigation leaves the entries up to the current one behind it;
