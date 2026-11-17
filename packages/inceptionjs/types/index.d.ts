@@ -48,6 +48,12 @@ export interface InceptionConfig {
    * engine files.
    */
   fonts?: { cjk?: 'auto' | 'background' | 'on-demand' | 'startup' | 'off'; url?: string };
+  /**
+   * The scale engines paint at. 'integer' (default): the device's ratio rounded to a whole number on
+   * screens of 2x and more (3.25 paints at 3), so a scroll moves the last frame's pixels instead of
+   * repainting; the exact ratio below 2x. 'native': the exact ratio always. A number: that scale.
+   */
+  deviceScale?: 'integer' | 'native' | number;
   /** Offer the agent namespace (view.agent) on every view: true, or its options. Off by default. */
   agent?: boolean | AgentOptions;
   modules?: Partial<Record<'geolocation' | 'notifications', ModuleSetting>>;
