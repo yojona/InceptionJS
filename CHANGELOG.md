@@ -7,6 +7,10 @@ break the API).
 
 ## Unreleased
 
+### Added
+
+- `@inceptionjs/react` 0.1.2: the `overscan` prop.
+
 ## 0.1.7 (2026-11-16)
 
 New engine files, now four: `inception-engine-cjk.ttc` (the CJK font) joins
