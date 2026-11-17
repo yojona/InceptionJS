@@ -34,6 +34,8 @@ export interface InceptionViewProps {
   muted?: boolean;
   /** 0 to 1. */
   volume?: number;
+  /** Experimental: CSS pixels the engine paints beyond the viewport, so a finger's scroll moves the last frame at once (e.g. 256). */
+  overscan?: number;
   preferences?: Partial<Preferences>;
   style?: CSSProperties;
   className?: string;
