@@ -61,6 +61,7 @@ const ATTRIBUTES = {
   headless: 'headless',
   muted: 'muted',
   volume: 'volume',
+  overscan: 'overscan',
 };
 
 // Props whose false value is an attribute of its own ("off").
